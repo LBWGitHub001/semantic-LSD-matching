@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Model / data / outputs
+*.pth
+*.pt
+checkpoints/
+data/
+outputs/
+*.png
+*.jpg
+*.jpeg
+!docs/**/*.png
+
+# OS
+.DS_Store
