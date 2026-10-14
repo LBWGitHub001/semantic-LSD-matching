@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 import urllib.request
 from pathlib import Path
 
-from .infer import main as infer_main
-import sys
-
+# Support both: `python -m deeplab.demo` and running this file in an IDE.
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from deeplab.infer import main as infer_main
+else:
+    from .infer import main as infer_main
 
 SAMPLE_URL = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg"
 
@@ -22,7 +26,6 @@ def main() -> None:
         print(f"downloading sample -> {image_path}")
         urllib.request.urlretrieve(SAMPLE_URL, image_path)
 
-    # Reuse CLI: python -m deeplab.demo  ==  infer on demo.jpg
     sys.argv = [
         "deeplab.infer",
         str(image_path),

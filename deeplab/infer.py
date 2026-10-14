@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 
-from .model import available_backbones, build_deeplabv3
-from .utils import (
-    colorize_mask,
-    load_image,
-    overlay_mask,
-    predict_mask,
-    summarize_mask,
-)
+# Support both: `python -m deeplab.infer` and running this file in an IDE.
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from deeplab.model import available_backbones, build_deeplabv3
+    from deeplab.utils import (
+        colorize_mask,
+        load_image,
+        overlay_mask,
+        predict_mask,
+        summarize_mask,
+    )
+else:
+    from .model import available_backbones, build_deeplabv3
+    from .utils import (
+        colorize_mask,
+        load_image,
+        overlay_mask,
+        predict_mask,
+        summarize_mask,
+    )
 
 
 def parse_args() -> argparse.Namespace:

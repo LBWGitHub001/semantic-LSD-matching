@@ -25,14 +25,14 @@ pip install -r requirements.txt
 ## 快速开始
 
 ```bash
-# 样例图推理（自动下载 dog.jpg）
+# 在项目根目录下（推荐）
 python -m deeplab.demo
-
-# 指定图片
 python -m deeplab.infer path/to/image.jpg -o outputs
-
-# 选用 backbone / 强制 CPU
 python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
+
+# 也可直接运行脚本（IDE 点运行同样可用）
+python deeplab/demo.py
+python deeplab/infer.py path/to/image.jpg -o outputs
 ```
 
 输出默认写到 `outputs/`：
