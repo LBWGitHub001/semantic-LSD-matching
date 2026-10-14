@@ -1,4 +1,4 @@
-"""Download a sample image and run DeepLabv3 inference."""
+"""Download a sample image and run DeepLabv3 inference (project root entry)."""
 
 from __future__ import annotations
 
@@ -6,18 +6,13 @@ import sys
 import urllib.request
 from pathlib import Path
 
-# Support both: `python -m deeplab.demo` and running this file in an IDE.
-if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from deeplab.infer import main as infer_main
-else:
-    from .infer import main as infer_main
+from deeplab.infer import main as infer_main
 
 SAMPLE_URL = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg"
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parent
     out_dir = root / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     image_path = out_dir / "demo.jpg"

@@ -25,14 +25,12 @@ pip install -r requirements.txt
 ## 快速开始
 
 ```bash
-# 在项目根目录下（推荐）
-python -m deeplab.demo
+# 在项目根目录下运行 demo（IDE 直接运行 demo.py 亦可）
+python demo.py
+
+# 指定图片推理
 python -m deeplab.infer path/to/image.jpg -o outputs
 python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
-
-# 也可直接运行脚本（IDE 点运行同样可用）
-python deeplab/demo.py
-python deeplab/infer.py path/to/image.jpg -o outputs
 ```
 
 输出默认写到 `outputs/`：
@@ -77,13 +75,13 @@ DeepLabv3 对每个像素做分类：
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
+├── demo.py           # 样例图 demo（包外入口）
 └── deeplab/
     ├── __init__.py
     ├── model.py      # 构建 DeepLabv3、加载预训练权重
     ├── voc_labels.py # VOC 21 类名与调色板
     ├── utils.py      # 预处理、预测、上色、叠加
-    ├── infer.py      # 命令行入口
-    └── demo.py       # 样例图 demo
+    └── infer.py      # 命令行入口
 ```
 
 ## 代码中调用
