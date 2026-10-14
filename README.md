@@ -11,6 +11,7 @@
 - 命令行推理：输出彩色 mask 与原图叠加图
 - 一键 demo：自动下载样例图并跑通流程
 - **特征匹配 demo（ORB）**：两图关键点匹配并可视化连线
+- **XFeat demo（CVPR 2024）**：轻量学习型特征匹配（官方代码在 `third_party/`）
 
 ## 环境依赖
 
@@ -30,10 +31,15 @@ pip install -r requirements.txt
 # DeepLabv3 语义分割 demo
 python demo.py
 
-# 特征匹配 demo（无参数：下载样例图并做旋转缩放，再匹配）
+# 特征匹配 demo（ORB，无参数：下载样例图并做旋转缩放，再匹配）
 python demo_feature_match.py
-# 两张图匹配
 python demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
+
+# XFeat（需先 clone 官方仓库到 third_party/accelerated_features）
+python demo_xfeat.py
+python demo_xfeat.py path/to/img1.jpg path/to/img2.jpg
+# 半稠密匹配
+python demo_xfeat.py --star
 
 # 指定图片做语义分割
 python -m deeplab.infer path/to/image.jpg -o outputs
@@ -46,7 +52,8 @@ python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
 |------|------|
 | `*_mask.png` | VOC 调色板着色的语义图 |
 | `*_overlay.png` | 原图与语义图半透明叠加 |
-| `feature_match/matches.jpg` | 两图特征匹配连线可视化 |
+| `feature_match/matches.jpg` | ORB 特征匹配连线可视化 |
+| `xfeat/matches.jpg` | XFeat 匹配连线可视化 |
 
 语义分割 demo 会打印各类像素数；特征匹配 demo 会打印关键点与匹配数量。
 
@@ -84,11 +91,13 @@ DeepLabv3 对每个像素做分类：
 ├── requirements.txt
 ├── .gitignore
 ├── demo.py                 # DeepLabv3 样例入口
-├── demo_feature_match.py   # 特征匹配样例入口
+├── demo_feature_match.py   # ORB 特征匹配入口
+├── demo_xfeat.py           # XFeat 匹配入口
 ├── deeplab/                # 语义分割
-└── feature_match/          # ORB 特征匹配
-    ├── __init__.py
-    └── matcher.py
+├── feature_match/          # ORB
+└── third_party/
+    ├── README.md
+    └── accelerated_features/   # 官方 XFeat（本地 clone，不入库）
 ```
 
 ## 代码中调用

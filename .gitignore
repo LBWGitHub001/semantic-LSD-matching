@@ -24,3 +24,6 @@ outputs/
 
 # OS
 .DS_Store
+
+# Vendored official repos (clone locally; see third_party/README.md)
+third_party/accelerated_features/
