@@ -10,25 +10,32 @@
 - 支持 backbone：`resnet50` / `resnet101` / `mobilenet_v3_large`
 - 命令行推理：输出彩色 mask 与原图叠加图
 - 一键 demo：自动下载样例图并跑通流程
+- **特征匹配 demo（ORB）**：两图关键点匹配并可视化连线
 
 ## 环境依赖
 
 - Python 3.9+
-- PyTorch、torchvision、Pillow、numpy
+- PyTorch、torchvision、Pillow、numpy、opencv-python
 
 ```bash
 pip install -r requirements.txt
 ```
 
-建议安装与本机 CUDA 匹配的 PyTorch；无 GPU 时加 `--cpu` 即可。
+建议安装与本机 CUDA 匹配的 PyTorch；无 GPU 时加 `--cpu` 即可。  
+特征匹配 demo 只需 `opencv-python`（可自行安装，本仓库不改动你的 conda 环境）。
 
 ## 快速开始
 
 ```bash
-# 在项目根目录下运行 demo（IDE 直接运行 demo.py 亦可）
+# DeepLabv3 语义分割 demo
 python demo.py
 
-# 指定图片推理
+# 特征匹配 demo（无参数：下载样例图并做旋转缩放，再匹配）
+python demo_feature_match.py
+# 两张图匹配
+python demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
+
+# 指定图片做语义分割
 python -m deeplab.infer path/to/image.jpg -o outputs
 python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
 ```
@@ -39,8 +46,9 @@ python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
 |------|------|
 | `*_mask.png` | VOC 调色板着色的语义图 |
 | `*_overlay.png` | 原图与语义图半透明叠加 |
+| `feature_match/matches.jpg` | 两图特征匹配连线可视化 |
 
-终端会打印各出现类别的像素数。
+语义分割 demo 会打印各类像素数；特征匹配 demo 会打印关键点与匹配数量。
 
 ## 预训练权重
 
@@ -75,13 +83,12 @@ DeepLabv3 对每个像素做分类：
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
-├── demo.py           # 样例图 demo（包外入口）
-└── deeplab/
+├── demo.py                 # DeepLabv3 样例入口
+├── demo_feature_match.py   # 特征匹配样例入口
+├── deeplab/                # 语义分割
+└── feature_match/          # ORB 特征匹配
     ├── __init__.py
-    ├── model.py      # 构建 DeepLabv3、加载预训练权重
-    ├── voc_labels.py # VOC 21 类名与调色板
-    ├── utils.py      # 预处理、预测、上色、叠加
-    └── infer.py      # 命令行入口
+    └── matcher.py
 ```
 
 ## 代码中调用
