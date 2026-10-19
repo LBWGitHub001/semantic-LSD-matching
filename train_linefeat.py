@@ -101,7 +101,7 @@ def evaluate(
             if count >= max_samples:
                 break
 
-            with torch.cuda.amp.autocast(enabled=amp):
+            with torch.amp.autocast("cuda", enabled=amp):
                 if use_cache:
                     vis0 = sample["vis0"].to(device)  # Already (1, M, D)
                     vis1 = sample["vis1"].to(device)
@@ -224,7 +224,7 @@ def train() -> None:
         weight_decay=args.weight_decay,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
 
     # ImageNet normalization
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
@@ -247,7 +247,7 @@ def train() -> None:
             if args.max_steps is not None and step >= args.max_steps:
                 break
 
-            with torch.cuda.amp.autocast(enabled=args.amp):
+            with torch.amp.autocast("cuda", enabled=args.amp):
                 if args.use_cache:
                     vis0 = sample["vis0"].to(device)  # Already (1, M, D)
                     vis1 = sample["vis1"].to(device)
