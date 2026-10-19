@@ -22,6 +22,7 @@ from LineFeat.neighborhood import (
     compute_strip_zncc,
     extract_deep_strip_descriptor,
 )
+from LineFeat.pipeline import LineMatchPipeline, LineMatchResult
 from LineFeat.ground_truth import (
     GTLineMatch,
     check_line_visibility_and_project,
@@ -35,6 +36,8 @@ __all__ = [
     "LineMatcher",
     "LineMatcherNet",
     "LineMatchingLoss",
+    "LineMatchPipeline",
+    "LineMatchResult",
     "get_distinct_colors",
     "LineNeighborhoodTransformer",
     "compute_strip_zncc",
