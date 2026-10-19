@@ -29,17 +29,35 @@ pip install -r requirements.txt
 
 ```bash
 # DeepLabv3 语义分割 demo
-python demo.py
+python demo/demo_deeplab.py
 
 # 特征匹配 demo（ORB，无参数：下载样例图并做旋转缩放，再匹配）
-python demo_feature_match.py
-python demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
+python demo/demo_feature_match.py
+python demo/demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
 
 # XFeat（需先 clone 官方仓库到 third_party/accelerated_features）
-python demo_xfeat.py
-python demo_xfeat.py path/to/img1.jpg path/to/img2.jpg
+python demo/demo_xfeat.py
+python demo/demo_xfeat.py path/to/img1.jpg path/to/img2.jpg
 # 半稠密匹配
-python demo_xfeat.py --star
+python demo/demo_xfeat.py --star
+
+# LineFeat 直线特征与跨图匹配 demo
+python demo/demo_linefeat.py --pair-idx 0
+
+# 探索实验：直线邻域仿射对齐与条带匹配实验
+python demo/demo_neighborhood_matching.py
+
+# 训练 Line-Transformer 直线匹配网络
+python train_linefeat.py --epochs 10 --lr 1e-4 --save-dir checkpoints/linefeat
+
+# 工具脚本：Structured3D 数据集多线程断点下载、解压与读取检查
+python tools/download_structured3d.py
+python tools/unzip_structured3d.py Structured3D_perspective_full_00.zip
+python tools/read_structured3d.py            # 读取视点并导出 5 图拼贴可视化
+python tools/read_structured3d.py --pair     # 检查同房间双视点相对位姿与基线
+python tools/read_structured3d.py --stats-only
+python tools/generate_line_gt.py             # 提取双视点直线匹配真值并导出配对图与 JSON
+python tools/build_line_gt_dataset.py        # 多进程对全量数据集预计算直线匹配真值库 (15秒)
 
 # 指定图片做语义分割
 python -m deeplab.infer path/to/image.jpg -o outputs
@@ -54,34 +72,11 @@ python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
 | `*_overlay.png` | 原图与语义图半透明叠加 |
 | `feature_match/matches.jpg` | ORB 特征匹配连线可视化 |
 | `xfeat/matches.jpg` | XFeat 匹配连线可视化 |
+| `linefeat/*_ground_truth.jpg` | 3D 线框投影遮挡剔除真值匹配图 |
+| `linefeat/*_lsd_semantic_matches.jpg` | LSD 直线语义门控匹配图 |
+| `linefeat/neighborhood_alignment_experiment.jpg` | 直线局部邻域对齐与残差分析图 |
 
 语义分割 demo 会打印各类像素数；特征匹配 demo 会打印关键点与匹配数量。
-
-## 预训练权重
-
-首次加载时由 torchvision **自动下载**到：
-
-`~/.cache/torch/hub/checkpoints/`
-
-| Backbone | 权重 URL |
-|----------|----------|
-| ResNet-50 | https://download.pytorch.org/models/deeplabv3_resnet50_coco-cd0a2569.pth |
-| ResNet-101 | https://download.pytorch.org/models/deeplabv3_resnet101_coco-586e9e4e.pth |
-
-也可手动下载上述文件后，用 `torch.load` 自行加载（当前默认走自动下载）。
-
-**类别**：`__background__` + PASCAL VOC 20 类（person、car、dog 等）。  
-若任务需要道路/建筑等标签，需换 Cityscapes 等权重或自行微调。
-
-## 原理简述
-
-DeepLabv3 对每个像素做分类：
-
-1. **Backbone**：用空洞卷积（atrous）提取较密的特征图，扩大感受野且不过度下采样。
-2. **ASPP**：多空洞率并行卷积 + 图像级池化，融合多尺度上下文。
-3. **输出头**：得到 `[C, H, W]` logits，`argmax` 得到类别 id，再最近邻还原到原图尺寸。
-
-本仓库不训练模型，只封装**推理**（加载、预处理、后处理与可视化）。核心流程见 `deeplab/utils.py` 中的 `predict_mask`。
 
 ## 目录结构
 
@@ -90,11 +85,35 @@ DeepLabv3 对每个像素做分类：
 ├── README.md
 ├── requirements.txt
 ├── .gitignore
-├── demo.py                 # DeepLabv3 样例入口
-├── demo_feature_match.py   # ORB 特征匹配入口
-├── demo_xfeat.py           # XFeat 匹配入口
-├── deeplab/                # 语义分割
-├── feature_match/          # ORB
+├── train_linefeat.py           # Line-Transformer 端到端直线匹配训练脚本
+├── LineFeat/                   # 直线特征核心算法包
+│   ├── __init__.py             # 统一导出接口
+│   ├── detector.py             # 2D LSD 直线检测与过滤
+│   ├── descriptor.py           # 深度特征图沿线网格采样与汇聚
+│   ├── matcher.py              # 直线匹配器 (MNN, Lowe 比值检验, 语义门控)
+│   ├── neighborhood.py         # 局部邻域仿射变换、条带提取与对齐度量
+│   ├── model.py                # LineMatcherNet (CNN + 几何编码 + Transformer + Sinkhorn)
+│   ├── loss.py                 # LineMatchingLoss (NLL 损失与评价指标)
+│   ├── dataset.py              # LineFeatPairDataset (PyTorch 训练/验证数据集)
+│   └── ground_truth.py         # 3D 线框投影与视锥裁剪、深度遮挡剔除引擎
+├── dataset/                    # 数据集抽象层
+│   └── structured3d_pair.py    # Structured3D 基础视图对读取
+├── demo/                       # 演示与实验入口
+│   ├── demo_deeplab.py         # DeepLabv3 语义分割样例
+│   ├── demo_feature_match.py   # ORB 特征匹配样例
+│   ├── demo_xfeat.py           # XFeat 匹配样例
+│   ├── demo_linefeat.py        # LineFeat 端到端直线匹配验证
+│   └── demo_neighborhood_matching.py # 直线邻域变换对齐实验
+├── tools/                      # 数据集下载、解压与实用脚本
+│   ├── download_structured3d.py# Structured3D 断点续传多线程下载
+│   ├── unzip_structured3d.py   # Structured3D 安全解压脚本
+│   ├── read_structured3d.py    # Structured3D 数据集读取、相机模型与线段投影
+│   ├── generate_line_gt.py     # 单像对 3D 几何投影与真值匹配可视化导出
+│   └── build_line_gt_dataset.py# 多进程全量预计算真值库构建工具
+├── docs/                       # 参考文献与研读
+│   └── papers/                 # XFeat (CVPR 2024), PRS-Net (TVCG 2021)
+├── deeplab/                    # 语义分割核心实现
+├── feature_match/              # 特征匹配核心实现（ORB）
 └── third_party/
     ├── README.md
     └── accelerated_features/   # 官方 XFeat（本地 clone，不入库）
