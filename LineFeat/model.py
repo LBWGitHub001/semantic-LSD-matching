@@ -317,3 +317,37 @@ class LineMatcherNet(nn.Module):
             "desc0": desc0,
             "desc1": desc1,
         }
+
+    def forward_from_vis_tokens(
+        self,
+        vis0: torch.Tensor,
+        vis1: torch.Tensor,
+        lines0: torch.Tensor,
+        lines1: torch.Tensor,
+        image_size: Tuple[int, int] = (720, 1280),
+    ) -> dict[str, torch.Tensor]:
+        """
+        Fast forward pass directly from precomputed visual embeddings.
+        Bypasses CNN backbone and image loading entirely.
+        """
+        geom0 = self.geometry_encoder(lines0, image_size)
+        geom1 = self.geometry_encoder(lines1, image_size)
+        tokens0 = vis0 + geom0
+        tokens1 = vis1 + geom1
+
+        desc0, desc1 = tokens0, tokens1
+        for layer in self.layers:
+            desc0, desc1 = layer(desc0, desc1)
+
+        desc0 = F.normalize(self.proj0(desc0), p=2, dim=-1)
+        desc1 = F.normalize(self.proj1(desc1), p=2, dim=-1)
+
+        scores = torch.bmm(desc0, desc1.transpose(1, 2))
+        log_P = log_optimal_transport(scores, iters=self.sinkhorn_iters)
+
+        return {
+            "log_assignment": log_P,
+            "scores": scores,
+            "desc0": desc0,
+            "desc1": desc1,
+        }
