@@ -32,11 +32,16 @@ def main() -> None:
     )
     print(f"[*] Initialized LineMatchPipeline on device: {pipeline.device}")
 
-    # 2. Get sample test images from dataset
-    ds = LineFeatPairDataset(split="val", min_matches=5)
-    sample = ds[0]
-    img_path0 = sample["image0_path"]
-    img_path1 = sample["image1_path"]
+    # 2. Test images (using the curated test samples)
+    img_path0 = ROOT / "data" / "test_samples" / "pair1_small_rotation" / "image0.png"
+    img_path1 = ROOT / "data" / "test_samples" / "pair1_small_rotation" / "image1.png"
+
+    # Fallback to dataset if test_samples not yet present
+    if not img_path0.exists():
+        ds = LineFeatPairDataset(split="val", min_matches=5)
+        sample = ds[0]
+        img_path0 = Path(sample["image0_path"])
+        img_path1 = Path(sample["image1_path"])
 
     print(f"\n[1] Matching two images:")
     print(f"    Image 0: {img_path0}")
