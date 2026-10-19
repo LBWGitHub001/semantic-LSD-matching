@@ -2,15 +2,20 @@
 Demo: classical feature matching (ORB).
 
 Usage (from project root):
-  python demo_feature_match.py
-  python demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
+  python demo/demo_feature_match.py
+  python demo/demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 import urllib.request
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import cv2
 import numpy as np
@@ -32,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output-dir",
         type=Path,
-        default=Path("outputs/feature_match"),
+        default=ROOT / "outputs" / "feature_match",
         help="Output directory (default: outputs/feature_match)",
     )
     parser.add_argument(

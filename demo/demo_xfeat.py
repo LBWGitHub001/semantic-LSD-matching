@@ -6,8 +6,8 @@ Requires official code at:
   (git clone https://github.com/verlab/accelerated_features.git)
 
 Usage (from project root):
-  python demo_xfeat.py
-  python demo_xfeat.py path/to/img1.jpg path/to/img2.jpg
+  python demo/demo_xfeat.py
+  python demo/demo_xfeat.py path/to/img1.jpg path/to/img2.jpg
 """
 
 from __future__ import annotations
@@ -20,7 +20,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 XFEAT_ROOT = ROOT / "third_party" / "accelerated_features"
 
 SAMPLE_URL = "https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg"
@@ -53,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output-dir",
         type=Path,
-        default=Path("outputs/xfeat"),
+        default=ROOT / "outputs" / "xfeat",
         help="Output directory (default: outputs/xfeat)",
     )
     parser.add_argument(

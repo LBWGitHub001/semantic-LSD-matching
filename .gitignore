@@ -14,6 +14,8 @@ venv/
 # Model / data / outputs
 *.pth
 *.pt
+*.zip
+Structured3D*/
 checkpoints/
 data/
 outputs/

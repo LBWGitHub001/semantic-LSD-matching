@@ -16,5 +16,5 @@ git clone https://github.com/verlab/accelerated_features.git third_party/acceler
 然后在项目根目录运行：
 
 ```bash
-python demo_xfeat.py
+python demo/demo_xfeat.py
 ```
