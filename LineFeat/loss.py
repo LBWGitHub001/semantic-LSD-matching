@@ -124,9 +124,10 @@ class MaskedMatrixLoss(nn.Module):
         else:
             nll_loss = torch.tensor(0.0, device=device)
 
-        # 3. Masked BCE on active (N0 x N1) subregion
-        pred_sub = matrix_255[:, :N0, :N1].clamp(1e-6, 1.0 - 1e-6)
-        bce_loss = F.binary_cross_entropy(pred_sub, target_sub)
+        # 3. Masked BCE on active (N0 x N1) subregion in FP32
+        pred_sub = matrix_255[:, :N0, :N1].float().clamp(1e-6, 1.0 - 1e-6)
+        with torch.amp.autocast(device.type, enabled=False):
+            bce_loss = F.binary_cross_entropy(pred_sub, target_sub.float())
 
         total_loss = nll_loss + self.lambda_bce * bce_loss
 
