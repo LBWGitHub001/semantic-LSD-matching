@@ -56,6 +56,16 @@ matrix_255 = out["matrix_255"]        # shape: (1, 255, 255)
 p_sub = out["P_sub"]                  # shape: (1, 10, 12)
 ```
 
+#### 模型参数训练与冻结划分表
+| 模块 | 参数量 | 训练状态 | 职责 |
+| :--- | :---: | :---: | :--- |
+| `backbone` (ResNet-50) | 1.44 M | **❄️ 冻结** | ImageNet 边缘与纹理提取，防止白墙表征坍塌，支撑 50 倍缓存加速 |
+| `sampler.proj` | 0.08 M | **🔥 训练** | 512 维到 128 维自适应视觉特征降维 |
+| `geometry_encoder` | 0.01 M | **🔥 训练** | 坐标、长度与 $(\sin 2\theta, \cos 2\theta)$ 几何位置编码 |
+| `layers` (Transformer) | 0.80 M | **🔥 训练** | 图内拓扑结构理解 + 跨视角候选线对比匹配 |
+| `proj0`, `proj1` | 0.03 M | **🔥 训练** | 最终 L2 归一化内积流形映射 |
+| `log_optimal_transport` | 0 (无参数) | **⚙️ 算法** | 对数域 Sinkhorn 求解最优双射分配（带 Dustbin） |
+
 ---
 
 ### 2. 高层推理流水线：`LineMatchPipeline`
