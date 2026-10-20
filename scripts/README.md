@@ -13,6 +13,7 @@
 | [`demo_mask_network.py`](demo_mask_network.py) | **几何场演示** | `python scripts/demo_mask_network.py` | `MaskLineFeatMatchNet` |
 | [`run_unit_tests.py`](run_unit_tests.py) | **数学单元测试** | `python scripts/run_unit_tests.py` | `MaskLineFeatMatchNet` |
 | [`verify_toy_task.py`](verify_toy_task.py) | **极简可行性验证** | `python scripts/verify_toy_task.py` | `MaskLineFeatMatchNet` |
+| [`generate_synthetic_3d_dataset.py`](generate_synthetic_3d_dataset.py) | **3D建模多视角拍照数据生成** | `python scripts/generate_synthetic_3d_dataset.py` | - |
 | [`train.py`](train.py) | **网络训练与微调** | `python scripts/train.py --use-cache --amp` | `MaskLineFeatMatchNet` |
 | [`cache_line_features.py`](cache_line_features.py) | **32核特征预提取** | `python scripts/cache_line_features.py` | ResNet-50 骨干 |
 | [`sync_push.sh`](sync_push.sh) | **一键推送远程** | `./scripts/sync_push.sh` | - |
@@ -91,7 +92,27 @@
 
 ---
 
-### 6. [`train.py`](train.py)：端到端训练与微调脚本
+### 6. [`generate_synthetic_3d_dataset.py`](generate_synthetic_3d_dataset.py)：3D 建模与多视角拍照数据生成器
+* **设计意图**：构建参数化 3D 建筑场景（房间梁柱、门窗、桌椅、壁画），使用虚拟针孔相机从不同球面角度拍摄生成图像，并做精确 3D-2D 投影与可见性视锥裁剪，导出绝对 100% 正确配对的真值线对。
+* **核心参数**：
+  - `--num-pairs`：生成对数（默认 1，供查看微调；满意后设为 100、500 批量生成）；
+  - `--rotation-deg`：双视角相对旋转角度（默认 22.0°）；
+  - `--distance`：相机离房间中心距离（默认 3.6m）；
+  - `--elevation`：相机仰角（默认 22.0°）；
+  - `--noise-2d`：添加 2D 端点高斯噪点（默认 0.0，用于抗噪测试）；
+  - `--out-dir`：输出路径（默认 `data/synthetic_3d_dataset/pair_0001`）。
+* **运行命令**：
+  ```bash
+  # 1. 生成单对用于检查与微调
+  python scripts/generate_synthetic_3d_dataset.py
+
+  # 2. 批量生成 100 对完整数据集
+  python scripts/generate_synthetic_3d_dataset.py --num-pairs 100 --out-dir data/synthetic_3d_dataset
+  ```
+
+---
+
+### 7. [`train.py`](train.py)：端到端训练与微调脚本
 * **设计意图**：在 Structured3D 投影线段真值库上训练匹配模型。
 * **主要参数**：
   - `--model-type`：模型架构，`mask`（默认 `MaskLineFeatMatchNet`）或 `linefeat`；

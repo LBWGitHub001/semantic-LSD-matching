@@ -132,8 +132,22 @@ class LineMatchPipeline:
             if weights_path.is_file():
                 ckpt = torch.load(weights_path, map_location=self.device)
                 state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
-                # strict=False allows flexible transfer between compatible layers
-                self.model.load_state_dict(state_dict, strict=False)
+
+                # Smart cross-architecture weight transfer
+                model_state = self.model.state_dict()
+                filtered_state = {}
+                for k, v in state_dict.items():
+                    if k in model_state:
+                        if model_state[k].shape == v.shape:
+                            filtered_state[k] = v
+                        elif k == "backbone.0.weight" and v.shape[1] == 3 and model_state[k].shape[1] == 6:
+                            # Transfer 3-channel Conv1 to 6-channel Conv1
+                            adapted_conv = model_state[k].clone()
+                            adapted_conv[:, :3] = v
+                            adapted_conv[:, 3:] = v.mean(dim=1, keepdim=True).repeat(1, 3, 1, 1)
+                            filtered_state[k] = adapted_conv
+
+                self.model.load_state_dict(filtered_state, strict=False)
 
         self.mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
