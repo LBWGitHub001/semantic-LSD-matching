@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.read_structured3d import (
+from LineFeat.read_structured3d import (
     STRUCTURED3D_CLASSES,
     Camera,
     Structured3DDataset,

@@ -18,7 +18,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
-from tools.read_structured3d import Camera, STRUCTURED3D_CLASSES
+from LineFeat.read_structured3d import Camera, STRUCTURED3D_CLASSES
 
 
 class LineFeatPairDataset(Dataset):

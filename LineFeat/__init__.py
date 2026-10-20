@@ -1,29 +1,23 @@
 """
-LineFeat: Semantic & Geometric 2D Line Segment Matching Package.
+LineFeat: Cross-Image 2D Line Segment Matching Package.
 
-Consolidated modules for:
-  - 2D Line Segment Detection (LSD)
-  - Deep Learning Line Descriptor Extraction
-  - Feature Matching with MNN, Lowe's Ratio Test, & Semantic Gating
-  - Ground-Truth Generation from 3D Wireframes & Depth Occlusion
-  - PyTorch Dataset for End-to-End Training & Evaluation
+Focused entirely on cross-view matching of pre-detected 2D line segments:
+  - LineMatcherNet: Line-Transformer with Optimal Transport (Sinkhorn)
+  - MaskLineMatcherNet: Continuous Geometry-Field (EDT+AFM) with canonical 255x255 match matrix
+  - LineMatchPipeline: High-level Python API for pure line matching
+  - Continuous Geometric Fields (EDT + AFM) generator
+  - Supervised Line Matching Loss Functions
+  - Ground-truth generation and PyTorch datasets
 """
 
 from __future__ import annotations
 
-from LineFeat.detector import LineDetector
-from LineFeat.descriptor import LineDescriptor
 from LineFeat.matcher import LineMatcher, get_distinct_colors
 from LineFeat.dataset import LineFeatPairDataset, collate_line_pairs
 from LineFeat.model import LineMatcherNet
 from LineFeat.loss import LineMatchingLoss, MaskedMatrixLoss
 from LineFeat.geometric_field import compute_geometry_field_np, create_6ch_input_tensor
 from LineFeat.mask_line_matcher import MaskLineMatcherNet
-from LineFeat.neighborhood import (
-    LineNeighborhoodTransformer,
-    compute_strip_zncc,
-    extract_deep_strip_descriptor,
-)
 from LineFeat.pipeline import LineMatchPipeline, LineMatchResult
 from LineFeat.ground_truth import (
     GTLineMatch,
@@ -33,21 +27,16 @@ from LineFeat.ground_truth import (
 )
 
 __all__ = [
-    "LineDetector",
-    "LineDescriptor",
     "LineMatcher",
     "LineMatcherNet",
+    "MaskLineMatcherNet",
     "LineMatchingLoss",
     "MaskedMatrixLoss",
-    "MaskLineMatcherNet",
     "compute_geometry_field_np",
     "create_6ch_input_tensor",
     "LineMatchPipeline",
     "LineMatchResult",
     "get_distinct_colors",
-    "LineNeighborhoodTransformer",
-    "compute_strip_zncc",
-    "extract_deep_strip_descriptor",
     "LineFeatPairDataset",
     "collate_line_pairs",
     "GTLineMatch",
@@ -56,4 +45,4 @@ __all__ = [
     "extract_ground_truth_line_matches",
 ]
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

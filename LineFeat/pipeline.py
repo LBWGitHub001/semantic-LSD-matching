@@ -18,7 +18,6 @@ import cv2
 import numpy as np
 import torch
 
-from LineFeat.detector import LineDetector
 from LineFeat.matcher import LineMatcher
 from LineFeat.model import LineMatcherNet
 
@@ -85,34 +84,26 @@ class LineMatchPipeline:
         self,
         weights: str | Path = "checkpoints/linefeat/best_model.pth",
         device: str | torch.device | None = None,
-        min_line_length: float = 25.0,
         similarity_threshold: float = 0.85,
         d_model: int = 128,
         num_layers: int = 4,
-        scale: float = 0.8,
     ) -> None:
         """
         Args:
             weights: Path to trained LineMatcherNet checkpoint.
             device: 'cuda', 'cpu', or None (auto-detect).
-            min_line_length: Minimum pixel length for 2D LSD line detection.
             similarity_threshold: Minimum cosine similarity threshold for matching.
             d_model: Feature dimension of LineMatcherNet.
             num_layers: Number of Transformer layers.
-            scale: Image downscale factor for LSD detector.
         """
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
-        self.min_line_length = min_line_length
         self.similarity_threshold = similarity_threshold
 
-        # 1. Detector
-        self.detector = LineDetector(scale=scale)
-
-        # 2. Model
+        # Model
         self.model = LineMatcherNet(
             d_model=d_model,
             num_layers=num_layers,
@@ -156,37 +147,32 @@ class LineMatchPipeline:
         self,
         image0: str | Path | np.ndarray,
         image1: str | Path | np.ndarray,
-        lines0: np.ndarray | None = None,
-        lines1: np.ndarray | None = None,
-        min_length: float | None = None,
+        lines0: np.ndarray,
+        lines1: np.ndarray,
         threshold: float | None = None,
     ) -> LineMatchResult:
         """
-        Match line segments between image0 and image1.
+        Pure Line Matching between image0 and image1 using pre-detected lines.
 
         Args:
             image0: File path or BGR numpy array of View 0.
             image1: File path or BGR numpy array of View 1.
-            lines0: Optional (N0, 4) line segment coordinates [x1, y1, x2, y2].
-                    If None, automatically detected via LSD.
-            lines1: Optional (N1, 4) line segment coordinates.
-            min_length: Optional override for minimum line length.
+            lines0: (N0, 4) line segment coordinates [x1, y1, x2, y2].
+            lines1: (N1, 4) line segment coordinates [x1, y1, x2, y2].
             threshold: Optional override for cosine similarity threshold.
 
         Returns:
             LineMatchResult object containing matches and visualization methods.
         """
-        min_len = min_length if min_length is not None else self.min_line_length
+        if lines0 is None or lines1 is None:
+            raise ValueError("lines0 and lines1 must be provided as (N, 4) line segment coordinates.")
+
+        lines0 = np.asarray(lines0, dtype=np.float32)
+        lines1 = np.asarray(lines1, dtype=np.float32)
         thresh = threshold if threshold is not None else self.similarity_threshold
 
         bgr0, t0 = self._prepare_image(image0)
         bgr1, t1 = self._prepare_image(image1)
-
-        # Detect lines if not provided
-        if lines0 is None:
-            lines0 = self.detector.detect(bgr0, min_length=min_len, margin=8)
-        if lines1 is None:
-            lines1 = self.detector.detect(bgr1, min_length=min_len, margin=8)
 
         N0, N1 = len(lines0), len(lines1)
         if N0 == 0 or N1 == 0:

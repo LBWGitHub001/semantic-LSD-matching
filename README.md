@@ -1,140 +1,123 @@
-# semantic-LSD-match
+# LineFeat: 跨视角 2D 直线特征匹配系统
 
-语义线段匹配相关工程。当前仓库已接入基于 **PyTorch / torchvision** 的 **DeepLabv3** 语义分割推理模块，用于从图像得到像素级语义标签图。
+基于深度学习与最优传输（Optimal Transport）的跨视角已知直线特征匹配算法库。  
+核心任务：**在直线已由上游完成检测的前提下，直接输入图像与直线坐标，实现高精度的端到端跨视角直线配对。**
 
-远程仓库：<https://github.com/LBWGitHub001/semantic-LSD-matching.git>
+---
 
-## 功能概览
+## 一、系统架构与核心特性
 
-- 使用 torchvision 预训练 DeepLabv3（COCO + PASCAL VOC 21 类）
-- 支持 backbone：`resnet50` / `resnet101` / `mobilenet_v3_large`
-- 命令行推理：输出彩色 mask 与原图叠加图
-- 一键 demo：自动下载样例图并跑通流程
-- **特征匹配 demo（ORB）**：两图关键点匹配并可视化连线
-- **XFeat demo（CVPR 2024）**：轻量学习型特征匹配（官方代码在 `third_party/`）
+本项目提供两套互补的前沿直线匹配网络模型：
 
-## 环境依赖
+1. **`LineMatcherNet` (Line-Transformer + Sinkhorn)**:
+   - 提取 ResNet 50 稠密特征，沿线段均匀插值采样纹理特征；
+   - 结合中心位置、长度与 $(\sin 2\theta, \cos 2\theta)$ 连续角度几何编码；
+   - 4 层交替 Self-Attention（图内拓扑）与 Cross-Attention（跨视角互查）；
+   - 对数域 Sinkhorn 求解最优传输分配矩阵，并配有 Dustbin 垃圾桶丢弃未配对/遮挡线段。
 
-- Python 3.9+
-- PyTorch、torchvision、Pillow、numpy、opencv-python
+2. **`MaskLineMatcherNet` (连续几何场 + 掩膜引导 + 255x255 规范矩阵)**:
+   - 输入 6 通道张量：`RGB(3) + 归一化欧氏距离场 EDT(1) + 吸引朝向场 AFM(2)`，彻底避免离散数字标量偏置；
+   - 掩膜空间池化（Mask-Pooling）：利用线段掩膜在特征图上聚合各线段专属 Token，严格确定性绑定 ID；
+   - 规范输出：直接映射至固定 $(255, 255)$ 匹配概率矩阵，具备严格的数学**置换等变性（Permutation Equivariance）**。
 
-```bash
-pip install -r requirements.txt
-```
+---
 
-建议安装与本机 CUDA 匹配的 PyTorch；无 GPU 时加 `--cpu` 即可。  
-特征匹配 demo 只需 `opencv-python`（可自行安装，本仓库不改动你的 conda 环境）。
+## 二、精简目录结构
 
-## 快速开始
-
-```bash
-# DeepLabv3 语义分割 demo
-python demo/demo_deeplab.py
-
-# 特征匹配 demo（ORB，无参数：下载样例图并做旋转缩放，再匹配）
-python demo/demo_feature_match.py
-python demo/demo_feature_match.py path/to/img1.jpg path/to/img2.jpg
-
-# XFeat（需先 clone 官方仓库到 third_party/accelerated_features）
-python demo/demo_xfeat.py
-python demo/demo_xfeat.py path/to/img1.jpg path/to/img2.jpg
-# 半稠密匹配
-python demo/demo_xfeat.py --star
-
-# LineFeat 直线特征与跨图匹配 demo
-python demo/demo_linefeat.py --pair-idx 0
-
-# 探索实验：直线邻域仿射对齐与条带匹配实验
-python demo/demo_neighborhood_matching.py
-
-# 训练 Line-Transformer 直线匹配网络
-python train_linefeat.py --epochs 10 --lr 1e-4 --save-dir checkpoints/linefeat
-
-# 工具脚本：Structured3D 数据集多线程断点下载、解压与读取检查
-python tools/download_structured3d.py
-python tools/unzip_structured3d.py Structured3D_perspective_full_00.zip
-python tools/read_structured3d.py            # 读取视点并导出 5 图拼贴可视化
-python tools/read_structured3d.py --pair     # 检查同房间双视点相对位姿与基线
-python tools/read_structured3d.py --stats-only
-python tools/generate_line_gt.py             # 提取双视点直线匹配真值并导出配对图与 JSON
-python tools/build_line_gt_dataset.py        # 多进程对全量数据集预计算直线匹配真值库 (15秒)
-
-# 指定图片做语义分割
-python -m deeplab.infer path/to/image.jpg -o outputs
-python -m deeplab.infer path/to/image.jpg -b resnet101 --cpu
-```
-
-输出默认写到 `outputs/`：
-
-| 文件 | 说明 |
-|------|------|
-| `*_mask.png` | VOC 调色板着色的语义图 |
-| `*_overlay.png` | 原图与语义图半透明叠加 |
-| `feature_match/matches.jpg` | ORB 特征匹配连线可视化 |
-| `xfeat/matches.jpg` | XFeat 匹配连线可视化 |
-| `linefeat/*_ground_truth.jpg` | 3D 线框投影遮挡剔除真值匹配图 |
-| `linefeat/*_lsd_semantic_matches.jpg` | LSD 直线语义门控匹配图 |
-| `linefeat/neighborhood_alignment_experiment.jpg` | 直线局部邻域对齐与残差分析图 |
-
-语义分割 demo 会打印各类像素数；特征匹配 demo 会打印关键点与匹配数量。
-
-## 目录结构
-
-```
-.
-├── README.md
+```text
+semantic-LSD-matching/
+├── LineFeat/                       # 【核心算法包】纯直线匹配模型库（全部自包含）
+│   ├── __init__.py                 # 模块统一对外导出
+│   ├── model.py                    # LineMatcherNet 网络架构
+│   ├── mask_line_matcher.py        # MaskLineMatcherNet (6通道几何场 + 255x255矩阵)
+│   ├── geometric_field.py          # 高性能连续 EDT 与 AFM 几何场生成器 (OpenCV C++)
+│   ├── pipeline.py                 # 高层推理接口 LineMatchPipeline (纯匹配，零检测)
+│   ├── dataset.py                  # LineFeatPairDataset 数据集加载器
+│   ├── loss.py                     # LineMatchingLoss 与 MaskedMatrixLoss
+│   ├── matcher.py                  # 匹配后处理 (MNN, 阈值过滤) 与彩色连线可视化
+│   ├── ground_truth.py             # 3D线框投影与深度遮挡剔除真值引擎
+│   ├── read_structured3d.py        # Structured3D 相机位姿与数据解析器
+│   └── README.md                   # 算法包细节文档
+│
+├── scripts/                        # 【统一工作台】所有的训练、测试、调用脚本全在此
+│   ├── train.py                    # 模型训练脚本 (支持缓存加速与AMP混合精度)
+│   ├── test_matching.py            # 在精选测试集上做纯匹配评估 (Mode A & Mode B)
+│   ├── demo_mask_network.py        # 演示 6通道输入与 255x255 规范矩阵输出
+│   ├── example_call.py             # 极简 5 行 Python 调用纯匹配示例
+│   ├── run_unit_tests.py           # 严谨数学单元测试 (置换等变性与可微性验证)
+│   ├── cache_line_features.py      # 32核多线程特征预提取加速器
+│   ├── build_line_gt_dataset.py    # 3D Wireframe 真值库预计算工具
+│   ├── download_structured3d.py    # Structured3D 多线程断点下载工具
+│   └── unzip_structured3d.py       # 自动解压工具
+│
+├── data/                           # 数据集
+│   ├── test_samples/               # 精选 4 组测试集 (包含每组的 lines0.json, lines1.json, gt_matches.json)
+│   └── line_gt_dataset/            # 全量真值匹配索引与标注
+│
+├── checkpoints/                    # 权重目录
+│   └── linefeat/best_model.pth     # 训练最优权重
+│
+├── outputs/                        # 输出可视化成果
+│   ├── pure_matching/              # GT vs 预测连线对比图 (绿色正确，红色误配)
+│   └── field_network/              # 连续几何场与 255x255 概率热力图
+│
 ├── requirements.txt
-├── .gitignore
-├── train_linefeat.py           # Line-Transformer 端到端直线匹配训练脚本
-├── LineFeat/                   # 直线特征核心算法包
-│   ├── __init__.py             # 统一导出接口
-│   ├── detector.py             # 2D LSD 直线检测与过滤
-│   ├── descriptor.py           # 深度特征图沿线网格采样与汇聚
-│   ├── matcher.py              # 直线匹配器 (MNN, Lowe 比值检验, 语义门控)
-│   ├── neighborhood.py         # 局部邻域仿射变换、条带提取与对齐度量
-│   ├── model.py                # LineMatcherNet (CNN + 几何编码 + Transformer + Sinkhorn)
-│   ├── loss.py                 # LineMatchingLoss (NLL 损失与评价指标)
-│   ├── dataset.py              # LineFeatPairDataset (PyTorch 训练/验证数据集)
-│   └── ground_truth.py         # 3D 线框投影与视锥裁剪、深度遮挡剔除引擎
-├── dataset/                    # 数据集抽象层
-│   └── structured3d_pair.py    # Structured3D 基础视图对读取
-├── demo/                       # 演示与实验入口
-│   ├── demo_deeplab.py         # DeepLabv3 语义分割样例
-│   ├── demo_feature_match.py   # ORB 特征匹配样例
-│   ├── demo_xfeat.py           # XFeat 匹配样例
-│   ├── demo_linefeat.py        # LineFeat 端到端直线匹配验证
-│   └── demo_neighborhood_matching.py # 直线邻域变换对齐实验
-├── tools/                      # 数据集下载、解压与实用脚本
-│   ├── download_structured3d.py# Structured3D 断点续传多线程下载
-│   ├── unzip_structured3d.py   # Structured3D 安全解压脚本
-│   ├── read_structured3d.py    # Structured3D 数据集读取、相机模型与线段投影
-│   ├── generate_line_gt.py     # 单像对 3D 几何投影与真值匹配可视化导出
-│   └── build_line_gt_dataset.py# 多进程全量预计算真值库构建工具
-├── docs/                       # 参考文献与研读
-│   └── papers/                 # XFeat (CVPR 2024), PRS-Net (TVCG 2021)
-├── deeplab/                    # 语义分割核心实现
-├── feature_match/              # 特征匹配核心实现（ORB）
-└── third_party/
-    ├── README.md
-    └── accelerated_features/   # 官方 XFeat（本地 clone，不入库）
+└── README.md
 ```
 
-## 代码中调用
+---
+
+## 三、快速使用指南
+
+### 1. 运行纯匹配测试（零检测器，纯测匹配网络）
+```bash
+# 在精选测试集上运行纯匹配评估（对比真值输出准确率与召回率）
+/home/lbw/Apps/anaconda3/envs/LSD-matching/bin/python scripts/test_matching.py --mode A
+
+# 测试含干扰线的 Mode B
+/home/lbw/Apps/anaconda3/envs/LSD-matching/bin/python scripts/test_matching.py --mode B
+```
+
+### 2. 运行新型网络演示（6 通道输入 -> 255x255 规范矩阵）
+```bash
+/home/lbw/Apps/anaconda3/envs/LSD-matching/bin/python scripts/demo_mask_network.py
+```
+
+### 3. 运行模型数学单元测试（置换等变性验证）
+```bash
+/home/lbw/Apps/anaconda3/envs/LSD-matching/bin/python scripts/run_unit_tests.py
+```
+
+### 4. 重新训练模型
+```bash
+# 极速缓存训练模式（每轮仅需 ~35 秒）
+/home/lbw/Apps/anaconda3/envs/LSD-matching/bin/python scripts/train.py --use-cache --epochs 15 --amp
+```
+
+---
+
+## 四、Python 代码中直接调用纯匹配（极简 5 行）
+
+已提供范例 [`scripts/example_call.py`](scripts/example_call.py)：
 
 ```python
-from deeplab import build_deeplabv3
-from deeplab.utils import load_image, predict_mask, colorize_mask
+import json, numpy as np
+from LineFeat import LineMatchPipeline
 
-model, weights = build_deeplabv3(backbone="resnet101", pretrained=True)
-image = load_image("your.jpg")
-mask = predict_mask(model, image, weights)
-colorize_mask(mask).save("mask.png")
+# 1. 外部读入已检测好的直线端点坐标 (N0, 4) 与 (N1, 4)
+lines0 = np.array(json.load(open("data/test_samples/pair1_small_rotation/mode_a_pure_permuted/lines0.json")), dtype=np.float32)
+lines1 = np.array(json.load(open("data/test_samples/pair1_small_rotation/mode_a_pure_permuted/lines1.json")), dtype=np.float32)
+
+# 2. 初始化纯匹配流水线
+pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth")
+
+# 3. 执行纯匹配推断（内部零检测器，直接匹配给定坐标）
+result = pipeline.match("image0.png", "image1.png", lines0=lines0, lines1=lines1, threshold=0.70)
+
+# 4. 获取配对对索引与得分
+for rank, (i, j, score) in enumerate(result.matches):
+    print(f"Match #{rank+1}: Line0[{i}] <--> Line1[{j}] | Score: {score:.3f}")
+
+# 5. 保存结果连线图
+result.save_visualization("outputs/pure_matching/result.jpg")
 ```
-
-## License 与引用
-
-DeepLabv3 论文：
-
-> Chen et al. *Rethinking Atrous Convolution for Semantic Image Segmentation*. arXiv:1706.05587, 2017.
-
-模型实现与权重来自 [torchvision](https://pytorch.org/vision/stable/models/deeplabv3.html)。

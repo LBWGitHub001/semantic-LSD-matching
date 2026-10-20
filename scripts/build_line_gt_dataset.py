@@ -36,14 +36,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.read_structured3d import (
+from LineFeat.read_structured3d import (
     STRUCTURED3D_CLASSES,
     Camera,
     Structured3DDataset,
     Structured3DScene,
     Structured3DView,
 )
-from tools.generate_line_gt import check_line_visibility_and_project, query_line_semantic
+from LineFeat.ground_truth import check_line_visibility_and_project, query_line_semantic
 
 
 def process_single_scene(
