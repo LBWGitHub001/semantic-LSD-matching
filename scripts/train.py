@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from LineFeat import LineFeatPairDataset, LineMatcherNet, LineMatchingLoss
+from LineFeat import LineFeatPairDataset, LineMatcherNet, MaskLineFeatMatchNet, LineMatchingLoss, MaskedMatrixLoss
 
 
 class CachedLineFeatureDataset(Dataset):
@@ -61,6 +61,8 @@ class CachedLineFeatureDataset(Dataset):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train LineFeat Line-Transformer Matcher")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--model-type", type=str, default="mask", choices=["mask", "linefeat"],
+                        help="Model architecture: 'mask' (MaskLineFeatMatchNet, default) or 'linefeat' (LineMatcherNet)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--min-matches", type=int, default=3, help="Minimum GT matches per pair")
@@ -79,8 +81,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def evaluate(
-    model: LineMatcherNet,
-    criterion: LineMatchingLoss,
+    model: torch.nn.Module,
+    criterion: torch.nn.Module,
     dataloader: DataLoader,
     device: torch.device,
     use_cache: bool = False,
@@ -204,13 +206,29 @@ def train() -> None:
     print(f"      Validation Pairs: {len(val_dataset)}")
 
     # 2. Model & Loss
-    print("\n[2/4] Initializing LineMatcherNet...")
-    model = LineMatcherNet(
-        d_model=args.d_model,
-        num_layers=args.num_layers,
-        nhead=4,
-        freeze_backbone=True,
-    ).to(device)
+    if args.model_type == "mask":
+        print("\n[2/4] Initializing MaskLineFeatMatchNet (6-Channel EDT+AFM, 255x255 Output)...")
+        model = MaskLineFeatMatchNet(
+            d_model=args.d_model,
+            num_layers=args.num_layers,
+            nhead=4,
+            freeze_backbone_stages=1,
+        ).to(device)
+    else:
+        print("\n[2/4] Initializing LineMatcherNet...")
+        model = LineMatcherNet(
+            d_model=args.d_model,
+            num_layers=args.num_layers,
+            nhead=4,
+            freeze_backbone=True,
+        ).to(device)
+
+    if args.use_cache and len(train_dataset) > 0:
+        sample0 = train_dataset[0]
+        cache_dim = sample0["vis0"].shape[-1]
+        if cache_dim != args.d_model:
+            print(f"[*] Adapting feature cache dimension: {cache_dim} -> {args.d_model}")
+            model._cache_proj = torch.nn.Linear(cache_dim, args.d_model).to(device)
 
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())

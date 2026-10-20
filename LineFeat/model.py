@@ -332,6 +332,13 @@ class LineMatcherNet(nn.Module):
         """
         geom0 = self.geometry_encoder(lines0, image_size)
         geom1 = self.geometry_encoder(lines1, image_size)
+
+        if vis0.shape[-1] != self.d_model:
+            if not hasattr(self, "_cache_proj"):
+                self._cache_proj = nn.Linear(vis0.shape[-1], self.d_model).to(lines0.device)
+            vis0 = self._cache_proj(vis0)
+            vis1 = self._cache_proj(vis1)
+
         tokens0 = vis0 + geom0
         tokens1 = vis1 + geom1
 

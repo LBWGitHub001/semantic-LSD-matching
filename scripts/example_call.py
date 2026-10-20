@@ -46,17 +46,17 @@ def main() -> None:
     gt_dict = {m["idx0"]: m["idx1"] for m in gt_matches}
 
     print("=" * 65)
-    print("      LineFeat Pure Matching Call Example (No Detector)")
+    print("  LineFeat Pure Matching Example (Default: MaskLineFeatMatchNet)")
     print("=" * 65)
     print(f"[*] Input View 0 Lines: {len(lines0)} lines (given by user/GT)")
     print(f"[*] Input View 1 Lines: {len(lines1)} lines (given by user/GT)")
     print(f"[*] Ground Truth Matches: {len(gt_matches)} true correspondences")
 
-    # 3. Initialize Matcher Pipeline (loads trained Transformer on GPU)
-    pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth")
+    # 3. Initialize Matcher Pipeline (defaults to MaskLineFeatMatchNet)
+    pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth", model_type="mask")
 
     # 4. Pure Matching Call: supply lines0 and lines1 directly!
-    #    (Detector is 100% skipped, model runs only feature extraction + Transformer)
+    #    (Detector is 100% skipped, 6-channel EDT+AFM fields generated automatically)
     result = pipeline.match(
         image0=img0_path,
         image1=img1_path,
@@ -64,6 +64,11 @@ def main() -> None:
         lines1=lines1,
         threshold=0.70,
     )
+
+    if result.matrix_255 is not None:
+        print(f"[*] Canonical Match Matrix Shape: {result.matrix_255.shape} (255x255)")
+        active_sub = result.matrix_255[:len(lines0), :len(lines1)]
+        print(f"    Active submatrix max prob: {active_sub.max():.4f}, mean prob: {active_sub.mean():.4f}")
 
     # 5. Inspect and verify against Ground Truth
     print(f"\n[*] Model predicted {len(result)} matches:")

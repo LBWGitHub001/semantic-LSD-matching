@@ -1,9 +1,9 @@
 """
 LineFeat High-Level Inference Pipeline & API.
 
-Provides an easy-to-use, unified Python interface for cross-image line matching:
-  - Supports image file paths or in-memory numpy BGR arrays
-  - Automatic 2D line detection via LSD (or user-provided lines)
+Provides an easy-to-use, unified Python interface for pure cross-image line matching:
+  - Defaults to MaskLineFeatMatchNet (6-channel geometric fields + 255x255 canonical matrix)
+  - Pure matching on user-provided 2D line coordinates (zero detector dependency)
   - End-to-end Line-Transformer matching with trained weights
   - Built-in visualization and export utilities
 """
@@ -20,6 +20,7 @@ import torch
 
 from LineFeat.matcher import LineMatcher
 from LineFeat.model import LineMatcherNet
+from LineFeat.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
 
 
 @dataclass
@@ -34,6 +35,7 @@ class LineMatchResult:
     match_scores: np.ndarray  # (K,) Similarity score for each match
     image0: np.ndarray  # (H0, W0, 3) BGR
     image1: np.ndarray  # (H1, W1, 3) BGR
+    matrix_255: np.ndarray | None = None  # (255, 255) Canonical match probability matrix
 
     def __len__(self) -> int:
         return len(self.matches)
@@ -82,18 +84,22 @@ class LineMatchPipeline:
 
     def __init__(
         self,
-        weights: str | Path = "checkpoints/linefeat/best_model.pth",
+        weights: str | Path | None = "checkpoints/linefeat/best_model.pth",
         device: str | torch.device | None = None,
         similarity_threshold: float = 0.85,
+        model_type: str = "mask",
         d_model: int = 128,
         num_layers: int = 4,
     ) -> None:
         """
         Args:
-            weights: Path to trained LineMatcherNet checkpoint.
+            weights: Path to trained checkpoint (optional).
             device: 'cuda', 'cpu', or None (auto-detect).
             similarity_threshold: Minimum cosine similarity threshold for matching.
-            d_model: Feature dimension of LineMatcherNet.
+            model_type: Model architecture to use:
+                        'mask' or 'MaskLineFeatMatchNet' (default, 6-channel + 255x255 matrix),
+                        'linefeat' (legacy LineMatcherNet).
+            d_model: Feature dimension of Transformer.
             num_layers: Number of Transformer layers.
         """
         if device is None:
@@ -102,23 +108,32 @@ class LineMatchPipeline:
             self.device = torch.device(device)
 
         self.similarity_threshold = similarity_threshold
+        self.model_type = model_type.lower()
 
-        # Model
-        self.model = LineMatcherNet(
-            d_model=d_model,
-            num_layers=num_layers,
-            nhead=4,
-            freeze_backbone=True,
-        ).to(self.device).eval()
+        # Model instantiation
+        if self.model_type in ("mask", "masklinefeatmatchnet", "masklinematchernet", "mask_line_matcher"):
+            self.model = MaskLineFeatMatchNet(
+                d_model=d_model,
+                num_layers=num_layers,
+                nhead=4,
+                freeze_backbone_stages=1,
+            ).to(self.device).eval()
+        else:
+            self.model = LineMatcherNet(
+                d_model=d_model,
+                num_layers=num_layers,
+                nhead=4,
+                freeze_backbone=True,
+            ).to(self.device).eval()
 
-        # Load weights
-        weights_path = Path(weights).resolve()
-        if not weights_path.is_file():
-            raise FileNotFoundError(f"Checkpoint file not found: {weights_path}")
-
-        ckpt = torch.load(weights_path, map_location=self.device)
-        state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
-        self.model.load_state_dict(state_dict)
+        # Load weights if specified
+        if weights is not None:
+            weights_path = Path(weights).resolve()
+            if weights_path.is_file():
+                ckpt = torch.load(weights_path, map_location=self.device)
+                state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+                # strict=False allows flexible transfer between compatible layers
+                self.model.load_state_dict(state_dict, strict=False)
 
         self.mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
@@ -185,6 +200,7 @@ class LineMatchPipeline:
                 match_scores=np.zeros((0,), dtype=np.float32),
                 image0=bgr0,
                 image1=bgr1,
+                matrix_255=None,
             )
 
         l0_t = torch.from_numpy(lines0).unsqueeze(0).to(self.device)
@@ -194,6 +210,7 @@ class LineMatchPipeline:
         out = self.model(t0, t1, l0_t, l1_t)
         scores = out["scores"][0].cpu().numpy()  # (N0, N1)
         log_P = out["log_assignment"][0].cpu().numpy()  # (N0+1, N1+1)
+        matrix_255 = out["matrix_255"][0].cpu().numpy() if "matrix_255" in out else None
 
         P_mat = log_P[:N0, :N1]
         best1 = np.argmax(P_mat, axis=1)  # (N0,)
@@ -231,4 +248,5 @@ class LineMatchPipeline:
             match_scores=matched_s,
             image0=bgr0,
             image1=bgr1,
+            matrix_255=matrix_255,
         )

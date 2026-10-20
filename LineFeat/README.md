@@ -1,92 +1,160 @@
-# LineFeat: 跨视角直线特征检测、描述与匹配模块 (Semantic-LSD-Matching)
+# LineFeat: 跨视角 2D 直线特征匹配算法包
 
-`LineFeat` 是本项目的核心直线匹配算法包，整合了 **2D LSD 直线检测**、**深度特征图沿线采样汇聚描述符 (Deep Line Descriptor)**、**双向最近邻比值检验与语义门控匹配 (Line Matcher)**、**基于 3D 线框投影与深度遮挡剔除的真值生成器 (Ground Truth)** 以及 **标准 PyTorch 数据集加载器 (LineFeatPairDataset)**。
+`LineFeat` 是本项目的核心算法库，完全自包含、零检测器依赖，专注于跨视角预检测 2D 线段的端到端高精度几何匹配。
+
+系统默认主打模型为 **`MaskLineFeatMatchNet`**（6 通道连续几何场 + 掩膜引导池化 + 规范 $255 \times 255$ 匹配概率矩阵直出），同时保留了经典的轻量基线模型 **`LineMatcherNet`**。
 
 ---
 
-## 模块架构
+## 模块结构概览
 
-```
+```text
 LineFeat/
-├── __init__.py           # 统一导出所有核心类与函数
-├── detector.py           # 2D LSD 直线检测器 (LineDetector)，支持长度过滤、边界过滤与等距采样
-├── descriptor.py         # 深度直线描述子提取器 (LineDescriptor)，基于 torch.nn.functional.grid_sample
-├── matcher.py            # 直线匹配器 (LineMatcher)，支持余弦相似度、MNN、Lowe比值检验与语义硬门控
-├── dataset.py            # PyTorch 数据集 (LineFeatPairDataset)，支持从 precomputed index 快速加载
-└── ground_truth.py       # 3D线框投影 + 视锥裁剪 + Z-Buffer深度遮挡剔除真值生成器
+├── __init__.py           # 算法包门面，导出全部核心模型、损失与工具函数
+├── mask_line_matcher.py  # 【默认主打模型】MaskLineFeatMatchNet (6通道几何场 + 255x255规范矩阵)
+├── model.py              # 【基准模型】LineMatcherNet (ResNet50 + Line-Transformer + Sinkhorn)
+├── geometric_field.py    # 高性能连续 EDT 与 AFM 几何场生成器 (OpenCV C++ 底层加速)
+├── pipeline.py           # 高层推断接口 (LineMatchPipeline, LineMatchResult)
+├── loss.py               # 监督损失函数 (MaskedMatrixLoss, LineMatchingLoss)
+├── dataset.py            # PyTorch 标准数据集加载器 (LineFeatPairDataset)
+├── matcher.py            # 连线可视化与互为最近邻 (MNN) 过滤工具
+├── ground_truth.py       # 3D线框投影与深度 Z-Buffer 遮挡剔除真值引擎
+└── read_structured3d.py  # Structured3D 场景位姿与相机参数解析器
 ```
 
 ---
 
-## 核心类与 API 使用指南
+## 核心类与 API 详细使用指南
 
-### 1. 2D 直线检测 (`LineDetector`)
+### 1. 默认主打模型：`MaskLineFeatMatchNet`
+> 详细设计原理与数学推导请参阅 [📘 docs/MaskLineFeatMatchNet.md](../docs/MaskLineFeatMatchNet.md)。
+
+* **特点**：
+  - 输入 6 通道多模态张量：`RGB(3) + 归一化欧氏距离场 EDT(1) + 连续朝向场 AFM(2)`；
+  - 彻底规避 0~255 标量数字掩膜引发的序数偏置（Ordinal Bias）；
+  - 使用 $(\sin 2\theta, \cos 2\theta)$ 双倍角连续投影，消除线段端点颠倒翻转不确定性；
+  - 输出恒定形状为 $(B, 255, 255)$ 的置换等变匹配概率矩阵。
+
 ```python
-from LineFeat import LineDetector
+import torch
+from LineFeat import MaskLineFeatMatchNet
 
-detector = LineDetector(scale=0.8)
-# 传入 BGR 或灰度图像，返回 (N, 4) 的 [x1, y1, x2, y2]
-lines = detector.detect(image_bgr, min_length=30.0, margin=8)
+# 初始化模型
+model = MaskLineFeatMatchNet(d_model=128, num_layers=4).cuda().eval()
+
+# 准备输入 (B=1, RGB 3通道张量由网络自动生成 EDT/AFM 扩展为 6 通道)
+img0 = torch.randn(1, 3, 480, 640).cuda()
+img1 = torch.randn(1, 3, 480, 640).cuda()
+lines0 = torch.rand(1, 10, 4).cuda() * 400.0  # (B, N0, 4)
+lines1 = torch.rand(1, 12, 4).cuda() * 400.0  # (B, N1, 4)
+
+with torch.no_grad():
+    out = model(img0, img1, lines0, lines1)
+
+# 获取 (B, 255, 255) 规范矩阵与有效子矩阵
+matrix_255 = out["matrix_255"]        # shape: (1, 255, 255)
+p_sub = out["P_sub"]                  # shape: (1, 10, 12)
 ```
 
-### 2. 深度直线描述子提取 (`LineDescriptor`)
-沿直线等距采样 $K$ 个关键点，利用双线性插值从 CNN 特征图提取对应特征向量并汇聚：
+---
+
+### 2. 高层推理流水线：`LineMatchPipeline`
+
+为工程落地与算法调用提供最简洁的 Python 统一接口。**默认即自动加载并运行 `MaskLineFeatMatchNet`**。
+
 ```python
-from LineFeat import LineDescriptor
+from LineFeat import LineMatchPipeline
+import numpy as np
 
-extractor = LineDescriptor(num_samples=7, pooling="mean", normalize=True)
-# lines: (N, 4), feature_map: (1, C, H_f, W_f)
-descriptors = extractor.extract(lines, feature_map, orig_size=(720, 1280))  # (N, C)
-```
+# 1. 初始化纯匹配流水线 (自动优先使用 GPU，默认 model_type='mask')
+pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth")
 
-### 3. 直线匹配与语义门控 (`LineMatcher`)
-```python
-from LineFeat import LineMatcher
+# 2. 外部传入已知线段坐标 (N, 4) [x1, y1, x2, y2]
+lines0 = np.array([[50, 100, 200, 100], [80, 50, 80, 300]], dtype=np.float32)
+lines1 = np.array([[52, 98, 202, 99], [79, 45, 81, 290]], dtype=np.float32)
 
-matcher = LineMatcher(ratio_threshold=0.85, mutual_check=True)
-# 支持语义标签门控（阻止跨类别的假匹配，如地板与天花板）
-matches = matcher.match(
-    desc1, desc2,
-    lines1=lines1, lines2=lines2,
-    semantics1=sem_labels1, semantics2=sem_labels2
+# 3. 运行匹配 (零在线检测器，直接匹配给定坐标)
+result = pipeline.match(
+    image0="path/to/image0.png",
+    image1="path/to/image1.png",
+    lines0=lines0,
+    lines1=lines1,
+    threshold=0.70,
 )
-# 可视化连线图
-canvas = matcher.draw_matches(img1, img2, lines1, lines2, matches, max_draw=40)
+
+# 4. 获取直出的 255x255 规范概率矩阵
+print("Canonical Matrix Shape:", result.matrix_255.shape)  # (255, 255)
+
+# 5. 遍历匹配结果
+for rank, (i, j, score) in enumerate(result.matches):
+    print(f"Match #{rank+1}: Line0[{i}] <--> Line1[{j}] | 置信度得分: {score:.3f}")
+
+# 6. 保存高质量彩色连线可视化图
+result.save_visualization("outputs/pure_matching/match_vis.jpg")
 ```
 
-### 4. PyTorch 数据集加载 (`LineFeatPairDataset`)
+---
+
+### 3. 高性能几何场生成器：`geometric_field.py`
+
+利用 OpenCV C++ 底层优化，将任意 2D 线段坐标转换为高质量的连续距离与朝向物理场：
+
+```python
+from LineFeat import compute_geometry_field_np, create_6ch_input_tensor
+import cv2, torch
+
+# 计算 numpy 版本的几何场 (H, W, 3): 通道0为 EDT 距离场，通道1-2为 AFM 朝向场
+lines_np = np.array([[100, 150, 300, 150]], dtype=np.float32)
+geom_field = compute_geometry_field_np(lines_np, height=480, width=640)
+
+# 在 PyTorch 张量层面将 (B, 3, H, W) RGB 自动拼接为 (B, 6, H, W)
+rgb_tensor = torch.randn(1, 3, 480, 640)
+lines_tensor = torch.from_numpy(lines_np).unsqueeze(0)
+input_6ch = create_6ch_input_tensor(rgb_tensor, lines_tensor)  # (1, 6, 480, 640)
+```
+
+---
+
+### 4. 监督损失函数：`loss.py`
+
+提供两套面向不同任务的监督损失函数：
+
+#### `MaskedMatrixLoss`（专为规范 255x255 矩阵定制）
+结合带 Dustbin 的对数 Sinkhorn 负对数似然（NLL）与有效子区域的掩膜二值交叉熵（Masked BCE）：
+```python
+from LineFeat import MaskedMatrixLoss
+
+criterion = MaskedMatrixLoss(lambda_bce=1.0)
+# matrix_255: (B, 255, 255), log_assignment: (B, N0+1, N1+1), gt_pairs: list of (idx0, idx1)
+loss, metrics = criterion(out["matrix_255"], out["log_assignment"], gt_pairs, N0=10, N1=12)
+```
+
+#### `LineMatchingLoss`（基线 Sinkhorn 对数似然损失）
+针对已知排列真值的经典最优传输负对数似然损失，支持自动统计 Precision 与 Recall。
+
+---
+
+### 5. 数据集加载：`dataset.py`
+
+从预计算的 `line_gt_dataset` 快速加载真值线对：
+
 ```python
 from torch.utils.data import DataLoader
 from LineFeat import LineFeatPairDataset, collate_line_pairs
 
 dataset = LineFeatPairDataset(
     index_path="data/line_gt_dataset/index.json",
-    min_matches=5,
     split="train",  # 支持 'train', 'val', 'test'
+    min_matches=3,
     load_images=True,
-    load_semantics=True,
-    load_cameras=True
+    load_cameras=False,
 )
 
-loader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=collate_line_pairs)
-for batch in loader:
-    images0 = batch["image0"]      # (B, 3, H, W)
-    images1 = batch["image1"]      # (B, 3, H, W)
-    gt_lines0 = batch["gt_lines0"]  # List of (M_i, 4)
-    # ...
+loader = DataLoader(dataset, batch_size=1, shuffle=True)
+for sample in loader:
+    img0 = sample["image0"]      # (1, 3, H, W)
+    img1 = sample["image1"]      # (1, 3, H, W)
+    lines0 = sample["gt_lines0"]  # (1, M, 4)
+    lines1 = sample["gt_lines1"]  # (1, M, 4)
+    M = sample["num_matches"]    # 真值对数
 ```
-
----
-
-## 运行验证
-
-运行端到端验证脚本：
-```bash
-python demo/demo_linefeat.py --pair-idx 0
-```
-该脚本将自动验证：
-1. `LineFeatPairDataset` 数据加载（图像、相机内参/相对位姿、3D线框投影真值）
-2. 真实三维结构线上的深度特征匹配精度（正确率达 **80%+**）
-3. LSD 直线检测与沿线深度特征提取
-4. 语义门控对于消除跨类别假匹配的效果（语义一致率从 ~73% 提升至 **97%~100%**）
-5. 可视化图片保存于 `outputs/linefeat/`。

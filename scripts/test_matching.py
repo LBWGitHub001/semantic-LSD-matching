@@ -56,6 +56,13 @@ def parse_args() -> argparse.Namespace:
         help="Similarity score threshold (default: 0.70)",
     )
     parser.add_argument(
+        "--model-type",
+        type=str,
+        default="mask",
+        choices=["mask", "linefeat"],
+        help="Model architecture: 'mask' (MaskLineFeatMatchNet, default) or 'linefeat' (LineMatcherNet)",
+    )
+    parser.add_argument(
         "--samples-dir",
         type=Path,
         default=ROOT / "data" / "test_samples",
@@ -274,6 +281,7 @@ def main() -> None:
     print("        Pure Line Matching Evaluation (Ground Truth Lines, Zero Detection)")
     print("=" * 85)
     print(f"  Weights:    {args.weights}")
+    print(f"  Model Type: {args.model_type} ({'MaskLineFeatMatchNet' if args.model_type == 'mask' else 'LineMatcherNet'})")
     print(f"  Device:     {args.device}")
     print(f"  Threshold:  {args.thresh}")
     print(f"  Output Dir: {args.out_dir}")
@@ -283,6 +291,7 @@ def main() -> None:
         weights=args.weights,
         device=args.device,
         similarity_threshold=args.thresh,
+        model_type=args.model_type,
     )
 
     if args.pair == "all":
