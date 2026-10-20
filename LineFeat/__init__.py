@@ -16,7 +16,9 @@ from LineFeat.descriptor import LineDescriptor
 from LineFeat.matcher import LineMatcher, get_distinct_colors
 from LineFeat.dataset import LineFeatPairDataset, collate_line_pairs
 from LineFeat.model import LineMatcherNet
-from LineFeat.loss import LineMatchingLoss
+from LineFeat.loss import LineMatchingLoss, MaskedMatrixLoss
+from LineFeat.geometric_field import compute_geometry_field_np, create_6ch_input_tensor
+from LineFeat.mask_line_matcher import MaskLineMatcherNet
 from LineFeat.neighborhood import (
     LineNeighborhoodTransformer,
     compute_strip_zncc,
@@ -36,6 +38,10 @@ __all__ = [
     "LineMatcher",
     "LineMatcherNet",
     "LineMatchingLoss",
+    "MaskedMatrixLoss",
+    "MaskLineMatcherNet",
+    "compute_geometry_field_np",
+    "create_6ch_input_tensor",
     "LineMatchPipeline",
     "LineMatchResult",
     "get_distinct_colors",
