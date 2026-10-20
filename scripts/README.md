@@ -14,6 +14,7 @@
 | [`run_unit_tests.py`](run_unit_tests.py) | **数学单元测试** | `python scripts/run_unit_tests.py` | `MaskLineFeatMatchNet` |
 | [`verify_toy_task.py`](verify_toy_task.py) | **极简可行性验证** | `python scripts/verify_toy_task.py` | `MaskLineFeatMatchNet` |
 | [`generate_synthetic_3d_dataset.py`](generate_synthetic_3d_dataset.py) | **3D建模多视角拍照数据生成** | `python scripts/generate_synthetic_3d_dataset.py` | - |
+| [`generate_synthetic_multiview_scenes.py`](generate_synthetic_multiview_scenes.py) | **多场景多视角邻接图数据生成** | `python scripts/generate_synthetic_multiview_scenes.py` | - |
 | [`train.py`](train.py) | **网络训练与微调** | `python scripts/train.py --use-cache --amp` | `MaskLineFeatMatchNet` |
 | [`cache_line_features.py`](cache_line_features.py) | **32核特征预提取** | `python scripts/cache_line_features.py` | ResNet-50 骨干 |
 | [`sync_push.sh`](sync_push.sh) | **一键推送远程** | `./scripts/sync_push.sh` | - |
@@ -112,7 +113,37 @@
 
 ---
 
-### 7. [`train.py`](train.py)：端到端训练与微调脚本
+### 7. [`generate_synthetic_multiview_scenes.py`](generate_synthetic_multiview_scenes.py)：多场景多视角环视与邻接图数据生成器
+* **设计意图**：针对**同一个 3D 场景进行多视角环绕拍照**，使用 `view_graph.json` 形式建立视点邻接图（节点代表各视角相机位姿与线段，边代表视角间的旋转角度、基线距离、共视重叠度及 1-to-1 真实线段匹配对），并支持批量生成多个参数化不同的独立 3D 场景。
+* **目录结构与格式**：
+  ```text
+  data/synthetic_multiview_scenes/
+  ├── dataset_index.json                # 全局索引表
+  ├── scene_0000/                       # 独立 3D 几何场景
+  │   ├── view_graph.json               # 【核心】视角邻接图关系 JSON
+  │   ├── cameras.json                  # 各视角的相机内参与绝对外参
+  │   ├── scene_3d.json                 # 原始 3D 空间线段网格
+  │   ├── views/                        # 各视角图像 view_00.png 与 lines_00.json
+  │   └── visualizations/               # 共视边彩色真值连线验证大图
+  └── ...
+  ```
+* **核心参数**：
+  - `--num-scenes`：独立 3D 场景数量（默认 1，供查看与微调；可指定 20、50 批量生成）；
+  - `--views-per-scene`：每个场景环绕拍摄的视点数（默认 8 个）；
+  - `--min-covisible`：在邻接图中连结为边的最少共视 3D 线段数（默认 4 根）；
+  - `--out-dir`：输出根目录（默认 `data/synthetic_multiview_scenes`）。
+* **运行命令**：
+  ```bash
+  # 1. 生成 1 个多视角场景 (8个视点 + 邻接图) 供检查与微调
+  python scripts/generate_synthetic_multiview_scenes.py
+
+  # 2. 批量生成 20 个独立多样化场景
+  python scripts/generate_synthetic_multiview_scenes.py --num-scenes 20 --views-per-scene 8
+  ```
+
+---
+
+### 8. [`train.py`](train.py)：端到端训练与微调脚本
 * **设计意图**：在 Structured3D 投影线段真值库上训练匹配模型。
 * **主要参数**：
   - `--model-type`：模型架构，`mask`（默认 `MaskLineFeatMatchNet`）或 `linefeat`；
