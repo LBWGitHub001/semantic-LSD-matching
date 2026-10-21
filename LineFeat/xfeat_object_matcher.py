@@ -255,7 +255,7 @@ class ObjectSinkhornMatcher(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.sinkhorn_iters = sinkhorn_iters
-        self.dustbin_score = nn.Parameter(torch.tensor(1.0))
+        self.dustbin_score = nn.Parameter(torch.tensor(0.0))
         self.proj0 = nn.Linear(d_model, d_model, bias=False)
         self.proj1 = nn.Linear(d_model, d_model, bias=False)
 
@@ -271,9 +271,9 @@ class ObjectSinkhornMatcher(nn.Module):
         _, M1, _ = x1.shape
         device = x0.device
 
-        # Normalized cosine/inner product score
-        q0 = F.normalize(self.proj0(x0), p=2, dim=-1)
-        k1 = F.normalize(self.proj1(x1), p=2, dim=-1)
+        # Unnormalized projected similarity scaled by 1/sqrt(d_model)
+        q0 = self.proj0(x0)
+        k1 = self.proj1(x1)
         scores = torch.bmm(q0, k1.transpose(1, 2)) / math.sqrt(self.d_model)  # (B, M0, M1)
 
         # Augment with dustbins
@@ -285,16 +285,16 @@ class ObjectSinkhornMatcher(nn.Module):
         bottom = torch.cat([bin_row, bin_val], dim=-1)   # (B, 1, M1 + 1)
         Z = torch.cat([top, bottom], dim=1)              # (B, M0 + 1, M1 + 1)
 
-        # Marginals for Sinkhorn
-        norm_m = float(M0)
-        norm_n = float(M1)
+        # SuperGlue Marginals: each object row/column must sum to 1.0
+        # Dustbin row sums to M1 (total items in view 1)
+        # Dustbin col sums to M0 (total items in view 0)
         log_mu = torch.cat([
-            torch.zeros(M0, device=device) - math.log(norm_m + 1.0),
-            torch.tensor([math.log(norm_n / (norm_m + norm_n + 1e-6))], device=device),
+            torch.zeros(M0, device=device),
+            torch.tensor([math.log(float(M1) + 1e-6)], device=device),
         ]).repeat(B, 1)
         log_nu = torch.cat([
-            torch.zeros(M1, device=device) - math.log(norm_n + 1.0),
-            torch.tensor([math.log(norm_m / (norm_m + norm_n + 1e-6))], device=device),
+            torch.zeros(M1, device=device),
+            torch.tensor([math.log(float(M0) + 1e-6)], device=device),
         ]).repeat(B, 1)
 
         log_P = log_sinkhorn_iterations(Z, log_mu, log_nu, iters=self.sinkhorn_iters)
