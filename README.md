@@ -6,21 +6,20 @@
 
 ---
 
-## 目录
+## 目录与专题技术文档
 
-- [一、核心架构与统一目录结构](#一核心架构与统一目录结构)
-- [二、四步统一工作流 (CLI 快速开始)](#二四步统一工作流-cli-快速开始)
-  - [1. 统一生成数据集 (`generate_dataset.py`)](#1-统一生成数据集-generate_datasetpy)
-  - [2. 统一训练入口 (`train.py`)](#2-统一训练入口-trainpy)
-  - [3. 统一验证评测 (`eval.py`)](#3-统一验证评测-evalpy)
-  - [4. 统一交互演示 (`demo.py`)](#4-统一交互演示-demopy)
-- [三、核心模型库 (`models/`)](#三核心模型库-models)
-  - [1. 物体级连连看网络 (`XFeatObjectMatcher`)](#1-物体级连连看网络-xfeatobjectmatcher)
-  - [2. 6通道几何场线段网络 (`MaskLineFeatMatchNet`)](#2-6通道几何场线段网络-masklinefeatmatchnet)
-  - [3. 基线线段 Transformer (`LineMatcherNet`)](#3-基线线段-transformer-linematchernet)
-- [四、辅助工具与离线脚本 (`tools/`)](#四辅助工具与离线脚本-tools)
-- [五、Python API 调用示例](#五python-api-调用示例)
-- [六、基准评测表现 (Benchmark)](#六基准评测表现-benchmark)
+- 📚 **专题技术文档**：
+  - [**全局通用文件与工作流使用指南** (`docs/GENERAL_USAGE.md`)](docs/GENERAL_USAGE.md)：`generate_dataset.py`、`train.py`、`eval.py`、`demo.py` 及 `tools/` 全参数配置与 CLI 最佳实践。
+  - [**核心匹配网络模型技术详解** (`docs/MODELS.md`)](docs/MODELS.md)：`XFeatObjectMatcher`、`MaskLineFeatMatchNet`、`LineMatcherNet` 的网络结构、数学推导、参数规模、推理延迟与 Benchmark。
+  - [**数据集架构与格式技术规范** (`docs/DATASETS.md`)](docs/DATASETS.md)：合成物体级（维度2材质光照）、合成线段级与真实 Structured3D 数据集的生成管线、JSON 标注格式与目录组织。
+
+- ⚡ **快速导航**：
+  - [一、核心架构与统一目录结构](#一核心架构与统一目录结构)
+  - [二、四步统一工作流 (CLI 快速开始)](#二四步统一工作流-cli-快速开始)
+  - [三、核心模型库 (`models/`)](#三核心模型库-models)
+  - [四、辅助工具与离线脚本 (`tools/`)](#四辅助工具与离线脚本-tools)
+  - [五、Python API 调用示例](#五python-api-调用示例)
+  - [六、基准评测表现 (Benchmark)](#六基准评测表现-benchmark)
 
 ---
 
