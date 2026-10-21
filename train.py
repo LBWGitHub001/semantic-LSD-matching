@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,13 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Minimal fallback generator if tqdm is missing
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -132,7 +140,15 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         t0 = time.time()
 
         optimizer.zero_grad()
-        for step, batch in enumerate(train_loader):
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]",
+            dynamic_ncols=True,
+            leave=False,
+            unit="pair",
+        )
+
+        for step, batch in enumerate(pbar):
             if args.max_steps is not None and step >= args.max_steps:
                 break
             img0 = batch["img0"].to(device)
@@ -155,13 +171,28 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                 scaler.update()
                 optimizer.zero_grad()
 
-            total_loss += loss.item()
+            loss_val = float(loss.item())
+            total_loss += loss_val
+            cur_avg_loss = total_loss / max(step_count, 1)
+
+            # Real-time status in progress bar
+            m0_num = masks0.shape[1]
+            m1_num = masks1.shape[1]
+            n_gt = len(batch["gt_matches"][0]) if "gt_matches" in batch and batch["gt_matches"] else 0
+            mem_mb = torch.cuda.memory_allocated() / (1024 * 1024) if torch.cuda.is_available() else 0
+            pbar.set_postfix({
+                "loss": f"{loss_val:.4f}",
+                "avg": f"{cur_avg_loss:.4f}",
+                "regions": f"{m0_num}v{m1_num}",
+                "gt": n_gt,
+                "gpu": f"{mem_mb:.0f}MB",
+            })
 
         train_loss = total_loss / max(step_count, 1)
         epoch_sec = time.time() - t0
 
         if epoch % args.val_interval == 0:
-            val_metrics = evaluate_object_pipeline(model, val_loader, device)
+            val_metrics = evaluate_object_pipeline(model, val_loader, device, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Val]")
             val_f1 = val_metrics["f1"]
             is_best = val_f1 >= best_val_f1
             if is_best:
@@ -173,9 +204,10 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                 }, best_ckpt_path)
 
             star = " ★ BEST" if is_best else ""
-            print(f"Epoch {epoch:02d}/{args.epochs:02d} [{epoch_sec:.1f}s] - Train Loss: {train_loss:.4f} | "
-                  f"Val Prec: {val_metrics['precision']:.1f}% | Rec: {val_metrics['recall']:.1f}% | "
-                  f"F1: {val_f1:.1f}% | Dustbin: {val_metrics['dustbin_acc']:.1f}%{star}")
+            print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({epoch_sec:.1f}s) "
+                  f"| Loss: {train_loss:.4f} "
+                  f"| Val Prec: {val_metrics['precision']:5.1f}% | Rec: {val_metrics['recall']:5.1f}% "
+                  f"| F1: {val_f1:5.1f}% | Dustbin: {val_metrics['dustbin_acc']:5.1f}%{star}")
 
     print("=" * 80)
     print(f"[+] Training Complete! Best Val F1: {best_val_f1:.2f}%. Saved -> {best_ckpt_path}")
@@ -184,7 +216,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print("\nEvaluating best checkpoint on unseen test scenes...")
     ckpt = torch.load(best_ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model_state"])
-    test_metrics = evaluate_object_pipeline(model, test_loader, device)
+    test_metrics = evaluate_object_pipeline(model, test_loader, device, desc="Testing")
 
     print("-" * 65)
     print(f"TEST SET BENCHMARK RESULTS ({len(test_ds)} pairs):")
@@ -207,24 +239,55 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
             out = model(img0, img1, m0, b0, m1, b1)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
-            save_file = vis_dir / f"test_sample_{vis_idx + 1}_{batch['scene_name']}_v{batch['view_i']}_v{batch['view_j']}.jpg"
-            visualize_object_matches(
-                batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
-                pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
-                title=f"Sample {vis_idx + 1}: {batch['scene_name']} (View {batch['view_i']} <-> View {batch['view_j']})",
-            )
+            scene_tag = batch.get("scene_name", f"pair_{vis_idx+1}")
+            save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
+            if "raw_img0" in batch and batch["raw_img0"] is not None:
+                visualize_object_matches(
+                    batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
+                    pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
+                    title=f"Sample {vis_idx + 1}: {scene_tag}",
+                )
 
 
-def evaluate_object_pipeline(model: nn.Module, loader: DataLoader, device: torch.device) -> dict[str, float]:
+def evaluate_object_pipeline(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    desc: str = "Evaluating",
+) -> dict[str, float]:
     model.eval()
     total_tp, total_fp, total_fn = 0, 0, 0
     total_dustbin_correct, total_dustbin_items = 0, 0
 
+    pbar = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False, unit="pair")
     with torch.no_grad():
-        for batch in loader:
+        for batch in pbar:
             img0, img1 = batch["img0"].to(device), batch["img1"].to(device)
             m0, b0 = batch["masks0"].to(device), batch["bboxes0"].to(device)
             m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
+
+            out = model(img0, img1, m0, b0, m1, b1)
+            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
+
+            gt_matches = set(batch["gt_matches"][0])
+            pred_set = set(pred_matches)
+
+            tp = len(pred_set.intersection(gt_matches))
+            fp = len(pred_set - gt_matches)
+            fn = len(gt_matches - pred_set)
+
+            total_tp += tp
+            total_fp += fp
+            total_fn += fn
+
+            gt_un0, gt_un1 = set(batch["unmatched_0"][0]), set(batch["unmatched_1"][0])
+            total_dustbin_correct += len(set(pred_un0).intersection(gt_un0)) + len(set(pred_un1).intersection(gt_un1))
+            total_dustbin_items += len(gt_un0) + len(gt_un1)
+
+            cur_p = total_tp / (total_tp + total_fp + 1e-6)
+            cur_r = total_tp / (total_tp + total_fn + 1e-6)
+            cur_f1 = 2.0 * cur_p * cur_r / (cur_p + cur_r + 1e-6)
+            pbar.set_postfix({"f1": f"{cur_f1*100:.1f}%", "tp": total_tp, "fp": total_fp})
 
             out = model(img0, img1, m0, b0, m1, b1)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
@@ -307,9 +370,18 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         model.train()
         epoch_loss = 0.0
         step_count = 0
+        t0 = time.time()
         optimizer.zero_grad()
 
-        for step, sample in enumerate(train_loader):
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch:02d}/{args.epochs:02d} [LineTrain]",
+            dynamic_ncols=True,
+            leave=False,
+            unit="pair",
+        )
+
+        for step, sample in enumerate(pbar):
             if args.max_steps and step >= args.max_steps:
                 break
             gt_lines0 = sample["gt_lines0"][0].to(device)
@@ -334,7 +406,15 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
             epoch_loss += metrics["loss"]
             step_count += 1
 
-        print(f"Epoch {epoch:02d}/{args.epochs:02d} - Train Loss: {epoch_loss/max(step_count, 1):.4f}")
+            pbar.set_postfix({
+                "loss": f"{metrics['loss']:.4f}",
+                "avg": f"{epoch_loss/max(step_count, 1):.4f}",
+                "lines": f"{M}",
+                "acc": f"{metrics.get('acc', 0.0):.1f}%",
+            })
+
+        epoch_sec = time.time() - t0
+        print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({epoch_sec:.1f}s) | Train Loss: {epoch_loss/max(step_count, 1):.4f}")
 
 
 def main() -> None:
