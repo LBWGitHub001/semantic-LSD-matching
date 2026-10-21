@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from LineFeat.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
+from models.line_matcher.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
 
 
 def test_output_shapes_and_values():

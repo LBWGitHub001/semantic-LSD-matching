@@ -137,12 +137,54 @@ def run_object_demo(args: argparse.Namespace) -> None:
     print(f"\n[✓] Visualization exported to -> {out_path.resolve()}")
 
 
+def run_line_demo(args: argparse.Namespace) -> None:
+    from models.line_matcher import LineMatchPipeline
+
+    s_dir = Path(args.scene)
+    if not s_dir.exists() or "synthetic_object" in str(s_dir):
+        # Auto-switch to multiview scenes if default object scene was kept
+        fallback = Path("data/synthetic_multiview_scenes/scene_0000")
+        if fallback.exists():
+            s_dir = fallback
+
+    views_dir = s_dir / "views" if (s_dir / "views").exists() else s_dir
+    img0_path = views_dir / f"view_{args.v0:02d}.png"
+    img1_path = views_dir / f"view_{args.v1:02d}.png"
+    lines0_path = views_dir / f"lines_{args.v0:02d}.json"
+    lines1_path = views_dir / f"lines_{args.v1:02d}.json"
+
+    if not img0_path.exists() or not img1_path.exists():
+        raise FileNotFoundError(f"Image views not found in {views_dir}: {img0_path}, {img1_path}")
+
+    lines0 = np.array(json.load(open(lines0_path, "r")), dtype=np.float32) if lines0_path.exists() else np.zeros((0, 4), dtype=np.float32)
+    lines1 = np.array(json.load(open(lines1_path, "r")), dtype=np.float32) if lines1_path.exists() else np.zeros((0, 4), dtype=np.float32)
+
+    print("=" * 70)
+    print(f"      Unified Matching Demo: Line Matcher ({args.model})       ")
+    print("=" * 70)
+    print(f"[*] Scene:      {s_dir.name} (View {args.v0} <--> View {args.v1})")
+    print(f"[*] Lines 0:    {len(lines0)} line segments")
+    print(f"[*] Lines 1:    {len(lines1)} line segments")
+
+    ckpt_path = Path(args.checkpoint) if args.checkpoint and Path(args.checkpoint).is_file() else None
+    pipeline = LineMatchPipeline(
+        weights=ckpt_path,
+        device=args.device,
+        model_type=args.model,
+    )
+    result = pipeline.match(img0_path, img1_path, lines0, lines1, threshold=args.thresh)
+    print(f"\n[+] Matched {len(result.matches)} line segments!")
+    out_path = Path(args.out)
+    result.save_visualization(out_path)
+    print(f"[✓] Visualization exported to -> {out_path.resolve()}")
+
+
 def main() -> None:
     args = parse_args()
     if args.model in ["xfeat_object", "xfeat"]:
         run_object_demo(args)
     else:
-        print(f"Demo for {args.model} is supported via LineFeat pipeline.")
+        run_line_demo(args)
 
 
 if __name__ == "__main__":

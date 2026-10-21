@@ -18,9 +18,9 @@ import cv2
 import numpy as np
 import torch
 
-from LineFeat.matcher import LineMatcher
-from LineFeat.model import LineMatcherNet
-from LineFeat.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
+from models.line_matcher.matcher import LineMatcher
+from models.line_matcher.line_transformer import LineMatcherNet
+from models.line_matcher.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
 
 
 @dataclass
@@ -75,7 +75,7 @@ class LineMatchPipeline:
     High-level end-to-end line matching pipeline.
 
     Example:
-        >>> from LineFeat import LineMatchPipeline
+        >>> from models.line_matcher import LineMatchPipeline
         >>> pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth")
         >>> result = pipeline.match("image1.jpg", "image2.jpg")
         >>> print(f"Found {len(result)} matches!")

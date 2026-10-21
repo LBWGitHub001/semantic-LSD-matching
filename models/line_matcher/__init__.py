@@ -17,6 +17,8 @@ from models.line_matcher.mask_line_matcher import (
 )
 from models.line_matcher.loss import LineMatchingLoss, MaskedMatrixLoss
 from models.line_matcher.geometric_field import compute_geometry_field_np, create_6ch_input_tensor
+from models.line_matcher.matcher import LineMatcher, get_distinct_colors
+from models.line_matcher.pipeline import LineMatchPipeline, LineMatchResult
 
 __all__ = [
     "LineMatcherNet",
@@ -30,4 +32,8 @@ __all__ = [
     "MaskedMatrixLoss",
     "compute_geometry_field_np",
     "create_6ch_input_tensor",
+    "LineMatcher",
+    "get_distinct_colors",
+    "LineMatchPipeline",
+    "LineMatchResult",
 ]

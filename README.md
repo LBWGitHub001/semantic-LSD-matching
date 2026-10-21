@@ -31,7 +31,7 @@
 ```text
 semantic-LSD-matching/
 ├── generate_dataset.py          # [统一数据生成入口] 支持 object / line / all 任务与维度2随机材质
-├── train.py                     # [统一训练入口] 支持 --model [xfeat_object | mask_line | linefeat]
+├── train.py                     # [统一训练入口] 支持 --model [xfeat_object | mask_line | line_transformer]
 ├── eval.py                      # [统一验证评测] 盲测场景基准评分与混淆指标统计
 ├── demo.py                      # [统一可视化演示] 跨视角匹配连线即时可视化
 │
@@ -46,23 +46,28 @@ semantic-LSD-matching/
 │       ├── mask_line_matcher.py # MaskLineFeatMatchNet (6通道 EDT+AFM 几何场)
 │       ├── line_transformer.py  # LineMatcherNet (基线线段 Transformer)
 │       ├── geometric_field.py   # 欧氏距离场与朝向场生成器
+│       ├── matcher.py           # 线段可视化与连线色彩分配
+│       ├── pipeline.py          # LineMatchPipeline 推理流水线
 │       └── loss.py              # MaskedMatrixLoss / LineMatchingLoss
 │
 ├── datasets/                    # [统一数据集与数据管道]
 │   ├── __init__.py
 │   ├── object_dataset.py        # ObjectMatchingDataset, Bipartite MNN 解析器与可视化
-│   └── line_dataset.py          # LineFeatPairDataset 与线段批处理
+│   ├── line_dataset.py          # LineFeatPairDataset 与线段批处理
+│   ├── ground_truth.py          # 3D 物理线段真值投影与遮挡剔除
+│   └── read_structured3d.py     # Structured3D 相机与场景标注解析器
 │
 ├── tools/                       # [辅助工具脚本]
 │   ├── cache_line_features.py   # 离线特征缓存工具 (~50x 训练加速)
 │   ├── build_line_gt_dataset.py # 3D 物理线段真值构建脚本
+│   ├── run_unit_tests.py        # 模型置换等变性与梯度单元测试
+│   ├── verify_toy_task.py       # 最小 2D 玩具任务快速收敛验证
+│   ├── example_call.py          # 纯 Python 极简线段匹配调用范例
 │   ├── download_structured3d.py # 真实场景下载辅助
 │   ├── unzip_structured3d.py    # 真实场景解压辅助
-│   ├── verify_toy_task.py       # 最小 toy 验证
 │   ├── sync_push.sh             # 远程同步脚本
 │   └── sync_pull.sh
 │
-├── LineFeat/                    # [向下兼容层] 保证老代码旧脚本 100% 兼容运行
 ├── checkpoints/                 # 最佳训练权重保存目录
 ├── outputs/                     # 可视化连线结果与评测导出
 └── README.md                    # 本文档
@@ -144,6 +149,9 @@ python demo.py --model xfeat_object --scene data/synthetic_object_matching_scene
 所有辅助工具与离线加速脚本均归拢至 `tools/` 目录：
 - `tools/cache_line_features.py`：预先提取全图特征保存到内存缓存，将线段模型训练速度提升 **~50 倍**；
 - `tools/build_line_gt_dataset.py`：基于 3D CAD/室内真实点云投影生成线段真值对应；
+- `tools/run_unit_tests.py`：验证模型规范矩阵 (255x255)、数学置换等变性与反向传播梯度流；
+- `tools/verify_toy_task.py`：极简纯几何合成玩具任务（35 步极速验证模型 100% 收敛）；
+- `tools/example_call.py`：纯 Python 极简跨视角线段匹配推理脚本；
 - `tools/download_structured3d.py` & `tools/unzip_structured3d.py`：`Structured3D` 真实室内场景数据集下载与自动解压；
 - `tools/sync_push.sh` & `tools/sync_pull.sh`：本地工作站与远程算力 GPU 服务器一键免密同步代码与权重。
 
@@ -171,6 +179,23 @@ with torch.no_grad():
 # 3. 解析双向互斥配对与垃圾桶
 matches, unmatched_0, unmatched_1 = predict_bipartite_matches(out["prob_matrix"][0], thresh=0.2)
 print("配对结果 [(idx0, idx1)]:", matches)
+```
+
+### 2. 线段级端到端匹配 API (`LineMatchPipeline`)
+
+```python
+import numpy as np
+from models.line_matcher import LineMatchPipeline
+
+# 1. 初始化端到端匹配管道 (自动加载权重并设为评估模式)
+pipeline = LineMatchPipeline("checkpoints/mask_line/best_model.pth", model_type="mask")
+
+# 2. 提供跨视角图像路径以及各自的 2D 线段坐标 (N, 4) [x1, y1, x2, y2]
+result = pipeline.match("view_00.png", "view_01.png", lines0, lines1)
+
+print(f"成功匹配 {len(result.matches)} 对线段！")
+# 3. 导出高质量高对比度彩虹连线图
+result.save_visualization("outputs/line_matches.jpg")
 ```
 
 ---

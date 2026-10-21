@@ -14,6 +14,13 @@ from datasets.line_dataset import (
     LineFeatPairDataset,
     collate_line_pairs,
 )
+from datasets.read_structured3d import (
+    STRUCTURED3D_CLASSES,
+    Camera,
+    Structured3DDataset,
+    Structured3DScene,
+    Structured3DView,
+)
 
 __all__ = [
     "ObjectMatchingDataset",
@@ -22,4 +29,9 @@ __all__ = [
     "visualize_object_matches",
     "LineFeatPairDataset",
     "collate_line_pairs",
+    "STRUCTURED3D_CLASSES",
+    "Camera",
+    "Structured3DDataset",
+    "Structured3DScene",
+    "Structured3DView",
 ]

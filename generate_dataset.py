@@ -15,13 +15,13 @@ into a single, extensible procedural generator with Dimension 2 hardening:
 
 Usage:
   # Object Matching Dataset with Dimension 2 Random Colors:
-  python scripts/generate_dataset.py --task object --num-scenes 50 --random-colors
+  python generate_dataset.py --task object --num-scenes 50 --random-colors
 
   # Line Matching Dataset:
-  python scripts/generate_dataset.py --task line --num-scenes 50
+  python generate_dataset.py --task line --num-scenes 50
 
   # All Modalities Unified:
-  python scripts/generate_dataset.py --task all --num-scenes 50
+  python generate_dataset.py --task all --num-scenes 50
 """
 
 from __future__ import annotations
