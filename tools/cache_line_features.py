@@ -68,8 +68,8 @@ def decode_pair_worker(
     v0_dir = dataset_root.parent.parent / pair_meta["view0_dir"]
     v1_dir = dataset_root.parent.parent / pair_meta["view1_dir"]
     if not v0_dir.is_dir():
-        v0_dir = Path(pair_meta["view0_dir"]).resolve()
-        v1_dir = Path(pair_meta["view1_dir"]).resolve()
+        v0_dir = (ROOT / pair_meta["view0_dir"]).resolve()
+        v1_dir = (ROOT / pair_meta["view1_dir"]).resolve()
 
     img0_path = v0_dir / "rgb_rawlight.png"
     img1_path = v1_dir / "rgb_rawlight.png"
@@ -119,13 +119,15 @@ def cache_split(
     batch_size: int = 8,
     num_threads: int = 32,
     min_matches: int = 3,
+    gt_dir: Path | None = None,
 ) -> None:
     print(f"\n=================================================================")
     print(f"  Caching Split: '{split}' (32 CPU Cores + {torch.cuda.get_device_name(device)})")
     print(f"=================================================================")
 
+    target_gt_dir = gt_dir if gt_dir is not None else (ROOT / "data" / "line_gt_dataset")
     dataset = LineFeatPairDataset(
-        index_path="data/line_gt_dataset/index.json",
+        index_path=target_gt_dir / "index.json",
         split=split,
         min_matches=min_matches,
         load_images=False,
@@ -233,7 +235,8 @@ def cache_split(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Multi-Threaded Line Feature Cache Generator")
-    parser.add_argument("--out-dir", type=Path, default=ROOT / "data" / "line_feature_cache")
+    parser.add_argument("--gt-dir", type=Path, default=ROOT / "data" / "line_gt_dataset", help="Path to line GT dataset directory")
+    parser.add_argument("--out-dir", type=Path, default=ROOT / "data" / "line_feature_cache", help="Output cache directory")
     parser.add_argument("--num-threads", type=int, default=os.cpu_count() or 32, help="Number of CPU worker threads")
     parser.add_argument("--batch-size", type=int, default=8, help="GPU batch size")
     parser.add_argument("--min-matches", type=int, default=3)
@@ -243,11 +246,11 @@ def main() -> None:
     device = torch.device(args.device)
     print(f"[*] Detected {os.cpu_count()} CPU cores. Launching {args.num_threads} worker threads on {torch.cuda.get_device_name(device)}.")
 
-    gt_dir = ROOT / "data" / "line_gt_dataset"
+    gt_dir = args.gt_dir.resolve()
     all_matches = load_all_scene_matches(gt_dir)
 
-    cache_split("train", args.out_dir / "train_cache.pt", device, all_matches, args.batch_size, args.num_threads, args.min_matches)
-    cache_split("val", args.out_dir / "val_cache.pt", device, all_matches, args.batch_size, args.num_threads, args.min_matches)
+    cache_split("train", args.out_dir / "train_cache.pt", device, all_matches, args.batch_size, args.num_threads, args.min_matches, gt_dir=gt_dir)
+    cache_split("val", args.out_dir / "val_cache.pt", device, all_matches, args.batch_size, args.num_threads, args.min_matches, gt_dir=gt_dir)
 
 
 if __name__ == "__main__":

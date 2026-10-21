@@ -55,7 +55,12 @@ class LineFeatPairDataset(Dataset):
     ) -> None:
         super().__init__()
 
-        self.index_path = Path(index_path).resolve()
+        p = Path(index_path)
+        if not p.is_file():
+            cand = Path(__file__).resolve().parent.parent / index_path
+            if cand.is_file():
+                p = cand
+        self.index_path = p.resolve()
         if not self.index_path.is_file():
             raise FileNotFoundError(f"Index file not found: {self.index_path}")
 
