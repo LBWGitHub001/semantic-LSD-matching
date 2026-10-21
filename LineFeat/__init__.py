@@ -18,6 +18,7 @@ from LineFeat.model import LineMatcherNet
 from LineFeat.loss import LineMatchingLoss, MaskedMatrixLoss
 from LineFeat.geometric_field import compute_geometry_field_np, create_6ch_input_tensor
 from LineFeat.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
+from LineFeat.xfeat_object_matcher import XFeatObjectMatcher, ObjectMatchingLoss
 from LineFeat.pipeline import LineMatchPipeline, LineMatchResult
 from LineFeat.ground_truth import (
     GTLineMatch,
@@ -31,6 +32,8 @@ __all__ = [
     "LineMatcherNet",
     "MaskLineMatcherNet",
     "MaskLineFeatMatchNet",
+    "XFeatObjectMatcher",
+    "ObjectMatchingLoss",
     "LineMatchingLoss",
     "MaskedMatrixLoss",
     "compute_geometry_field_np",
