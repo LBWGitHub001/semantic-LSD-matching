@@ -235,8 +235,8 @@ def visualize_object_matches(
             continue
         b0 = objs0[i]["bbox"]
         b1 = objs1[j]["bbox"]
-        c0 = objs0[i]["centroid"]
-        c1 = objs1[j]["centroid"]
+        c0 = objs0[i].get("centroid", [(b0[0] + b0[2]) / 2.0, (b0[1] + b0[3]) / 2.0])
+        c1 = objs1[j].get("centroid", [(b1[0] + b1[2]) / 2.0, (b1[1] + b1[3]) / 2.0])
 
         is_correct = (i, j) in gt_set if gt_set else True
         color = (40, 190, 40) if is_correct else (200, 30, 220)
