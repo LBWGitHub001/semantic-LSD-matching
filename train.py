@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import time
@@ -83,13 +84,30 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"  Checkpoint Dir:     {save_dir}")
     print("=================================================================\n")
 
-    train_ds = ObjectMatchingDataset(data_dir=data_dir, split="train")
-    val_ds = ObjectMatchingDataset(data_dir=data_dir, split="val")
-    test_ds = ObjectMatchingDataset(data_dir=data_dir, split="test")
+    # Auto-detect whether data_dir is a SemanticRegionDataset or ObjectMatchingDataset
+    use_region_ds = False
+    p_data = Path(data_dir)
+    if (p_data / "train_split.json").exists():
+        with open(p_data / "train_split.json", "r", encoding="utf-8") as f:
+            splits_data = json.load(f)
+            if splits_data and (p_data / splits_data[0] / "correspondence.json").exists():
+                use_region_ds = True
 
-    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_single_pair, num_workers=args.num_workers)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_single_pair, num_workers=args.num_workers)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=collate_single_pair, num_workers=args.num_workers)
+    if use_region_ds:
+        from datasets.semantic_region_dataset import SemanticRegionDataset, collate_region_pairs
+        train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train")
+        val_ds = SemanticRegionDataset(dataset_dir=data_dir, split="val")
+        test_ds = SemanticRegionDataset(dataset_dir=data_dir, split="test")
+        collate_fn = collate_region_pairs
+    else:
+        train_ds = ObjectMatchingDataset(data_dir=data_dir, split="train")
+        val_ds = ObjectMatchingDataset(data_dir=data_dir, split="val")
+        test_ds = ObjectMatchingDataset(data_dir=data_dir, split="test")
+        collate_fn = collate_single_pair
+
+    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=args.num_workers)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
+    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
 
     model = build_model(
         args.model_type,

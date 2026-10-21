@@ -10,6 +10,10 @@ from datasets.object_dataset import (
     predict_bipartite_matches,
     visualize_object_matches,
 )
+from datasets.semantic_region_dataset import (
+    SemanticRegionDataset,
+    collate_region_pairs,
+)
 from datasets.line_dataset import (
     LineFeatPairDataset,
     collate_line_pairs,
@@ -27,6 +31,8 @@ __all__ = [
     "collate_single_pair",
     "predict_bipartite_matches",
     "visualize_object_matches",
+    "SemanticRegionDataset",
+    "collate_region_pairs",
     "LineFeatPairDataset",
     "collate_line_pairs",
     "STRUCTURED3D_CLASSES",
