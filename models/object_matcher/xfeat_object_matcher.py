@@ -248,15 +248,14 @@ class ObjectSinkhornMatcher(nn.Module):
 
 
 # ==============================================================================
-# 5. Full XFeatObjectMatcher Model
+# 5. Full XFeatObjectMatcher Model (Pure Small Region Patch Bipartite Matcher)
 # ==============================================================================
 class XFeatObjectMatcher(nn.Module):
     """
-    End-to-end Object-Level Bipartite Matcher based on XFeat backbone.
-    Inputs:
-      img0, img1: (B, 3, H, W)
-      masks0, masks1: (B, M, H, W)
-      bboxes0, bboxes1: (B, M, 4) [x1, y1, x2, y2]
+    Pure Small Region Patch Bipartite Matcher ("连连看").
+    Takes two sets of small region image patches (B, M0, 3, 112, 112) and (B, M1, 3, 112, 112),
+    and outputs bipartite matching probabilities through graph transformer and Sinkhorn.
+    Masks and full images DO NOT enter the network.
     """
 
     def __init__(
@@ -269,38 +268,49 @@ class XFeatObjectMatcher(nn.Module):
     ) -> None:
         super().__init__()
         self.d_model = d_model
+        self.feat_dim = feat_dim
         self.backbone = XFeatBackbone(in_channels=3, out_dim=feat_dim)
-        self.mask_pooling = MaskPooling()
-        self.geo_encoder = ObjectGeometryEncoder(out_dim=feat_dim)
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.token_proj = nn.Sequential(
-            nn.Linear(feat_dim * 2, d_model),
+            nn.Linear(feat_dim, d_model),
             nn.LayerNorm(d_model),
             nn.ReLU(inplace=True),
         )
         self.transformer = ObjectGraphTransformer(d_model=d_model, num_layers=num_layers, nhead=nhead)
         self.matcher = ObjectSinkhornMatcher(d_model=d_model, sinkhorn_iters=sinkhorn_iters)
 
-    def extract_object_tokens(
-        self, img: torch.Tensor, masks: torch.Tensor, bboxes: torch.Tensor
-    ) -> torch.Tensor:
-        B, _, H, W = img.shape
-        feat_map = self.backbone(img)
-        v_feat = self.mask_pooling(feat_map, masks)
-        g_feat = self.geo_encoder(bboxes, (H, W))
-        tokens = self.token_proj(torch.cat([v_feat, g_feat], dim=-1))
+    def extract_patch_tokens(self, patches: torch.Tensor) -> torch.Tensor:
+        """
+        patches: (B, M, 3, H_p, W_p), e.g. (B, M, 3, 112, 112)
+        Returns: (B, M, d_model)
+        """
+        B, M, C, H_p, W_p = patches.shape
+        if M == 0:
+            return torch.zeros((B, 0, self.d_model), device=patches.device, dtype=patches.dtype)
+
+        flat_patches = patches.view(B * M, C, H_p, W_p)
+        feat_map = self.backbone(flat_patches)  # (B*M, feat_dim, H_p/8, W_p/8)
+        pooled = self.pool(feat_map).flatten(1)  # (B*M, feat_dim)
+        tokens = self.token_proj(pooled).view(B, M, self.d_model)
         return tokens
+
+    # Alias for backward compatibility
+    extract_object_tokens = extract_patch_tokens
 
     def forward(
         self,
-        img0: torch.Tensor,
-        img1: torch.Tensor,
-        masks0: torch.Tensor,
-        bboxes0: torch.Tensor,
-        masks1: torch.Tensor,
-        bboxes1: torch.Tensor,
+        patches0: torch.Tensor,
+        patches1: torch.Tensor,
+        *args,
+        **kwargs,
     ) -> Dict[str, torch.Tensor]:
-        x0 = self.extract_object_tokens(img0, masks0, bboxes0)
-        x1 = self.extract_object_tokens(img1, masks1, bboxes1)
+        """
+        Directly matches two collections of small region image patches.
+        patches0: (B, M0, 3, 112, 112)
+        patches1: (B, M1, 3, 112, 112)
+        """
+        x0 = self.extract_patch_tokens(patches0)
+        x1 = self.extract_patch_tokens(patches1)
         x0_ctx, x1_ctx = self.transformer(x0, x1)
         log_P, P = self.matcher(x0_ctx, x1_ctx)
         return {

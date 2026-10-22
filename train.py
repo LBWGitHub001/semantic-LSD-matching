@@ -152,15 +152,11 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         for step, batch in enumerate(pbar):
             if args.max_steps is not None and step >= args.max_steps:
                 break
-            img0 = batch["img0"].to(device)
-            img1 = batch["img1"].to(device)
-            masks0 = batch["masks0"].to(device)
-            bboxes0 = batch["bboxes0"].to(device)
-            masks1 = batch["masks1"].to(device)
-            bboxes1 = batch["bboxes1"].to(device)
+            patches0 = batch["patches0"].to(device)
+            patches1 = batch["patches1"].to(device)
 
             with torch.amp.autocast("cuda", enabled=args.amp):
-                out = model(img0, img1, masks0, bboxes0, masks1, bboxes1)
+                out = model(patches0, patches1)
                 loss = loss_fn(out["log_P"], batch["gt_matches"], batch["unmatched_0"], batch["unmatched_1"])
                 loss_scaled = loss / args.grad_accum
 
@@ -177,14 +173,14 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             cur_avg_loss = total_loss / max(step_count, 1)
 
             # Real-time status in progress bar
-            m0_num = masks0.shape[1]
-            m1_num = masks1.shape[1]
+            m0_num = patches0.shape[1]
+            m1_num = patches1.shape[1]
             n_gt = len(batch["gt_matches"][0]) if "gt_matches" in batch and batch["gt_matches"] else 0
             mem_mb = torch.cuda.memory_allocated() / (1024 * 1024) if torch.cuda.is_available() else 0
             pbar.set_postfix({
                 "loss": f"{loss_val:.4f}",
                 "avg": f"{cur_avg_loss:.4f}",
-                "regions": f"{m0_num}v{m1_num}",
+                "patches": f"{m0_num}v{m1_num}",
                 "gt": n_gt,
                 "gpu": f"{mem_mb:.0f}MB",
             })
@@ -247,10 +243,9 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         for vis_idx, batch in enumerate(test_loader):
             if vis_idx >= 5:
                 break
-            img0, img1 = batch["img0"].to(device), batch["img1"].to(device)
-            m0, b0 = batch["masks0"].to(device), batch["bboxes0"].to(device)
-            m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
-            out = model(img0, img1, m0, b0, m1, b1)
+            patches0 = batch["patches0"].to(device)
+            patches1 = batch["patches1"].to(device)
+            out = model(patches0, patches1)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
             scene_tag = batch.get("scene_name", f"pair_{vis_idx+1}")
             save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
@@ -294,11 +289,10 @@ def evaluate_object_pipeline(
     pbar = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False, unit="pair")
     with torch.no_grad():
         for batch in pbar:
-            img0, img1 = batch["img0"].to(device), batch["img1"].to(device)
-            m0, b0 = batch["masks0"].to(device), batch["bboxes0"].to(device)
-            m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
+            patches0 = batch["patches0"].to(device)
+            patches1 = batch["patches1"].to(device)
 
-            out = model(img0, img1, m0, b0, m1, b1)
+            out = model(patches0, patches1)
 
             cats0 = [o.get("category", "") for o in batch.get("objs0", [])] if enforce_same_category else None
             cats1 = [o.get("category", "") for o in batch.get("objs1", [])] if enforce_same_category else None
@@ -334,7 +328,10 @@ def evaluate_object_pipeline(
             pred_un0_set = set(pred_un0)
             pred_un1_set = set(pred_un1)
 
-            for i in range(m0.shape[1]):
+            m0_num = patches0.shape[1]
+            m1_num = patches1.shape[1]
+
+            for i in range(m0_num):
                 is_un_gt = (i in gt_un0)
                 is_un_pred = (i in pred_un0_set)
                 if is_un_gt and is_un_pred:
@@ -346,7 +343,7 @@ def evaluate_object_pipeline(
                 else:
                     dustbin_tn += 1
 
-            for j in range(m1.shape[1]):
+            for j in range(m1_num):
                 is_un_gt = (j in gt_un1)
                 is_un_pred = (j in pred_un1_set)
                 if is_un_gt and is_un_pred:

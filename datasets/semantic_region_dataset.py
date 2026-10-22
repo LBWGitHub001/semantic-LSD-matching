@@ -22,20 +22,56 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 3)
 
 
+def extract_region_patch(bgr_img: np.ndarray, mask: np.ndarray, patch_size: int = 112) -> np.ndarray:
+    """
+    Directly operates image with mask:
+    1. Multiplies image with binary mask (background pixels become pure black [0, 0, 0]).
+    2. Crops to bounding box of the mask.
+    3. Letterbox pads to (patch_size, patch_size) square, preserving true aspect ratio.
+    4. Normalizes with ImageNet statistics to (3, patch_size, patch_size) float32 tensor.
+    """
+    masked = (bgr_img * (mask[:, :, None] > 0)).astype(np.uint8)
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0 or len(ys) == 0:
+        return np.zeros((3, patch_size, patch_size), dtype=np.float32)
+
+    y1, y2 = ys.min(), ys.max()
+    x1, x2 = xs.min(), xs.max()
+    crop = masked[y1 : y2 + 1, x1 : x2 + 1]
+
+    h_c, w_c = crop.shape[:2]
+    scale = patch_size / max(h_c, w_c)
+    new_w = max(1, min(patch_size, int(round(w_c * scale))))
+    new_h = max(1, min(patch_size, int(round(h_c * scale))))
+
+    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    square = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
+    pad_y = (patch_size - new_h) // 2
+    pad_x = (patch_size - new_w) // 2
+    square[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+
+    rgb = ((square[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+    return rgb
+
+
 class SemanticRegionDataset(Dataset):
     """
     PyTorch Dataset for Cross-View Semantic Region Mask Matching.
+    Directly extracts small region patches (112x112) from image & masks for network matching.
     """
 
     def __init__(
         self,
         dataset_dir: str | Path = "data/structured3d_semantic_regions",
         split: str = "train",
+        patch_size: int = 112,
         transform: Callable[[np.ndarray], np.ndarray] | None = None,
     ) -> None:
         super().__init__()
         self.root = Path(dataset_dir).resolve()
         self.split = split
+        self.patch_size = patch_size
         self.transform = transform
 
         split_file = self.root / f"{split}_split.json"
@@ -80,22 +116,26 @@ class SemanticRegionDataset(Dataset):
         with open(p_dir / "regions_1.json", "r", encoding="utf-8") as f:
             regs1 = json.load(f)
 
-        # 3. Load Binary Masks
+        # 3. Load Binary Masks and Extract Small Region Patches (112x112)
         masks0_list = []
         bboxes0_list = []
+        patches0_list = []
         for r in regs0:
             m_path = p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"
             m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
             masks0_list.append((m > 127).astype(np.float32))
             bboxes0_list.append(r["bbox"])
+            patches0_list.append(extract_region_patch(bgr0, m, patch_size=self.patch_size))
 
         masks1_list = []
         bboxes1_list = []
+        patches1_list = []
         for r in regs1:
             m_path = p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"
             m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
             masks1_list.append((m > 127).astype(np.float32))
             bboxes1_list.append(r["bbox"])
+            patches1_list.append(extract_region_patch(bgr1, m, patch_size=self.patch_size))
 
         # 4. Load Correspondence Ground Truth
         with open(p_dir / "correspondence.json", "r", encoding="utf-8") as f:
@@ -105,13 +145,15 @@ class SemanticRegionDataset(Dataset):
         unmatched_0 = corr.get("unmatched_in_view0", [])
         unmatched_1 = corr.get("unmatched_in_view1", [])
 
-        # 5. Image Normalization
+        # 5. Image Normalization & Tensor Conversion
         rgb0 = ((bgr0[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
         rgb1 = ((bgr1[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
 
-        # Stack into tensors
-        M0 = len(masks0_list)
-        M1 = len(masks1_list)
+        M0 = len(patches0_list)
+        M1 = len(patches1_list)
+        t_patches0 = torch.from_numpy(np.stack(patches0_list, axis=0)) if M0 > 0 else torch.zeros((0, 3, self.patch_size, self.patch_size), dtype=torch.float32)
+        t_patches1 = torch.from_numpy(np.stack(patches1_list, axis=0)) if M1 > 0 else torch.zeros((0, 3, self.patch_size, self.patch_size), dtype=torch.float32)
+
         t_masks0 = torch.from_numpy(np.stack(masks0_list, axis=0)) if M0 > 0 else torch.zeros((0, H, W), dtype=torch.float32)
         t_masks1 = torch.from_numpy(np.stack(masks1_list, axis=0)) if M1 > 0 else torch.zeros((0, H, W), dtype=torch.float32)
 
@@ -134,6 +176,8 @@ class SemanticRegionDataset(Dataset):
 
         return {
             "pair_id": pair_id,
+            "patches0": t_patches0,
+            "patches1": t_patches1,
             "img0": torch.from_numpy(rgb0),
             "img1": torch.from_numpy(rgb1),
             "masks0": t_masks0,
@@ -182,6 +226,8 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "scene_name": item["pair_id"],
         "view_i": 0,
         "view_j": 1,
+        "patches0": item["patches0"].unsqueeze(0),
+        "patches1": item["patches1"].unsqueeze(0),
         "img0": item["img0"].unsqueeze(0),
         "img1": item["img1"].unsqueeze(0),
         "masks0": item["masks0"].unsqueeze(0),

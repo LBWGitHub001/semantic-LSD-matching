@@ -102,15 +102,14 @@ def run_object_demo(args: argparse.Namespace) -> None:
         m1_list.append((mask1 == obj["inst_id"]).astype(np.float32))
         b1_list.append(obj["bbox"])
 
-    t_img0 = torch.from_numpy(rgb0).unsqueeze(0).to(device)
-    t_img1 = torch.from_numpy(rgb1).unsqueeze(0).to(device)
-    t_m0 = torch.from_numpy(np.stack(m0_list, axis=0)).unsqueeze(0).to(device)
-    t_b0 = torch.from_numpy(np.array(b0_list, dtype=np.float32)).unsqueeze(0).to(device)
-    t_m1 = torch.from_numpy(np.stack(m1_list, axis=0)).unsqueeze(0).to(device)
-    t_b1 = torch.from_numpy(np.array(b1_list, dtype=np.float32)).unsqueeze(0).to(device)
+    from datasets.semantic_region_dataset import extract_region_patch
+    patches0 = [extract_region_patch(img0, m, patch_size=112) for m in m0_list]
+    patches1 = [extract_region_patch(img1, m, patch_size=112) for m in m1_list]
+    t_p0 = torch.from_numpy(np.stack(patches0, axis=0)).unsqueeze(0).to(device)
+    t_p1 = torch.from_numpy(np.stack(patches1, axis=0)).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        out = model(t_img0, t_img1, t_m0, t_b0, t_m1, t_b1)
+        out = model(t_p0, t_p1)
         prob_matrix = out["prob_matrix"][0]
 
     matches, un0, un1 = predict_bipartite_matches(prob_matrix, thresh=args.thresh)

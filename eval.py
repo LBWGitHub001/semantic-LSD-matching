@@ -83,11 +83,9 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
     print(f"Running inference on {len(dataset)} view pairs...")
     with torch.no_grad():
         for batch in loader:
-            img0, img1 = batch["img0"].to(device), batch["img1"].to(device)
-            m0, b0 = batch["masks0"].to(device), batch["bboxes0"].to(device)
-            m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
-
-            out = model(img0, img1, m0, b0, m1, b1)
+            patches0 = batch["patches0"].to(device)
+            patches1 = batch["patches1"].to(device)
+            out = model(patches0, patches1)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
 
             gt_matches = set(batch["gt_matches"][0])
@@ -125,11 +123,9 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
         for vis_idx, batch in enumerate(loader):
             if vis_idx >= args.num_vis:
                 break
-            img0, img1 = batch["img0"].to(device), batch["img1"].to(device)
-            m0, b0 = batch["masks0"].to(device), batch["bboxes0"].to(device)
-            m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
-
-            out = model(img0, img1, m0, b0, m1, b1)
+            patches0 = batch["patches0"].to(device)
+            patches1 = batch["patches1"].to(device)
+            out = model(patches0, patches1)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
 
             save_file = out_dir / f"eval_sample_{vis_idx + 1}_{batch['scene_name']}_v{batch['view_i']}_v{batch['view_j']}.jpg"

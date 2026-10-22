@@ -85,15 +85,47 @@ class ObjectMatchingDataset(Dataset):
         with open(s_dir / f"objects_{vj:02d}.json", "r", encoding="utf-8") as f:
             objs1 = json.load(f)
 
-        m0_tensors, bboxes0 = [], []
+        m0_tensors, bboxes0, patches0 = [], [], []
         for obj in objs0:
-            m0_tensors.append((mask0 == obj["inst_id"]).astype(np.float32))
+            m = (mask0 == obj["inst_id"]).astype(np.float32)
+            m0_tensors.append(m)
             bboxes0.append(obj["bbox"])
+            # Extract small region patch (112x112)
+            masked = (img0 * (m[:, :, None] > 0)).astype(np.uint8)
+            ys, xs = np.where(m > 0)
+            if len(xs) > 0 and len(ys) > 0:
+                crop = masked[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+                scale = 112 / max(crop.shape[:2])
+                nw, nh = max(1, min(112, int(round(crop.shape[1] * scale)))), max(1, min(112, int(round(crop.shape[0] * scale))))
+                res = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_AREA)
+                sq = np.zeros((112, 112, 3), dtype=np.uint8)
+                sq[(112 - nh) // 2 : (112 - nh) // 2 + nh, (112 - nw) // 2 : (112 - nw) // 2 + nw] = res
+                rgb = ((sq[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+            else:
+                rgb = np.zeros((3, 112, 112), dtype=np.float32)
+            patches0.append(rgb)
 
-        m1_tensors, bboxes1 = [], []
+        m1_tensors, bboxes1, patches1 = [], [], []
         for obj in objs1:
-            m1_tensors.append((mask1 == obj["inst_id"]).astype(np.float32))
+            m = (mask1 == obj["inst_id"]).astype(np.float32)
+            m1_tensors.append(m)
             bboxes1.append(obj["bbox"])
+            masked = (img1 * (m[:, :, None] > 0)).astype(np.uint8)
+            ys, xs = np.where(m > 0)
+            if len(xs) > 0 and len(ys) > 0:
+                crop = masked[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+                scale = 112 / max(crop.shape[:2])
+                nw, nh = max(1, min(112, int(round(crop.shape[1] * scale)))), max(1, min(112, int(round(crop.shape[0] * scale))))
+                res = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_AREA)
+                sq = np.zeros((112, 112, 3), dtype=np.uint8)
+                sq[(112 - nh) // 2 : (112 - nh) // 2 + nh, (112 - nw) // 2 : (112 - nw) // 2 + nw] = res
+                rgb = ((sq[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+            else:
+                rgb = np.zeros((3, 112, 112), dtype=np.float32)
+            patches1.append(rgb)
+
+        t_patches0 = torch.from_numpy(np.stack(patches0, axis=0)) if patches0 else torch.zeros((0, 3, 112, 112), dtype=torch.float32)
+        t_patches1 = torch.from_numpy(np.stack(patches1, axis=0)) if patches1 else torch.zeros((0, 3, 112, 112), dtype=torch.float32)
 
         masks0_arr = np.stack(m0_tensors, axis=0) if m0_tensors else np.zeros((1, H, W), dtype=np.float32)
         bboxes0_arr = np.array(bboxes0, dtype=np.float32) if bboxes0 else np.zeros((1, 4), dtype=np.float32)
@@ -101,6 +133,8 @@ class ObjectMatchingDataset(Dataset):
         bboxes1_arr = np.array(bboxes1, dtype=np.float32) if bboxes1 else np.zeros((1, 4), dtype=np.float32)
 
         return {
+            "patches0": t_patches0,
+            "patches1": t_patches1,
             "img0": torch.from_numpy(rgb0_norm),
             "img1": torch.from_numpy(rgb1_norm),
             "raw_img0": img0,
@@ -124,6 +158,8 @@ def collate_single_pair(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """Single pair collator for variable-sized object sets."""
     item = batch[0]
     return {
+        "patches0": item["patches0"].unsqueeze(0) if "patches0" in item else None,
+        "patches1": item["patches1"].unsqueeze(0) if "patches1" in item else None,
         "img0": item["img0"].unsqueeze(0),
         "img1": item["img1"].unsqueeze(0),
         "raw_img0": item["raw_img0"],
