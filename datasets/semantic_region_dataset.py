@@ -97,6 +97,7 @@ class SemanticRegionDataset(Dataset):
         patch_size: int = 112,
         transform: Callable[[np.ndarray], np.ndarray] | None = None,
         min_area_ratio: float = 0.50,
+        load_masks: bool = False,
     ) -> None:
         super().__init__()
         self.root = Path(dataset_dir).resolve()
@@ -104,6 +105,7 @@ class SemanticRegionDataset(Dataset):
         self.patch_size = patch_size
         self.transform = transform
         self.min_area_ratio = min_area_ratio
+        self.load_masks = load_masks
 
         split_file = self.root / f"{split}_split.json"
         if not split_file.is_file():
@@ -169,13 +171,14 @@ class SemanticRegionDataset(Dataset):
         pair_id = self.pair_ids[idx]
         p_dir = self.root / pair_id
 
-        # 1. Load RGB Images
-        bgr0 = cv2.imread(str(p_dir / "image_0.png"))
-        bgr1 = cv2.imread(str(p_dir / "image_1.png"))
-        if bgr0 is None or bgr1 is None:
-            raise FileNotFoundError(f"Missing images in {p_dir}")
-
-        H, W = bgr0.shape[:2]
+        # 1. Optionally Load Full RGB Images (only if load_masks=True, e.g. for visualization)
+        H, W = 480, 640
+        bgr0, bgr1 = None, None
+        if self.load_masks:
+            bgr0 = cv2.imread(str(p_dir / "image_0.png"))
+            bgr1 = cv2.imread(str(p_dir / "image_1.png"))
+            if bgr0 is not None:
+                H, W = bgr0.shape[:2]
 
         # 2. Load Region Metadata
         with open(p_dir / "regions_0.json", "r", encoding="utf-8") as f:
@@ -183,37 +186,49 @@ class SemanticRegionDataset(Dataset):
         with open(p_dir / "regions_1.json", "r", encoding="utf-8") as f:
             regs1 = json.load(f)
 
-        # 3. Load Binary Masks and Extract Small Region Patches (112x112)
+        # 3. Extract Small Region Patches (112x112) directly from small crops
         masks0_list = []
         bboxes0_list = []
         patches0_list = []
         for r in regs0:
-            m_path = p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"
-            m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
-            masks0_list.append((m > 127).astype(np.float32))
             bboxes0_list.append(r["bbox"])
+            if self.load_masks:
+                m_path = p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"
+                m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
+                if m is not None:
+                    masks0_list.append((m > 127).astype(np.float32))
 
             crop_path = p_dir / "image_0" / f"region_{r['idx']:02d}.png"
             if crop_path.is_file():
-                crop_bgra = cv2.imread(str(crop_path), cv2.IMREAD_UNCHANGED)
-                patches0_list.append(extract_region_patch_from_crop(crop_bgra, patch_size=self.patch_size))
+                crop_img = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
+                patches0_list.append(extract_region_patch_from_crop(crop_img, patch_size=self.patch_size))
             else:
+                if bgr0 is None:
+                    bgr0 = cv2.imread(str(p_dir / "image_0.png"))
+                m_path = p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"
+                m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
                 patches0_list.append(extract_region_patch(bgr0, m, patch_size=self.patch_size))
 
         masks1_list = []
         bboxes1_list = []
         patches1_list = []
         for r in regs1:
-            m_path = p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"
-            m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
-            masks1_list.append((m > 127).astype(np.float32))
             bboxes1_list.append(r["bbox"])
+            if self.load_masks:
+                m_path = p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"
+                m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
+                if m is not None:
+                    masks1_list.append((m > 127).astype(np.float32))
 
             crop_path = p_dir / "image_1" / f"region_{r['idx']:02d}.png"
             if crop_path.is_file():
-                crop_bgra = cv2.imread(str(crop_path), cv2.IMREAD_UNCHANGED)
-                patches1_list.append(extract_region_patch_from_crop(crop_bgra, patch_size=self.patch_size))
+                crop_img = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
+                patches1_list.append(extract_region_patch_from_crop(crop_img, patch_size=self.patch_size))
             else:
+                if bgr1 is None:
+                    bgr1 = cv2.imread(str(p_dir / "image_1.png"))
+                m_path = p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"
+                m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
                 patches1_list.append(extract_region_patch(bgr1, m, patch_size=self.patch_size))
 
         # 4. Load Correspondence Ground Truth
@@ -225,16 +240,23 @@ class SemanticRegionDataset(Dataset):
         unmatched_1 = corr.get("unmatched_in_view1", [])
 
         # 5. Image Normalization & Tensor Conversion
-        rgb0 = ((bgr0[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
-        rgb1 = ((bgr1[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+        if self.load_masks and bgr0 is not None and bgr1 is not None:
+            rgb0 = ((bgr0[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+            rgb1 = ((bgr1[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+            t_img0 = torch.from_numpy(rgb0)
+            t_img1 = torch.from_numpy(rgb1)
+            t_masks0 = torch.from_numpy(np.stack(masks0_list, axis=0)) if masks0_list else torch.zeros((0, H, W), dtype=torch.float32)
+            t_masks1 = torch.from_numpy(np.stack(masks1_list, axis=0)) if masks1_list else torch.zeros((0, H, W), dtype=torch.float32)
+        else:
+            t_img0 = None
+            t_img1 = None
+            t_masks0 = None
+            t_masks1 = None
 
         M0 = len(patches0_list)
         M1 = len(patches1_list)
         t_patches0 = torch.from_numpy(np.stack(patches0_list, axis=0)) if M0 > 0 else torch.zeros((0, 3, self.patch_size, self.patch_size), dtype=torch.float32)
         t_patches1 = torch.from_numpy(np.stack(patches1_list, axis=0)) if M1 > 0 else torch.zeros((0, 3, self.patch_size, self.patch_size), dtype=torch.float32)
-
-        t_masks0 = torch.from_numpy(np.stack(masks0_list, axis=0)) if M0 > 0 else torch.zeros((0, H, W), dtype=torch.float32)
-        t_masks1 = torch.from_numpy(np.stack(masks1_list, axis=0)) if M1 > 0 else torch.zeros((0, H, W), dtype=torch.float32)
 
         t_bboxes0 = torch.from_numpy(np.array(bboxes0_list, dtype=np.float32)) if M0 > 0 else torch.zeros((0, 4), dtype=torch.float32)
         t_bboxes1 = torch.from_numpy(np.array(bboxes1_list, dtype=np.float32)) if M1 > 0 else torch.zeros((0, 4), dtype=torch.float32)
@@ -283,8 +305,8 @@ class SemanticRegionDataset(Dataset):
             "pair_id": pair_id,
             "patches0": t_patches0,
             "patches1": t_patches1,
-            "img0": torch.from_numpy(rgb0),
-            "img1": torch.from_numpy(rgb1),
+            "img0": t_img0,
+            "img1": t_img1,
             "masks0": t_masks0,
             "masks1": t_masks1,
             "bboxes0": t_bboxes0,
@@ -339,10 +361,10 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "view_j": 1,
         "patches0": item["patches0"].unsqueeze(0),
         "patches1": item["patches1"].unsqueeze(0),
-        "img0": item["img0"].unsqueeze(0),
-        "img1": item["img1"].unsqueeze(0),
-        "masks0": item["masks0"].unsqueeze(0),
-        "masks1": item["masks1"].unsqueeze(0),
+        "img0": item["img0"].unsqueeze(0) if item.get("img0") is not None else None,
+        "img1": item["img1"].unsqueeze(0) if item.get("img1") is not None else None,
+        "masks0": item["masks0"].unsqueeze(0) if item.get("masks0") is not None else None,
+        "masks1": item["masks1"].unsqueeze(0) if item.get("masks1") is not None else None,
         "bboxes0": item["bboxes0"].unsqueeze(0),
         "bboxes1": item["bboxes1"].unsqueeze(0),
         "centroids0": item["centroids0"].unsqueeze(0) if "centroids0" in item else None,

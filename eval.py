@@ -15,6 +15,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -172,12 +174,30 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
             scene_tag = batch.get("scene_name", f"sample_{vis_idx + 1}")
             save_file = out_dir / f"eval_sample_{vis_idx + 1}_{scene_tag}.jpg"
 
-            if use_region_ds and "raw_img0" in batch and batch["raw_img0"] is not None:
+            if use_region_ds:
+                bgr0 = batch.get("raw_img0")
+                bgr1 = batch.get("raw_img1")
+                masks0 = batch.get("masks0")
+                masks1 = batch.get("masks1")
+                if bgr0 is None or masks0 is None:
+                    p_dir = p_data / scene_tag
+                    bgr0 = cv2.imread(str(p_dir / "image_0.png"))
+                    bgr1 = cv2.imread(str(p_dir / "image_1.png"))
+                    m0_list, m1_list = [], []
+                    for r in batch.get("regs0", []):
+                        m = cv2.imread(str(p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
+                        m0_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
+                    for r in batch.get("regs1", []):
+                        m = cv2.imread(str(p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
+                        m1_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
+                    masks0 = torch.from_numpy(np.stack(m0_list, axis=0)) if m0_list else torch.zeros((0, 480, 640))
+                    masks1 = torch.from_numpy(np.stack(m1_list, axis=0)) if m1_list else torch.zeros((0, 480, 640))
+
                 visualize_semantic_region_matches(
-                    bgr0=batch["raw_img0"],
-                    bgr1=batch["raw_img1"],
-                    masks0=batch["masks0"],
-                    masks1=batch["masks1"],
+                    bgr0=bgr0,
+                    bgr1=bgr1,
+                    masks0=masks0,
+                    masks1=masks1,
                     regs0=batch.get("regs0", []),
                     regs1=batch.get("regs1", []),
                     pred_matches=pred_matches,

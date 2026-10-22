@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -105,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=2, help="Number of Transformer layers")
     parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads")
     parser.add_argument("--grad-accum", type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument("--num-workers", type=int, default=2, help="DataLoader worker processes")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes (default: 4)")
     parser.add_argument("--amp", action="store_true", default=True, help="Enable Automatic Mixed Precision (FP16)")
     parser.add_argument("--save-dir", type=Path, default=None, help="Checkpoint directory")
     parser.add_argument("--run-name", type=str, default=None, help="Custom run subfolder name (default: start time YYYYMMDD_HHMMSS)")
@@ -188,9 +190,34 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         test_ds = ObjectMatchingDataset(data_dir=data_dir, split="test")
         collate_fn = collate_single_pair
 
-    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_fn, num_workers=args.num_workers)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
-    test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=args.num_workers)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=1,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=True if args.num_workers > 0 else False,
+        prefetch_factor=2 if args.num_workers > 0 else None,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=1,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=True if args.num_workers > 0 else False,
+        prefetch_factor=2 if args.num_workers > 0 else None,
+    )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=1,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+    )
 
     model = build_model(
         args.model_type,
@@ -493,12 +520,30 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
             global_file = global_vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
 
-            if use_region_ds and "raw_img0" in batch and batch["raw_img0"] is not None:
+            if use_region_ds:
+                bgr0 = batch.get("raw_img0")
+                bgr1 = batch.get("raw_img1")
+                masks0 = batch.get("masks0")
+                masks1 = batch.get("masks1")
+                if bgr0 is None or masks0 is None:
+                    p_dir = p_data / scene_tag
+                    bgr0 = cv2.imread(str(p_dir / "image_0.png"))
+                    bgr1 = cv2.imread(str(p_dir / "image_1.png"))
+                    m0_list, m1_list = [], []
+                    for r in batch.get("regs0", []):
+                        m = cv2.imread(str(p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
+                        m0_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
+                    for r in batch.get("regs1", []):
+                        m = cv2.imread(str(p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
+                        m1_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
+                    masks0 = torch.from_numpy(np.stack(m0_list, axis=0)) if m0_list else torch.zeros((0, 480, 640))
+                    masks1 = torch.from_numpy(np.stack(m1_list, axis=0)) if m1_list else torch.zeros((0, 480, 640))
+
                 visualize_semantic_region_matches(
-                    bgr0=batch["raw_img0"],
-                    bgr1=batch["raw_img1"],
-                    masks0=batch["masks0"],
-                    masks1=batch["masks1"],
+                    bgr0=bgr0,
+                    bgr1=bgr1,
+                    masks0=masks0,
+                    masks1=masks1,
                     regs0=batch.get("regs0", []),
                     regs1=batch.get("regs1", []),
                     pred_matches=pred_matches,
