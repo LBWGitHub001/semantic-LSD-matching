@@ -455,8 +455,10 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"      Matches            : {cat_test_metrics['tp']} TP, {cat_test_metrics['fp']} FP, {cat_test_metrics['fn']} FN")
     print("-" * 75)
 
-    vis_dir = Path("outputs/object_matching_vis")
+    vis_dir = save_dir / "visualizations"
     vis_dir.mkdir(parents=True, exist_ok=True)
+    global_vis_dir = Path("outputs/semantic_matching_vis")
+    global_vis_dir.mkdir(parents=True, exist_ok=True)
     model.eval()
     with torch.no_grad():
         for vis_idx, batch in enumerate(test_loader):
@@ -468,6 +470,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
             scene_tag = batch.get("scene_name", f"pair_{vis_idx+1}")
             save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
+            global_file = global_vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
 
             if use_region_ds and "raw_img0" in batch and batch["raw_img0"] is not None:
                 visualize_semantic_region_matches(
@@ -484,12 +487,16 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                     out_path=save_file,
                     title=f"Sample {vis_idx + 1}: {scene_tag}",
                 )
+                import shutil
+                shutil.copyfile(save_file, global_file)
             elif "raw_img0" in batch and batch["raw_img0"] is not None:
                 visualize_object_matches(
                     batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
                     pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
                     title=f"Sample {vis_idx + 1}: {scene_tag}",
                 )
+                import shutil
+                shutil.copyfile(save_file, global_file)
 
     config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     config_data["test_benchmark"] = {

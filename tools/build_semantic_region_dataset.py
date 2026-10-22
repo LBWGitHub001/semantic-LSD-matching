@@ -364,12 +364,25 @@ def process_scene_room_pairs(
                 cv2.imwrite(str(pair_dir / "image_0.png"), va["bgr"])
                 cv2.imwrite(str(pair_dir / "image_1.png"), vb["bgr"])
 
-                # Save Masks for View 0
+                # Save Masks and Segmented Small Crops for View 0
                 masks0_dir = pair_dir / "masks_0"
                 masks0_dir.mkdir(exist_ok=True)
+                crops0_dir = pair_dir / "image_0"
+                crops0_dir.mkdir(exist_ok=True)
                 meta_regions_0 = []
                 for idx, r in enumerate(va["regions"]):
                     cv2.imwrite(str(masks0_dir / f"mask_{idx:02d}.png"), r["mask"])
+
+                    # Save segmented crop
+                    x1, y1, x2, y2 = r["bbox"]
+                    crop_img = va["bgr"][y1 : y2 + 1, x1 : x2 + 1]
+                    crop_m = r["mask"][y1 : y2 + 1, x1 : x2 + 1]
+                    bgra = np.zeros((crop_img.shape[0], crop_img.shape[1], 4), dtype=np.uint8)
+                    bin_m = crop_m > 0
+                    bgra[..., :3] = crop_img * bin_m[..., None]
+                    bgra[..., 3] = np.where(bin_m, 255, 0).astype(np.uint8)
+                    cv2.imwrite(str(crops0_dir / f"region_{idx:02d}.png"), bgra)
+
                     meta_regions_0.append({
                         "idx": idx,
                         "label": r["label"],
@@ -380,12 +393,25 @@ def process_scene_room_pairs(
                         "pixel_area": r["pixel_area"],
                     })
 
-                # Save Masks for View 1
+                # Save Masks and Segmented Small Crops for View 1
                 masks1_dir = pair_dir / "masks_1"
                 masks1_dir.mkdir(exist_ok=True)
+                crops1_dir = pair_dir / "image_1"
+                crops1_dir.mkdir(exist_ok=True)
                 meta_regions_1 = []
                 for idx, r in enumerate(vb["regions"]):
                     cv2.imwrite(str(masks1_dir / f"mask_{idx:02d}.png"), r["mask"])
+
+                    # Save segmented crop
+                    x1, y1, x2, y2 = r["bbox"]
+                    crop_img = vb["bgr"][y1 : y2 + 1, x1 : x2 + 1]
+                    crop_m = r["mask"][y1 : y2 + 1, x1 : x2 + 1]
+                    bgra = np.zeros((crop_img.shape[0], crop_img.shape[1], 4), dtype=np.uint8)
+                    bin_m = crop_m > 0
+                    bgra[..., :3] = crop_img * bin_m[..., None]
+                    bgra[..., 3] = np.where(bin_m, 255, 0).astype(np.uint8)
+                    cv2.imwrite(str(crops1_dir / f"region_{idx:02d}.png"), bgra)
+
                     meta_regions_1.append({
                         "idx": idx,
                         "label": r["label"],

@@ -29,6 +29,9 @@ from datasets import (
     collate_single_pair,
     predict_bipartite_matches,
     visualize_object_matches,
+    SemanticRegionDataset,
+    collate_region_pairs,
+    visualize_semantic_region_matches,
 )
 
 
@@ -37,9 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", type=str, default="xfeat_object",
                         choices=["xfeat_object", "xfeat", "mask_line", "mask", "line_transformer", "linefeat"],
                         help="Model architecture name")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/xfeat_object_matcher/best_model.pth",
-                        help="Path to model weights checkpoint (.pth)")
-    parser.add_argument("--data-dir", type=str, default="data/synthetic_object_matching_scenes",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/semantic_patch_matcher/latest",
+                        help="Path to model weights checkpoint (.pth) or run directory")
+    default_data = "data/structured3d_semantic_regions" if Path("data/structured3d_semantic_regions").is_dir() else "data/synthetic_object_matching_scenes"
+    parser.add_argument("--data-dir", type=str, default=default_data,
                         help="Dataset root directory")
     parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"],
                         help="Dataset split to evaluate")
@@ -75,8 +79,21 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
     print("=================================================================\n")
 
     # 1. Load Dataset
-    dataset = ObjectMatchingDataset(data_dir=args.data_dir, split=args.split)
-    loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_single_pair, num_workers=2)
+    use_region_ds = False
+    p_data = Path(args.data_dir)
+    if (p_data / "train_split.json").is_file() or (p_data / f"{args.split}_split.json").is_file():
+        use_region_ds = True
+    elif any((d / "correspondence.json").is_file() for d in p_data.iterdir() if d.is_dir()):
+        use_region_ds = True
+
+    if use_region_ds:
+        dataset = SemanticRegionDataset(dataset_dir=args.data_dir, split=args.split)
+        collate_fn = collate_region_pairs
+    else:
+        dataset = ObjectMatchingDataset(data_dir=args.data_dir, split=args.split)
+        collate_fn = collate_single_pair
+
+    loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=2)
 
     # 2. Load Model
     model = build_model(args.model).to(device)
@@ -140,12 +157,30 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
             out = model(patches0, patches1)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
 
-            save_file = out_dir / f"eval_sample_{vis_idx + 1}_{batch['scene_name']}_v{batch['view_i']}_v{batch['view_j']}.jpg"
-            visualize_object_matches(
-                batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
-                pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
-                title=f"Sample {vis_idx + 1}: {batch['scene_name']} (View {batch['view_i']} <-> View {batch['view_j']})",
-            )
+            scene_tag = batch.get("scene_name", f"sample_{vis_idx + 1}")
+            save_file = out_dir / f"eval_sample_{vis_idx + 1}_{scene_tag}.jpg"
+
+            if use_region_ds and "raw_img0" in batch and batch["raw_img0"] is not None:
+                visualize_semantic_region_matches(
+                    bgr0=batch["raw_img0"],
+                    bgr1=batch["raw_img1"],
+                    masks0=batch["masks0"],
+                    masks1=batch["masks1"],
+                    regs0=batch.get("regs0", []),
+                    regs1=batch.get("regs1", []),
+                    pred_matches=pred_matches,
+                    gt_matches=batch["gt_matches"][0],
+                    pred_un0=pred_un0,
+                    pred_un1=pred_un1,
+                    out_path=save_file,
+                    title=f"Sample {vis_idx + 1}: {scene_tag}",
+                )
+            elif "raw_img0" in batch and batch["raw_img0"] is not None:
+                visualize_object_matches(
+                    batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
+                    pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
+                    title=f"Sample {vis_idx + 1}: {scene_tag}",
+                )
             print(f"  [✓] Saved -> {save_file}")
 
 

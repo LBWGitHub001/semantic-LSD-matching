@@ -55,6 +55,35 @@ def extract_region_patch(bgr_img: np.ndarray, mask: np.ndarray, patch_size: int 
     return rgb
 
 
+def extract_region_patch_from_crop(crop_bgra: np.ndarray, patch_size: int = 112) -> np.ndarray:
+    """
+    Directly pads and normalizes an already-segmented small image crop (BGRA or BGR)
+    to a (3, patch_size, patch_size) float32 tensor.
+    """
+    if crop_bgra is None or crop_bgra.size == 0:
+        return np.zeros((3, patch_size, patch_size), dtype=np.float32)
+
+    if crop_bgra.ndim == 3 and crop_bgra.shape[2] == 4:
+        crop_bgr = crop_bgra[..., :3] * (crop_bgra[..., 3:] > 0)
+    else:
+        crop_bgr = crop_bgra
+
+    h_c, w_c = crop_bgr.shape[:2]
+    scale = patch_size / max(h_c, w_c)
+    new_w = max(1, min(patch_size, int(round(w_c * scale))))
+    new_h = max(1, min(patch_size, int(round(h_c * scale))))
+
+    resized = cv2.resize(crop_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    square = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
+    pad_y = (patch_size - new_h) // 2
+    pad_x = (patch_size - new_w) // 2
+    square[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+
+    rgb = ((square[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
+    return rgb
+
+
 class SemanticRegionDataset(Dataset):
     """
     PyTorch Dataset for Cross-View Semantic Region Mask Matching.
@@ -125,7 +154,13 @@ class SemanticRegionDataset(Dataset):
             m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
             masks0_list.append((m > 127).astype(np.float32))
             bboxes0_list.append(r["bbox"])
-            patches0_list.append(extract_region_patch(bgr0, m, patch_size=self.patch_size))
+
+            crop_path = p_dir / "image_0" / f"region_{r['idx']:02d}.png"
+            if crop_path.is_file():
+                crop_bgra = cv2.imread(str(crop_path), cv2.IMREAD_UNCHANGED)
+                patches0_list.append(extract_region_patch_from_crop(crop_bgra, patch_size=self.patch_size))
+            else:
+                patches0_list.append(extract_region_patch(bgr0, m, patch_size=self.patch_size))
 
         masks1_list = []
         bboxes1_list = []
@@ -135,7 +170,13 @@ class SemanticRegionDataset(Dataset):
             m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
             masks1_list.append((m > 127).astype(np.float32))
             bboxes1_list.append(r["bbox"])
-            patches1_list.append(extract_region_patch(bgr1, m, patch_size=self.patch_size))
+
+            crop_path = p_dir / "image_1" / f"region_{r['idx']:02d}.png"
+            if crop_path.is_file():
+                crop_bgra = cv2.imread(str(crop_path), cv2.IMREAD_UNCHANGED)
+                patches1_list.append(extract_region_patch_from_crop(crop_bgra, patch_size=self.patch_size))
+            else:
+                patches1_list.append(extract_region_patch(bgr1, m, patch_size=self.patch_size))
 
         # 4. Load Correspondence Ground Truth
         with open(p_dir / "correspondence.json", "r", encoding="utf-8") as f:
@@ -280,10 +321,14 @@ def visualize_semantic_region_matches(
     pred_un1: list[int],
     out_path: Path | str,
     title: str = "Semantic Region Mask Matching",
+    connect_tp: bool = False,
 ) -> None:
     """
-    Renders genuine semantic mask matching visualization with alpha-blending,
-    mask contours, centroid connections, and explicit TP/FP/FN error diagnostics.
+    Renders high-clarity semantic region mask matching comparison image:
+      - Blue lines: partition/delineate all semantic regions across both views.
+      - Green mask: overlay for correctly matched regions (TP).
+      - Red mask: overlay for incorrectly matched regions (FP).
+      - Red lines: connect centroids of incorrectly matched regions to explicitly diagnose errors.
     """
     if isinstance(masks0, torch.Tensor):
         m0_arr = masks0.detach().cpu().numpy()
@@ -303,7 +348,7 @@ def visualize_semantic_region_matches(
     H1, W1 = bgr1.shape[:2]
     H = max(H0, H1)
     header_h = 60
-    canvas = np.full((H + header_h, W0 + W1 + 30, 3), 32, dtype=np.uint8)
+    canvas = np.full((H + header_h, W0 + W1 + 30, 3), 28, dtype=np.uint8)
 
     # Place base images
     canvas[header_h : header_h + H0, :W0] = bgr0
@@ -318,108 +363,78 @@ def visualize_semantic_region_matches(
     fp_set = pred_set - gt_set
     fn_set = gt_set - pred_set
 
-    # 12 Distinct high-contrast palette colors (BGR)
-    palette = [
-        (40, 220, 40),    # Vivid Green
-        (0, 165, 255),    # Orange
-        (255, 210, 30),   # Cyan
-        (230, 80, 230),   # Magenta
-        (30, 240, 255),   # Yellow
-        (80, 120, 255),   # Coral
-        (200, 130, 255),  # Pink
-        (255, 160, 50),   # Sky Blue
-        (120, 240, 140),  # Mint
-        (70, 240, 240),   # Lime Yellow
-        (220, 190, 60),   # Aqua Teal
-        (240, 130, 190),  # Lavender
-    ]
+    # 1. 区域之间使用蓝色的线划分出来 (Blue boundary lines for all regions)
+    BLUE = (255, 90, 0)  # BGR Vivid Blue
+    for i in range(len(m0_arr)):
+        mask_i = (m0_arr[i] > 0.5).astype(np.uint8)
+        cnts0, _ = cv2.findContours(mask_i, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay0, cnts0, -1, BLUE, 2)
 
-    # 1. Neutral tint for truly unmatched regions (low opacity dark overlay, no bounding box clutter)
-    for i in pred_un0:
+    for j in range(len(m1_arr)):
+        mask_j = (m1_arr[j] > 0.5).astype(np.uint8)
+        cnts1, _ = cv2.findContours(mask_j, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(overlay1, cnts1, -1, BLUE, 2)
+
+    # 2. 绿色掩膜一个匹配正确 (Green mask for correct matches)
+    GREEN = (40, 220, 40)  # BGR Green
+    for i, j in tp_set:
         if i < len(m0_arr):
             mask_i = m0_arr[i] > 0.5
-            overlay0[mask_i] = (overlay0[mask_i] * 0.75 + np.array([70, 70, 70]) * 0.25).astype(np.uint8)
-
-    for j in pred_un1:
+            overlay0[mask_i] = (overlay0[mask_i] * 0.45 + np.array(GREEN) * 0.55).astype(np.uint8)
         if j < len(m1_arr):
             mask_j = m1_arr[j] > 0.5
-            overlay1[mask_j] = (overlay1[mask_j] * 0.75 + np.array([70, 70, 70]) * 0.25).astype(np.uint8)
+            overlay1[mask_j] = (overlay1[mask_j] * 0.45 + np.array(GREEN) * 0.55).astype(np.uint8)
 
-    # 2. Render TP matches (Colored mask overlay + solid contours)
-    tp_list = sorted(list(tp_set))
-    for idx, (i, j) in enumerate(tp_list):
-        col = palette[idx % len(palette)]
-        if i < len(m0_arr):
-            mask_i = m0_arr[i] > 0.5
-            overlay0[mask_i] = (overlay0[mask_i] * 0.45 + np.array(col) * 0.55).astype(np.uint8)
-            cnts0, _ = cv2.findContours((mask_i * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(overlay0, cnts0, -1, col, 2)
-
-        if j < len(m1_arr):
-            mask_j = m1_arr[j] > 0.5
-            overlay1[mask_j] = (overlay1[mask_j] * 0.45 + np.array(col) * 0.55).astype(np.uint8)
-            cnts1, _ = cv2.findContours((mask_j * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(overlay1, cnts1, -1, col, 2)
-
-    # 3. Render FP matches (Red tint overlay)
+    # 3. 红色表示一个匹配不正确 (Red mask for incorrect matches)
+    RED = (30, 30, 240)  # BGR Red
     for i, j in fp_set:
-        red_col = (40, 40, 230)
         if i < len(m0_arr):
             mask_i = m0_arr[i] > 0.5
-            overlay0[mask_i] = (overlay0[mask_i] * 0.55 + np.array(red_col) * 0.45).astype(np.uint8)
+            overlay0[mask_i] = (overlay0[mask_i] * 0.4 + np.array(RED) * 0.6).astype(np.uint8)
         if j < len(m1_arr):
             mask_j = m1_arr[j] > 0.5
-            overlay1[mask_j] = (overlay1[mask_j] * 0.55 + np.array(red_col) * 0.45).astype(np.uint8)
+            overlay1[mask_j] = (overlay1[mask_j] * 0.4 + np.array(RED) * 0.6).astype(np.uint8)
 
     canvas[header_h : header_h + H0, :W0] = overlay0
     canvas[header_h : header_h + H1, W0 + 30 :] = overlay1
 
-    # 4. Draw Lines & Diagnostics
-    # (a) True Positives: Green lines between centroids
-    for idx, (i, j) in enumerate(tp_list):
-        col = palette[idx % len(palette)]
+    # 4. Correct match markers (Green centroid dots, and optional subtle line)
+    for i, j in tp_set:
         c0 = regs0[i]["centroid_2d"] if i < len(regs0) else [W0 // 2, H0 // 2]
         c1 = regs1[j]["centroid_2d"] if j < len(regs1) else [W1 // 2, H1 // 2]
         pt0 = (int(c0[0]), int(c0[1] + header_h))
         pt1 = (int(c1[0] + W0 + 30), int(c1[1] + header_h))
+        cv2.circle(canvas, pt0, 5, GREEN, -1)
+        cv2.circle(canvas, pt1, 5, GREEN, -1)
+        if connect_tp:
+            cv2.line(canvas, pt0, pt1, (60, 200, 60), 1, cv2.LINE_AA)
 
-        cv2.circle(canvas, pt0, 5, col, -1)
-        cv2.circle(canvas, pt1, 5, col, -1)
-        cv2.line(canvas, pt0, pt1, col, 2, cv2.LINE_AA)
-
-        label_txt = regs0[i].get("label", str(i)) if i < len(regs0) else f"m{i}"
-        cv2.putText(canvas, f"{label_txt} [TP]", (pt0[0] + 6, pt0[1] - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-
-    # (b) False Positives: Red lines + Explicit class mismatch warning
+    # 5. 红色的区域用线连起来表示如何匹配的 (Red lines connecting incorrect matches)
     for i, j in fp_set:
         c0 = regs0[i]["centroid_2d"] if i < len(regs0) else [W0 // 2, H0 // 2]
         c1 = regs1[j]["centroid_2d"] if j < len(regs1) else [W1 // 2, H1 // 2]
         pt0 = (int(c0[0]), int(c0[1] + header_h))
         pt1 = (int(c1[0] + W0 + 30), int(c1[1] + header_h))
 
-        red = (40, 40, 240)
-        cv2.circle(canvas, pt0, 6, red, -1)
-        cv2.circle(canvas, pt1, 6, red, -1)
-        cv2.line(canvas, pt0, pt1, red, 2, cv2.LINE_AA)
+        cv2.circle(canvas, pt0, 6, RED, -1)
+        cv2.circle(canvas, pt1, 6, RED, -1)
+        cv2.line(canvas, pt0, pt1, RED, 2, cv2.LINE_AA)
 
         cat0 = regs0[i].get("category", regs0[i].get("label", "")) if i < len(regs0) else ""
         cat1 = regs1[j].get("category", regs1[j].get("label", "")) if j < len(regs1) else ""
-        tag = f"{cat0}->{cat1} [FP WRONG]"
+        tag = f"{cat0} -> {cat1} [FP WRONG]"
         cv2.putText(canvas, tag, (pt0[0] + 6, pt0[1] + 16),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
 
-    # (c) False Negatives: Yellow dashed line indicating missed GT match
+    # 6. False Negatives (Missed GT matches - subtle dashed indicator)
     for i, j in fn_set:
         c0 = regs0[i]["centroid_2d"] if i < len(regs0) else [W0 // 2, H0 // 2]
         c1 = regs1[j]["centroid_2d"] if j < len(regs1) else [W1 // 2, H1 // 2]
         pt0 = (int(c0[0]), int(c0[1] + header_h))
         pt1 = (int(c1[0] + W0 + 30), int(c1[1] + header_h))
-
-        yellow = (0, 220, 240)
-        # Draw dashed line
+        yellow = (0, 215, 235)
         dist = np.hypot(pt1[0] - pt0[0], pt1[1] - pt0[1])
-        steps = max(int(dist / 14), 1)
+        steps = max(int(dist / 16), 1)
         for s in range(0, steps, 2):
             p_a = (int(pt0[0] + (pt1[0] - pt0[0]) * (s / steps)),
                    int(pt0[1] + (pt1[1] - pt0[1]) * (s / steps)))
@@ -427,20 +442,16 @@ def visualize_semantic_region_matches(
                    int(pt0[1] + (pt1[1] - pt0[1]) * (min(s + 1, steps) / steps)))
             cv2.line(canvas, p_a, p_b, yellow, 1, cv2.LINE_AA)
 
-        lbl = regs0[i].get("label", "") if i < len(regs0) else ""
-        cv2.putText(canvas, f"{lbl} [MISSED]", (pt0[0] + 6, pt0[1] - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, yellow, 1, cv2.LINE_AA)
-
-    # 5. Header diagnostics banner
+    # 7. Header Diagnostics
     n_tp = len(tp_set)
     n_fp = len(fp_set)
     n_fn = len(fn_set)
     pair_prec = n_tp / (n_tp + n_fp) * 100.0 if (n_tp + n_fp) > 0 else 0.0
     pair_rec = n_tp / (n_tp + n_fn) * 100.0 if (n_tp + n_fn) > 0 else 0.0
-    status_str = f"TP={n_tp} | FP={n_fp} | FN={n_fn} | Precision={pair_prec:.1f}% | Recall={pair_rec:.1f}%"
+    status_str = f"TP={n_tp} (Green Mask) | FP={n_fp} (Red Mask & Connected with Line) | FN={n_fn} | Prec={pair_prec:.1f}% | Rec={pair_rec:.1f}%"
 
     cv2.putText(canvas, f"{title} [{status_str}]", (20, 36),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (235, 235, 235), 2, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA)
 
     out_p = Path(out_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
