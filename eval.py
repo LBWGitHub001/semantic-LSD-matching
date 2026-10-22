@@ -47,6 +47,8 @@ def parse_args() -> argparse.Namespace:
                         help="Dataset root directory")
     parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"],
                         help="Dataset split to evaluate")
+    parser.add_argument("--min-area-ratio", type=float, default=0.50,
+                        help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
     parser.add_argument("--out-dir", type=str, default="outputs/eval_vis",
                         help="Directory to save evaluation visualization images")
     parser.add_argument("--num-vis", type=int, default=5, help="Number of visualization images to export")
@@ -87,7 +89,7 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
         use_region_ds = True
 
     if use_region_ds:
-        dataset = SemanticRegionDataset(dataset_dir=args.data_dir, split=args.split)
+        dataset = SemanticRegionDataset(dataset_dir=args.data_dir, split=args.split, min_area_ratio=args.min_area_ratio)
         collate_fn = collate_region_pairs
     else:
         dataset = ObjectMatchingDataset(data_dir=args.data_dir, split=args.split)
@@ -109,13 +111,18 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
     total_tp, total_fp, total_fn = 0, 0, 0
     total_dustbin_correct, total_dustbin_items = 0, 0
 
-    print(f"Running inference on {len(dataset)} view pairs...")
+    print(f"Running inference on {len(dataset)} view pairs (min_area_ratio: {args.min_area_ratio*100:.0f}%)...")
     with torch.no_grad():
         for batch in loader:
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
             out = model(patches0, patches1)
-            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
+            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
+                out["prob_matrix"][0],
+                areas_0=batch.get("areas0"),
+                areas_1=batch.get("areas1"),
+                min_area_ratio=args.min_area_ratio,
+            )
 
             gt_matches = set(batch["gt_matches"][0])
             pred_set = set(pred_matches)
@@ -155,7 +162,12 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
             out = model(patches0, patches1)
-            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
+            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
+                out["prob_matrix"][0],
+                areas_0=batch.get("areas0"),
+                areas_1=batch.get("areas1"),
+                min_area_ratio=args.min_area_ratio,
+            )
 
             scene_tag = batch.get("scene_name", f"sample_{vis_idx + 1}")
             save_file = out_dir / f"eval_sample_{vis_idx + 1}_{scene_tag}.jpg"

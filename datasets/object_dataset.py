@@ -132,6 +132,9 @@ class ObjectMatchingDataset(Dataset):
         masks1_arr = np.stack(m1_tensors, axis=0) if m1_tensors else np.zeros((1, H, W), dtype=np.float32)
         bboxes1_arr = np.array(bboxes1, dtype=np.float32) if bboxes1 else np.zeros((1, 4), dtype=np.float32)
 
+        areas0 = [int(np.count_nonzero(m)) for m in m0_tensors]
+        areas1 = [int(np.count_nonzero(m)) for m in m1_tensors]
+
         return {
             "patches0": t_patches0,
             "patches1": t_patches1,
@@ -145,6 +148,8 @@ class ObjectMatchingDataset(Dataset):
             "bboxes1": torch.from_numpy(bboxes1_arr),
             "objs0": objs0,
             "objs1": objs1,
+            "areas0": areas0,
+            "areas1": areas1,
             "gt_matches": info["gt_matches"],
             "unmatched_0": info["unmatched_i"],
             "unmatched_1": info["unmatched_j"],
@@ -176,6 +181,8 @@ def collate_single_pair(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "centroids1": c1.unsqueeze(0),
         "objs0": item["objs0"],
         "objs1": item["objs1"],
+        "areas0": item.get("areas0", []),
+        "areas1": item.get("areas1", []),
         "gt_matches": [item["gt_matches"]],
         "unmatched_0": [item["unmatched_0"]],
         "unmatched_1": [item["unmatched_1"]],
@@ -190,11 +197,17 @@ def predict_bipartite_matches(
     thresh: float = 0.2,
     categories_0: list[str] | None = None,
     categories_1: list[str] | None = None,
+    areas_0: list[int | float] | None = None,
+    areas_1: list[int | float] | None = None,
+    min_area_ratio: float = 0.0,
 ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
     """
     Computes mutual nearest neighbor (MNN) assignments from doubly-stochastic Sinkhorn matrix.
     prob_matrix: (M0 + 1, M1 + 1)
     Optional categories_0 & categories_1 enforce class compatibility (masking out cross-class logits).
+    Optional areas_0 & areas_1 and min_area_ratio:
+      If min_area_ratio > 0.0 and the matched regions' area ratio (matched_area / total_segmented_area)
+      is below min_area_ratio in either view, pair matching is rejected (all regions -> dustbin).
     """
     if isinstance(prob_matrix, torch.Tensor):
         P = prob_matrix.detach().cpu().numpy().copy()
@@ -229,6 +242,21 @@ def predict_bipartite_matches(
                 matches.append((i, j))
             else:
                 unmatched_0.append(i)
+
+    # Optional minimum mutually matched area ratio verification
+    if min_area_ratio > 0.0 and areas_0 is not None and areas_1 is not None and len(areas_0) > 0 and len(areas_1) > 0:
+        tot_0 = float(sum(areas_0[:M0]))
+        tot_1 = float(sum(areas_1[:M1]))
+        matched_0 = float(sum(areas_0[i] for i, _ in matches if i < len(areas_0)))
+        matched_1 = float(sum(areas_1[j] for _, j in matches if j < len(areas_1)))
+        r0 = matched_0 / tot_0 if tot_0 > 0 else 0.0
+        r1 = matched_1 / tot_1 if tot_1 > 0 else 0.0
+        if min(r0, r1) < min_area_ratio:
+            # Reject match entirely: insufficient co-visible area
+            matches = []
+            unmatched_0 = list(range(M0))
+            unmatched_1 = list(range(M1))
+            return matches, unmatched_0, unmatched_1
 
     matched_j = {j for _, j in matches}
     unmatched_1 = [j for j in range(M1) if j not in matched_j]

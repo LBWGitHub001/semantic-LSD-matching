@@ -96,12 +96,14 @@ class SemanticRegionDataset(Dataset):
         split: str = "train",
         patch_size: int = 112,
         transform: Callable[[np.ndarray], np.ndarray] | None = None,
+        min_area_ratio: float = 0.50,
     ) -> None:
         super().__init__()
         self.root = Path(dataset_dir).resolve()
         self.split = split
         self.patch_size = patch_size
         self.transform = transform
+        self.min_area_ratio = min_area_ratio
 
         split_file = self.root / f"{split}_split.json"
         if not split_file.is_file():
@@ -113,16 +115,52 @@ class SemanticRegionDataset(Dataset):
             n_tr = int(n_total * 0.8)
             n_va = int(n_total * 0.1)
             if split == "train":
-                self.pair_ids = pair_dirs[:n_tr]
+                raw_pair_ids = pair_dirs[:n_tr]
             elif split == "val":
-                self.pair_ids = pair_dirs[n_tr:n_tr+n_va]
+                raw_pair_ids = pair_dirs[n_tr:n_tr+n_va]
             else:
-                self.pair_ids = pair_dirs[n_tr+n_va:]
+                raw_pair_ids = pair_dirs[n_tr+n_va:]
         else:
             with open(split_file, "r", encoding="utf-8") as f:
-                self.pair_ids = json.load(f)
+                raw_pair_ids = json.load(f)
 
-        print(f"[*] SemanticRegionDataset ({split}): Loaded {len(self.pair_ids)} cross-view region pairs.")
+        # Filter pairs by minimum mutually matched area ratio
+        if self.min_area_ratio > 0.0:
+            filtered_ids = []
+            for pid in raw_pair_ids:
+                p_dir = self.root / pid
+                corr_file = p_dir / "correspondence.json"
+                r0_file = p_dir / "regions_0.json"
+                r1_file = p_dir / "regions_1.json"
+                if not (corr_file.is_file() and r0_file.is_file() and r1_file.is_file()):
+                    continue
+                try:
+                    with open(corr_file, "r", encoding="utf-8") as f:
+                        corr = json.load(f)
+                    with open(r0_file, "r", encoding="utf-8") as f:
+                        regs0 = json.load(f)
+                    with open(r1_file, "r", encoding="utf-8") as f:
+                        regs1 = json.load(f)
+
+                    area0_map = {r["idx"]: r.get("pixel_area", 0) for r in regs0}
+                    area1_map = {r["idx"]: r.get("pixel_area", 0) for r in regs1}
+                    tot0 = sum(area0_map.values())
+                    tot1 = sum(area1_map.values())
+                    if tot0 <= 0 or tot1 <= 0:
+                        continue
+                    m0 = sum(area0_map.get(m["mask0_idx"], 0) for m in corr["matches"])
+                    m1 = sum(area1_map.get(m["mask1_idx"], 0) for m in corr["matches"])
+                    ratio0 = m0 / tot0
+                    ratio1 = m1 / tot1
+                    if min(ratio0, ratio1) >= self.min_area_ratio:
+                        filtered_ids.append(pid)
+                except Exception:
+                    continue
+            self.pair_ids = filtered_ids
+            print(f"[*] SemanticRegionDataset ({split}): Filtered {len(self.pair_ids)}/{len(raw_pair_ids)} pairs with matched area ratio >= {self.min_area_ratio*100:.0f}%.")
+        else:
+            self.pair_ids = raw_pair_ids
+            print(f"[*] SemanticRegionDataset ({split}): Loaded {len(self.pair_ids)} cross-view region pairs.")
 
     def __len__(self) -> int:
         return len(self.pair_ids)
@@ -229,6 +267,18 @@ class SemanticRegionDataset(Dataset):
             if j < M1:
                 gt_matrix[M0, j] = 1.0
 
+        # Region pixel areas and matched area ratios
+        area0_map = {r["idx"]: r.get("pixel_area", 0) for r in regs0}
+        area1_map = {r["idx"]: r.get("pixel_area", 0) for r in regs1}
+        tot0 = sum(area0_map.values())
+        tot1 = sum(area1_map.values())
+        matched_area0 = sum(area0_map.get(m[0], 0) for m in gt_matches)
+        matched_area1 = sum(area1_map.get(m[1], 0) for m in gt_matches)
+        ratio0 = matched_area0 / tot0 if tot0 > 0 else 0.0
+        ratio1 = matched_area1 / tot1 if tot1 > 0 else 0.0
+        areas0 = [r.get("pixel_area", 0) for r in regs0]
+        areas1 = [r.get("pixel_area", 0) for r in regs1]
+
         return {
             "pair_id": pair_id,
             "patches0": t_patches0,
@@ -253,6 +303,10 @@ class SemanticRegionDataset(Dataset):
             "bgr1": bgr1,
             "regs0": regs0,
             "regs1": regs1,
+            "areas0": areas0,
+            "areas1": areas1,
+            "matched_area_ratio_0": ratio0,
+            "matched_area_ratio_1": ratio1,
         }
 
 
@@ -305,6 +359,10 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "objs1": objs1,
         "regs0": item.get("regs0", []),
         "regs1": item.get("regs1", []),
+        "areas0": item.get("areas0", []),
+        "areas1": item.get("areas1", []),
+        "matched_area_ratio_0": item.get("matched_area_ratio_0", 0.0),
+        "matched_area_ratio_1": item.get("matched_area_ratio_1", 0.0),
     }
 
 

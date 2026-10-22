@@ -297,6 +297,7 @@ def process_scene_room_pairs(
     target_w: int = 640,
     min_matches: int = 3,
     max_rotation_deg: float = 85.0,
+    min_area_ratio: float = 0.50,
 ) -> dict[str, Any]:
     """Extracts semantic region mask pairs for all viewpoint combinations in a scene."""
     scene_dir = Path(scene_dir_str)
@@ -353,6 +354,17 @@ def process_scene_room_pairs(
 
                 matches, un0, un1 = match_semantic_regions(va["regions"], vb["regions"])
                 if len(matches) < min_matches:
+                    continue
+
+                # Filter by minimum mutually matched area ratio
+                tot_area_0 = sum(r["pixel_area"] for r in va["regions"])
+                tot_area_1 = sum(r["pixel_area"] for r in vb["regions"])
+                matched_area_0 = sum(va["regions"][m[0]]["pixel_area"] for m in matches)
+                matched_area_1 = sum(vb["regions"][m[1]]["pixel_area"] for m in matches)
+                ratio_0 = matched_area_0 / tot_area_0 if tot_area_0 > 0 else 0.0
+                ratio_1 = matched_area_1 / tot_area_1 if tot_area_1 > 0 else 0.0
+
+                if min_area_ratio > 0.0 and min(ratio_0, ratio_1) < min_area_ratio:
                     continue
 
                 # Save Pair Folder
@@ -438,6 +450,8 @@ def process_scene_room_pairs(
                     "rotation_deg": round(rot_deg, 2),
                     "baseline_m": round(base_m, 2),
                     "num_matches": len(matches),
+                    "matched_area_ratio_0": round(ratio_0, 4),
+                    "matched_area_ratio_1": round(ratio_1, 4),
                     "matches": match_records,
                     "unmatched_in_view0": un0,
                     "unmatched_in_view1": un1,
@@ -449,7 +463,7 @@ def process_scene_room_pairs(
                 render_correspondence_vis(
                     va["bgr"], vb["bgr"], va["regions"], vb["regions"],
                     matches, un0, un1, pair_dir / "vis_correspondence.jpg",
-                    title=f"{scene_id} ({room.name}) View {va['view_id']} <-> View {vb['view_id']}"
+                    title=f"{scene_id} ({room.name}) View {va['view_id']} <-> View {vb['view_id']} | Area: {ratio_0*100:.1f}% / {ratio_1*100:.1f}%"
                 )
 
                 pairs_saved.append(pair_id)
@@ -464,6 +478,7 @@ def main() -> None:
     parser.add_argument("--max-scenes", type=int, default=50, help="Max scenes to process")
     parser.add_argument("--num-workers", type=int, default=os.cpu_count() or 16, help="Worker processes")
     parser.add_argument("--min-matches", type=int, default=3, help="Minimum matching regions per pair")
+    parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio (default: 0.50)")
     args = parser.parse_args()
 
     s3d_dir = Path(args.s3d_dir).resolve()
@@ -481,6 +496,7 @@ def main() -> None:
     print(f"  Output Directory: {out_dir}")
     print(f"  Target Scenes:    {len(scenes)}")
     print(f"  Worker Processes: {args.num_workers}")
+    print(f"  Min Area Ratio:   {args.min_area_ratio * 100:.0f}%")
     print("=" * 75 + "\n")
 
     t0 = time.time()
@@ -490,7 +506,8 @@ def main() -> None:
         futures = {
             executor.submit(
                 process_scene_room_pairs, str(s), str(out_dir),
-                min_matches=args.min_matches
+                min_matches=args.min_matches,
+                min_area_ratio=args.min_area_ratio,
             ): s.name for s in scenes
         }
 

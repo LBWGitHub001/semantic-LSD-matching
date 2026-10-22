@@ -117,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dustbin-weight", type=float, default=0.3, help="Dustbin rejection loss weight for ObjectMatchingLoss (default: 0.3)")
     parser.add_argument("--motion-weight", type=float, default=0.2, help="Transformation consistency loss weight (方案一: 位移场共识损失, default: 0.2)")
     parser.add_argument("--motion-margin", type=float, default=0.15, help="Parallax tolerance margin in [-1, 1] normalized coordinates (default: 0.15)")
+    parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
     parser.add_argument("--no-pyramid", dest="use_pyramid", action="store_false", help="Disable multi-scale feature pyramid (use single-scale legacy backbone)")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
@@ -155,6 +156,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"  Learning Rate:      {lr}")
     print(f"  Dustbin Weight:     {args.dustbin_weight}")
     print(f"  Motion Loss Weight: {args.motion_weight} (Margin: {args.motion_margin})")
+    print(f"  Min Area Ratio:     {args.min_area_ratio * 100:.0f}% (Mutual Co-visible Region Filter)")
     print(f"  Pyramid Features:   {'Enabled (Multi-Scale FPN)' if getattr(args, 'use_pyramid', True) else 'Disabled (Single-Scale)'}")
     print(f"  Model Dimension:    {args.d_model} (Layers: {args.num_layers}, Heads: {args.nhead})")
     print(f"  Mixed Precision:    {'Enabled (AMP FP16)' if args.amp else 'Disabled (FP32)'}")
@@ -176,9 +178,9 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
 
     if use_region_ds:
         from datasets.semantic_region_dataset import SemanticRegionDataset, collate_region_pairs
-        train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train")
-        val_ds = SemanticRegionDataset(dataset_dir=data_dir, split="val")
-        test_ds = SemanticRegionDataset(dataset_dir=data_dir, split="test")
+        train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train", min_area_ratio=args.min_area_ratio)
+        val_ds = SemanticRegionDataset(dataset_dir=data_dir, split="val", min_area_ratio=args.min_area_ratio)
+        test_ds = SemanticRegionDataset(dataset_dir=data_dir, split="test", min_area_ratio=args.min_area_ratio)
         collate_fn = collate_region_pairs
     else:
         train_ds = ObjectMatchingDataset(data_dir=data_dir, split="train")
@@ -274,6 +276,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             "dustbin_weight": args.dustbin_weight,
             "motion_loss_weight": args.motion_weight,
             "motion_margin": args.motion_margin,
+            "min_area_ratio": args.min_area_ratio,
             "save_interval": args.save_interval,
             "save_last": args.save_last,
             "val_interval": args.val_interval,
@@ -369,7 +372,11 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         val_metrics = None
         is_best = False
         if epoch % args.val_interval == 0:
-            val_metrics = evaluate_object_pipeline(model, val_loader, device, desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Val]")
+            val_metrics = evaluate_object_pipeline(
+                model, val_loader, device,
+                desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Val]",
+                min_area_ratio=args.min_area_ratio,
+            )
             val_f1 = val_metrics["f1"]
             is_best = val_f1 >= best_val_f1
             if is_best:
@@ -439,10 +446,14 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     model.load_state_dict(state_dict)
 
     # 1. Unconstrained visual matching evaluation
-    raw_test_metrics = evaluate_object_pipeline(model, test_loader, device, desc="Testing (Raw Visual)")
+    raw_test_metrics = evaluate_object_pipeline(
+        model, test_loader, device, desc="Testing (Raw Visual)", min_area_ratio=args.min_area_ratio
+    )
 
     # 2. Category-constrained evaluation (if class labels available)
-    cat_test_metrics = evaluate_object_pipeline(model, test_loader, device, desc="Testing (Semantic Constrained)", enforce_same_category=True)
+    cat_test_metrics = evaluate_object_pipeline(
+        model, test_loader, device, desc="Testing (Semantic Constrained)", enforce_same_category=True, min_area_ratio=args.min_area_ratio
+    )
 
     print("-" * 75)
     print(f"TEST SET BENCHMARK RESULTS ({len(test_ds)} pairs):")
@@ -472,7 +483,12 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
             out = model(patches0, patches1)
-            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
+            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
+                out["prob_matrix"][0],
+                areas_0=batch.get("areas0"),
+                areas_1=batch.get("areas1"),
+                min_area_ratio=args.min_area_ratio,
+            )
             scene_tag = batch.get("scene_name", f"pair_{vis_idx+1}")
             save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
             global_file = global_vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
@@ -536,6 +552,7 @@ def evaluate_object_pipeline(
     device: torch.device,
     desc: str = "Evaluating",
     enforce_same_category: bool = False,
+    min_area_ratio: float = 0.0,
 ) -> dict[str, float]:
     model.eval()
     total_tp, total_fp, total_fn = 0, 0, 0
@@ -555,7 +572,13 @@ def evaluate_object_pipeline(
             cats1 = [o.get("category", "") for o in batch.get("objs1", [])] if enforce_same_category else None
 
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
-                out["prob_matrix"][0], thresh=0.2, categories_0=cats0, categories_1=cats1
+                out["prob_matrix"][0],
+                thresh=0.2,
+                categories_0=cats0,
+                categories_1=cats1,
+                areas_0=batch.get("areas0"),
+                areas_1=batch.get("areas1"),
+                min_area_ratio=min_area_ratio,
             )
 
             gt_matches = set(batch["gt_matches"][0])
