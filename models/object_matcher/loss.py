@@ -12,11 +12,13 @@ import torch.nn as nn
 class ObjectMatchingLoss(nn.Module):
     """
     SuperGlue-style Negative Log-Likelihood (NLL) Loss over Sinkhorn probability matrix.
-    Supervises co-visible matches and dustbin rejections.
+    Supervises co-visible matches and dustbin rejections with balanced weights.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, dustbin_weight: float = 0.3) -> None:
         super().__init__()
+        # Dustbin weight: 0.2 ~ 0.4 (0.3 is our empirical sweet spot for balancing recall & precision)
+        self.dustbin_weight = float(dustbin_weight)
 
     def forward(
         self,
@@ -30,31 +32,34 @@ class ObjectMatchingLoss(nn.Module):
         M1 = M1_plus_1 - 1
 
         total_loss = torch.tensor(0.0, device=log_P.device)
-        total_items = 0
 
         for b in range(B):
             matches = gt_matches[b]
             un0 = unmatched_0[b]
             un1 = unmatched_1[b]
 
-            loss_b = torch.tensor(0.0, device=log_P.device)
-            # 1. Matched pairs
+            loss_pos = torch.tensor(0.0, device=log_P.device)
+            loss_neg = torch.tensor(0.0, device=log_P.device)
+            n_pos = len(matches)
+            n_neg = len(un0) + len(un1)
+
+            # 1. Matched pairs (Positive)
             for i, j in matches:
-                loss_b = loss_b - log_P[b, i, j]
-                total_items += 1
+                loss_pos = loss_pos - log_P[b, i, j]
 
-            # 2. Unmatched in View 0 (dustbin column index M1)
+            # 2. View 0 dustbin (Negative)
             for i in un0:
-                loss_b = loss_b - log_P[b, i, M1]
-                total_items += 1
+                loss_neg = loss_neg - log_P[b, i, M1]
 
-            # 3. Unmatched in View 1 (dustbin row index M0)
+            # 3. View 1 dustbin (Negative)
             for j in un1:
-                loss_b = loss_b - log_P[b, M0, j]
-                total_items += 1
+                loss_neg = loss_neg - log_P[b, M0, j]
 
-            total_loss = total_loss + loss_b
+            # Independently normalize positive and negative losses
+            mean_pos = (loss_pos / float(n_pos)) if n_pos > 0 else torch.tensor(0.0, device=log_P.device)
+            mean_neg = (loss_neg / float(n_neg)) if n_neg > 0 else torch.tensor(0.0, device=log_P.device)
 
-        if total_items > 0:
-            return total_loss / float(total_items)
-        return total_loss
+            # Balanced weighted summation
+            total_loss = total_loss + mean_pos + self.dustbin_weight * mean_neg
+
+        return total_loss / float(B)
