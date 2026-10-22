@@ -53,6 +53,15 @@ def parse_args() -> argparse.Namespace:
 def evaluate_object_model(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
     ckpt_path = Path(args.checkpoint)
+    if ckpt_path.is_dir():
+        if (ckpt_path / "best_model.pth").is_file():
+            ckpt_path = ckpt_path / "best_model.pth"
+        elif (ckpt_path / "last_model.pth").is_file():
+            ckpt_path = ckpt_path / "last_model.pth"
+        else:
+            pths = sorted(list(ckpt_path.glob("*.pth")))
+            if pths:
+                ckpt_path = pths[-1]
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint file {ckpt_path} not found.")
 

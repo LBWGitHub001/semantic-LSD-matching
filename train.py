@@ -15,12 +15,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import math
 import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -55,6 +57,36 @@ def safe_load_checkpoint(path: Path | str, map_location: Any = "cpu") -> dict:
         return torch.load(path, map_location=map_location)
 
 
+def get_git_commit() -> str:
+    """Retrieves short git commit hash if available."""
+    try:
+        import subprocess
+        out = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL)
+        return out.decode("utf-8").strip()
+    except Exception:
+        return "unknown"
+
+
+def save_config_json(config_path: Path, config_data: dict) -> None:
+    """Atomically writes an explanatory configuration and experiment metadata JSON."""
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[!] Warning: Failed to write {config_path.name}: {e}")
+
+
+def update_latest_symlink(base_dir: Path, target_dir: Path) -> None:
+    """Updates a 'latest' symlink in base_dir pointing to target_dir."""
+    try:
+        latest_link = base_dir / "latest"
+        if latest_link.is_symlink() or latest_link.exists():
+            latest_link.unlink()
+        latest_link.symlink_to(target_dir.name, target_is_directory=True)
+    except Exception:
+        pass
+
+
 # Fixed-width progress bar format to completely eliminate visual jitter/jumping ("鬼畜")
 TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
 
@@ -76,6 +108,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader worker processes")
     parser.add_argument("--amp", action="store_true", default=True, help="Enable Automatic Mixed Precision (FP16)")
     parser.add_argument("--save-dir", type=Path, default=None, help="Checkpoint directory")
+    parser.add_argument("--run-name", type=str, default=None, help="Custom run subfolder name (default: start time YYYYMMDD_HHMMSS)")
+    parser.add_argument("--no-timestamp", action="store_true", default=False, help="Save checkpoints directly in save-dir without timestamp subfolder")
     parser.add_argument("--val-interval", type=int, default=1, help="Validation interval in epochs")
     parser.add_argument("--save-interval", type=int, default=5, help="Save historical checkpoint every N epochs (e.g. epoch_005.pth, default: 5)")
     parser.add_argument("--no-save-last", dest="save_last", action="store_false", default=True, help="Disable saving last_model.pth")
@@ -93,8 +127,20 @@ def parse_args() -> argparse.Namespace:
 # ==============================================================================
 def train_object_pipeline(args: argparse.Namespace) -> None:
     data_dir = Path(args.data_dir or "data/synthetic_object_matching_scenes")
-    save_dir = Path(args.save_dir or "checkpoints/xfeat_object_matcher")
+    base_save_dir = Path(args.save_dir or "checkpoints/xfeat_object_matcher")
+    start_time = datetime.now()
+    start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
+    if args.no_timestamp:
+        save_dir = base_save_dir
+        run_name = base_save_dir.name
+    else:
+        run_name = args.run_name if args.run_name else start_time_str
+        save_dir = base_save_dir / run_name
+
     save_dir.mkdir(parents=True, exist_ok=True)
+    update_latest_symlink(base_save_dir, save_dir)
+    config_json_path = save_dir / "config.json"
+
     lr = args.lr if args.lr is not None else 5e-4
     device = torch.device(args.device)
 
@@ -109,7 +155,8 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"  Motion Loss Weight: {args.motion_weight} (Margin: {args.motion_margin})")
     print(f"  Model Dimension:    {args.d_model} (Layers: {args.num_layers}, Heads: {args.nhead})")
     print(f"  Mixed Precision:    {'Enabled (AMP FP16)' if args.amp else 'Disabled (FP32)'}")
-    print(f"  Checkpoint Dir:     {save_dir}")
+    print(f"  Checkpoint Base:    {base_save_dir}")
+    print(f"  Run Directory:      {save_dir} (Run: {run_name})")
     print(f"  Save Interval:      Every {args.save_interval} epoch(s)")
     if args.resume:
         print(f"  Resume From:        {args.resume}")
@@ -187,6 +234,64 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val_f1 = ckpt.get("best_val_f1", ckpt.get("val_metrics", {}).get("f1", 0.0))
         print(f"    Resumed at epoch {start_epoch}, previous best Val F1: {best_val_f1:.2f}%\n")
+
+    num_total_params = sum(p.numel() for p in model.parameters())
+    num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    config_data = {
+        "experiment_info": {
+            "run_name": run_name,
+            "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time": None,
+            "git_commit": get_git_commit(),
+            "command": " ".join(sys.argv),
+            "python_version": sys.version.split()[0],
+            "torch_version": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "device": str(device),
+            "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
+        },
+        "model": {
+            "model_type": args.model_type,
+            "d_model": args.d_model,
+            "num_layers": args.num_layers,
+            "nhead": args.nhead,
+            "sinkhorn_iters": 20,
+            "total_parameters": num_total_params,
+            "trainable_parameters": num_trainable_params,
+        },
+        "hyperparameters": {
+            "epochs": args.epochs,
+            "learning_rate": lr,
+            "weight_decay": args.weight_decay,
+            "grad_accum": args.grad_accum,
+            "amp": args.amp,
+            "dustbin_weight": args.dustbin_weight,
+            "motion_loss_weight": args.motion_weight,
+            "motion_margin": args.motion_margin,
+            "save_interval": args.save_interval,
+            "save_last": args.save_last,
+            "val_interval": args.val_interval,
+            "num_workers": args.num_workers,
+            "all_cli_args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+        },
+        "dataset": {
+            "dataset_type": "SemanticRegionDataset" if use_region_ds else "ObjectMatchingDataset",
+            "dataset_dir": str(p_data.resolve()),
+            "train_pairs": len(train_ds),
+            "val_pairs": len(val_ds),
+            "test_pairs": len(test_ds),
+        },
+        "checkpoints": {
+            "run_dir": str(save_dir.resolve()),
+            "best_checkpoint": None,
+            "last_checkpoint": "last_model.pth" if args.save_last else None,
+            "historical_checkpoints": [],
+        },
+        "best_validation": None,
+        "test_benchmark": None,
+    }
+    save_config_json(config_json_path, config_data)
 
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
@@ -289,6 +394,18 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         # 1. Update best checkpoint
         if is_best:
             torch.save(ckpt_data, best_ckpt_path)
+            config_data["checkpoints"]["best_checkpoint"] = "best_model.pth"
+            config_data["best_validation"] = {
+                "epoch": epoch,
+                "f1": round(val_f1, 2),
+                "precision": round(val_metrics["precision"], 2),
+                "recall": round(val_metrics["recall"], 2),
+                "dustbin_precision": round(val_metrics["dustbin_prec"], 2),
+                "dustbin_recall": round(val_metrics["dustbin_rec"], 2),
+                "dustbin_accuracy": round(val_metrics["dustbin_acc"], 2),
+                "cross_cat_fp": val_metrics["cross_cat_fp"],
+            }
+            save_config_json(config_json_path, config_data)
 
         # 2. Update latest checkpoint
         if args.save_last:
@@ -299,6 +416,9 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             epoch_ckpt_path = save_dir / f"epoch_{epoch:03d}.pth"
             torch.save(ckpt_data, epoch_ckpt_path)
             print(f"  [Checkpoint] Saved historical checkpoint -> {epoch_ckpt_path.name}")
+            if epoch_ckpt_path.name not in config_data["checkpoints"]["historical_checkpoints"]:
+                config_data["checkpoints"]["historical_checkpoints"].append(epoch_ckpt_path.name)
+                save_config_json(config_json_path, config_data)
 
     print("=" * 80)
     print(f"[+] Training Complete! Best Val F1: {best_val_f1:.2f}%.")
@@ -370,6 +490,32 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                     pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
                     title=f"Sample {vis_idx + 1}: {scene_tag}",
                 )
+
+    config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    config_data["test_benchmark"] = {
+        "raw_visual": {
+            "precision": round(raw_test_metrics["precision"], 2),
+            "recall": round(raw_test_metrics["recall"], 2),
+            "f1": round(raw_test_metrics["f1"], 2),
+            "tp": raw_test_metrics["tp"],
+            "fp": raw_test_metrics["fp"],
+            "fn": raw_test_metrics["fn"],
+            "cross_cat_fp": raw_test_metrics["cross_cat_fp"],
+            "cross_cat_rate": round(raw_test_metrics["cross_cat_rate"], 2),
+            "dustbin_precision": round(raw_test_metrics["dustbin_prec"], 2),
+            "dustbin_recall": round(raw_test_metrics["dustbin_rec"], 2),
+        },
+        "semantic_constrained": {
+            "precision": round(cat_test_metrics["precision"], 2),
+            "recall": round(cat_test_metrics["recall"], 2),
+            "f1": round(cat_test_metrics["f1"], 2),
+            "tp": cat_test_metrics["tp"],
+            "fp": cat_test_metrics["fp"],
+            "fn": cat_test_metrics["fn"],
+        },
+    }
+    save_config_json(config_json_path, config_data)
+    print(f"\n[+] Saved run configuration and benchmark summary to: {config_json_path}")
 
 
 def evaluate_object_pipeline(
@@ -486,8 +632,20 @@ def evaluate_object_pipeline(
 # Line Matching Training Pipeline
 # ==============================================================================
 def train_line_pipeline(args: argparse.Namespace) -> None:
-    save_dir = Path(args.save_dir or "checkpoints/linefeat")
+    base_save_dir = Path(args.save_dir or "checkpoints/linefeat")
+    start_time = datetime.now()
+    start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
+    if args.no_timestamp:
+        save_dir = base_save_dir
+        run_name = base_save_dir.name
+    else:
+        run_name = args.run_name if args.run_name else start_time_str
+        save_dir = base_save_dir / run_name
+
     save_dir.mkdir(parents=True, exist_ok=True)
+    update_latest_symlink(base_save_dir, save_dir)
+    config_json_path = save_dir / "config.json"
+
     lr = args.lr if args.lr is not None else 1e-4
     device = torch.device(args.device)
 
@@ -497,7 +655,8 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
     print(f"  Device:           {device}")
     print(f"  Epochs:           {args.epochs}")
     print(f"  Learning Rate:    {lr}")
-    print(f"  Checkpoint Dir:   {save_dir}")
+    print(f"  Checkpoint Base:  {base_save_dir}")
+    print(f"  Run Directory:    {save_dir} (Run: {run_name})")
     print(f"  Save Interval:    Every {args.save_interval} epoch(s)")
     if args.resume:
         print(f"  Resume From:      {args.resume}")
@@ -557,6 +716,57 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val_acc = ckpt.get("best_val_acc", 0.0)
         print(f"    Resumed at epoch {start_epoch}, previous best Val Acc: {best_val_acc:.2f}%\n")
+
+    num_total_params = sum(p.numel() for p in model.parameters())
+    num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    config_data = {
+        "experiment_info": {
+            "run_name": run_name,
+            "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time": None,
+            "git_commit": get_git_commit(),
+            "command": " ".join(sys.argv),
+            "python_version": sys.version.split()[0],
+            "torch_version": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+            "device": str(device),
+            "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
+        },
+        "model": {
+            "model_type": args.model_type,
+            "d_model": args.d_model,
+            "num_layers": args.num_layers,
+            "total_parameters": num_total_params,
+            "trainable_parameters": num_trainable_params,
+        },
+        "hyperparameters": {
+            "epochs": args.epochs,
+            "learning_rate": lr,
+            "weight_decay": args.weight_decay,
+            "min_matches": args.min_matches,
+            "amp": args.amp,
+            "save_interval": args.save_interval,
+            "save_last": args.save_last,
+            "val_interval": args.val_interval,
+            "num_workers": args.num_workers,
+            "all_cli_args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+        },
+        "dataset": {
+            "dataset_type": "LineFeatPairDataset",
+            "index_path": "data/line_gt_dataset/index.json",
+            "train_pairs": len(train_dataset),
+            "val_pairs": len(val_dataset),
+        },
+        "checkpoints": {
+            "run_dir": str(save_dir.resolve()),
+            "best_checkpoint": None,
+            "last_checkpoint": "last_model.pth" if args.save_last else None,
+            "historical_checkpoints": [],
+        },
+        "best_validation": None,
+    }
+    save_config_json(config_json_path, config_data)
 
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
@@ -671,6 +881,13 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         # 1. Update best checkpoint
         if is_best:
             torch.save(ckpt_data, best_ckpt_path)
+            config_data["checkpoints"]["best_checkpoint"] = "best_model.pth"
+            config_data["best_validation"] = {
+                "epoch": epoch,
+                "val_loss": round(avg_val_loss, 4),
+                "val_acc": round(avg_val_acc, 2),
+            }
+            save_config_json(config_json_path, config_data)
 
         # 2. Update latest checkpoint
         if args.save_last:
@@ -681,6 +898,13 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
             epoch_ckpt_path = save_dir / f"epoch_{epoch:03d}.pth"
             torch.save(ckpt_data, epoch_ckpt_path)
             print(f"  [Checkpoint] Saved historical checkpoint -> {epoch_ckpt_path.name}")
+            if epoch_ckpt_path.name not in config_data["checkpoints"]["historical_checkpoints"]:
+                config_data["checkpoints"]["historical_checkpoints"].append(epoch_ckpt_path.name)
+                save_config_json(config_json_path, config_data)
+
+    config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_config_json(config_json_path, config_data)
+    print(f"\n[+] Saved run configuration to: {config_json_path}")
 
 
 def main() -> None:
