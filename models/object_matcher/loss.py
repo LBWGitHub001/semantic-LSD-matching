@@ -31,6 +31,8 @@ class ObjectMatchingLoss(nn.Module):
         M0 = M0_plus_1 - 1
         M1 = M1_plus_1 - 1
 
+        # Safe clamp to guarantee finite log probabilities
+        log_P = torch.clamp(log_P, min=-100.0, max=0.0)
         total_loss = torch.tensor(0.0, device=log_P.device)
 
         for b in range(B):
@@ -62,4 +64,7 @@ class ObjectMatchingLoss(nn.Module):
             # Balanced weighted summation
             total_loss = total_loss + mean_pos + self.dustbin_weight * mean_neg
 
-        return total_loss / float(B)
+        avg_loss = total_loss / float(B)
+        if torch.isnan(avg_loss) or torch.isinf(avg_loss):
+            return torch.tensor(0.0, device=log_P.device, requires_grad=True)
+        return avg_loss

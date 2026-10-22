@@ -242,8 +242,12 @@ class ObjectSinkhornMatcher(nn.Module):
             torch.tensor([math.log(float(M0) + 1e-6)], device=device),
         ]).repeat(B, 1)
 
-        log_P = log_sinkhorn_iterations(Z, log_mu, log_nu, iters=self.sinkhorn_iters)
-        P = torch.exp(log_P)
+        # Run Sinkhorn optimal transport in FP32 to prevent FP16 logsumexp overflow (>65504)
+        with torch.amp.autocast(device_type="cuda" if device.type == "cuda" else "cpu", enabled=False):
+            log_P = log_sinkhorn_iterations(Z.float(), log_mu.float(), log_nu.float(), iters=self.sinkhorn_iters)
+            # Safe clamping against numerical underflow
+            log_P = torch.clamp(log_P, min=-100.0, max=0.0)
+            P = torch.exp(log_P)
         return log_P, P
 
 

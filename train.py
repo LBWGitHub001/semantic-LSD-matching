@@ -48,6 +48,17 @@ from datasets import (
 )
 
 
+def safe_load_checkpoint(path: Path | str, map_location: Any = "cpu") -> dict:
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+# Fixed-width progress bar format to completely eliminate visual jitter/jumping ("鬼畜")
+TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
@@ -149,7 +160,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         if not resume_path.is_file():
             raise FileNotFoundError(f"Checkpoint to resume not found: {resume_path}")
         print(f"[*] Resuming object training from checkpoint: {resume_path}")
-        ckpt = torch.load(resume_path, map_location=device)
+        ckpt = safe_load_checkpoint(resume_path, map_location=device)
         state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
         model.load_state_dict(state_dict)
         if "optimizer_state" in ckpt and ckpt["optimizer_state"] is not None:
@@ -176,6 +187,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         pbar = tqdm(
             train_loader,
             desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]",
+            bar_format=TQDM_BAR_FORMAT,
             dynamic_ncols=True,
             leave=False,
             unit="pair",
@@ -196,26 +208,29 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             step_count += 1
 
             if step_count % args.grad_accum == 0 or step == len(train_loader) - 1:
-                scaler.step(optimizer)
-                scaler.update()
+                if args.amp:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
                 optimizer.zero_grad()
 
             loss_val = float(loss.item())
-            total_loss += loss_val
+            if not math.isnan(loss_val) and not math.isinf(loss_val):
+                total_loss += loss_val
             cur_avg_loss = total_loss / max(step_count, 1)
 
-            # Real-time status in progress bar
+            # Real-time status in progress bar (fixed-width formatting to avoid bar jitter)
             m0_num = patches0.shape[1]
             m1_num = patches1.shape[1]
             n_gt = len(batch["gt_matches"][0]) if "gt_matches" in batch and batch["gt_matches"] else 0
             mem_mb = torch.cuda.memory_allocated() / (1024 * 1024) if torch.cuda.is_available() else 0
-            pbar.set_postfix({
-                "loss": f"{loss_val:.4f}",
-                "avg": f"{cur_avg_loss:.4f}",
-                "patches": f"{m0_num}v{m1_num}",
-                "gt": n_gt,
-                "gpu": f"{mem_mb:.0f}MB",
-            })
+            pbar.set_postfix_str(
+                f"loss={loss_val:6.4f}, avg={cur_avg_loss:6.4f}, patch={m0_num:>2d}v{m1_num:<2d}, gt={n_gt:>2d}, gpu={mem_mb:>4.0f}MB"
+            )
 
         train_loss = total_loss / max(step_count, 1)
         epoch_sec = time.time() - t0
@@ -238,6 +253,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({epoch_sec:.1f}s) | Loss: {train_loss:.4f}")
 
         # Checkpoint Management
+        serializable_args = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
         ckpt_data = {
             "epoch": epoch,
             "model_state": model.state_dict(),
@@ -246,7 +262,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             "best_val_f1": best_val_f1,
             "val_metrics": val_metrics,
             "train_loss": train_loss,
-            "args": vars(args),
+            "args": serializable_args,
         }
 
         # 1. Update best checkpoint
@@ -272,7 +288,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
 
     # Benchmark test set & save visualizations
     print(f"\nEvaluating checkpoint on unseen test scenes ({eval_ckpt_path.name})...")
-    ckpt = torch.load(eval_ckpt_path, map_location=device)
+    ckpt = safe_load_checkpoint(eval_ckpt_path, map_location=device)
     state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
     model.load_state_dict(state_dict)
 
@@ -348,7 +364,7 @@ def evaluate_object_pipeline(
     same_cat_fp = 0
     dustbin_tp, dustbin_fp, dustbin_fn, dustbin_tn = 0, 0, 0, 0
 
-    pbar = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False, unit="pair")
+    pbar = tqdm(loader, desc=desc, bar_format=TQDM_BAR_FORMAT, dynamic_ncols=True, leave=False, unit="pair")
     with torch.no_grad():
         for batch in pbar:
             patches0 = batch["patches0"].to(device)
@@ -420,7 +436,7 @@ def evaluate_object_pipeline(
             cur_p = total_tp / (total_tp + total_fp + 1e-6)
             cur_r = total_tp / (total_tp + total_fn + 1e-6)
             cur_f1 = 2.0 * cur_p * cur_r / (cur_p + cur_r + 1e-6)
-            pbar.set_postfix({"f1": f"{cur_f1*100:.1f}%", "tp": total_tp, "fp": total_fp, "fn": total_fn})
+            pbar.set_postfix_str(f"F1={cur_f1*100:5.1f}%, TP={total_tp:>3d}, FP={total_fp:>3d}, FN={total_fn:>3d}")
 
     precision = total_tp / (total_tp + total_fp + 1e-6)
     recall = total_tp / (total_tp + total_fn + 1e-6)
@@ -501,7 +517,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         if not resume_path.is_file():
             raise FileNotFoundError(f"Checkpoint to resume not found: {resume_path}")
         print(f"[*] Resuming line training from checkpoint: {resume_path}")
-        ckpt = torch.load(resume_path, map_location=device)
+        ckpt = safe_load_checkpoint(resume_path, map_location=device)
         state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
         model.load_state_dict(state_dict)
         if "optimizer_state" in ckpt and ckpt["optimizer_state"] is not None:
@@ -531,6 +547,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         pbar = tqdm(
             train_loader,
             desc=f"Epoch {epoch:02d}/{args.epochs:02d} [LineTrain]",
+            bar_format=TQDM_BAR_FORMAT,
             dynamic_ncols=True,
             leave=False,
             unit="pair",
@@ -555,18 +572,24 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
                 loss, metrics = criterion(out["log_assignment"], num_matches=M)
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            if args.amp:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
             optimizer.zero_grad()
-            epoch_loss += metrics["loss"]
+            step_loss = metrics["loss"]
+            if not math.isnan(step_loss) and not math.isinf(step_loss):
+                epoch_loss += step_loss
             step_count += 1
 
-            pbar.set_postfix({
-                "loss": f"{metrics['loss']:.4f}",
-                "avg": f"{epoch_loss/max(step_count, 1):.4f}",
-                "lines": f"{M}",
-                "acc": f"{metrics.get('acc', 0.0):.1f}%",
-            })
+            acc_val = metrics.get('acc', 0.0)
+            pbar.set_postfix_str(
+                f"loss={step_loss:6.4f}, avg={epoch_loss/max(step_count, 1):6.4f}, lines={M:>2d}, acc={acc_val:5.1f}%"
+            )
 
         epoch_sec = time.time() - t0
         train_loss = epoch_loss / max(step_count, 1)
@@ -610,6 +633,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
             print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({epoch_sec:.1f}s) | Train Loss: {train_loss:.4f}")
 
         # Checkpoint Management
+        serializable_args = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
         ckpt_data = {
             "epoch": epoch,
             "model_state": model.state_dict(),
@@ -617,7 +641,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
             "scaler_state": scaler.state_dict() if args.amp else None,
             "best_val_acc": best_val_acc,
             "train_loss": train_loss,
-            "args": vars(args),
+            "args": serializable_args,
         }
 
         # 1. Update best checkpoint
