@@ -80,6 +80,71 @@ class XFeatBackbone(nn.Module):
         return x
 
 
+class XFeatPyramidBackbone(nn.Module):
+    """
+    Multi-Scale Feature Pyramid Network (FPN) backbone inspired by XFeat (CVPR 2024).
+    Produces a multi-scale feature pyramid (P1, P2, P3) across 3 distinct spatial resolutions:
+      - P1 (Stride 2): fine-grained local textures, edges and boundary details.
+      - P2 (Stride 4): part-level geometry and structural shapes.
+      - P3 (Stride 8): high-level semantic category context.
+    """
+
+    def __init__(self, in_channels: int = 3, feat_dim: int = 64) -> None:
+        super().__init__()
+        self.feat_dim = feat_dim
+
+        # Bottom-up stages
+        # Stage 1: Stride 2 (H/2, W/2) -> 32 channels
+        self.stage1 = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            BasicResidualBlock(32),
+        )
+        # Stage 2: Stride 2 (H/4, W/4) -> 64 channels
+        self.stage2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            BasicResidualBlock(64),
+        )
+        # Stage 3: Stride 2 (H/8, W/8) -> 128 channels
+        self.stage3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            BasicResidualBlock(128),
+        )
+
+        # Top-down lateral connections (1x1 convs)
+        self.lat3 = nn.Conv2d(128, feat_dim, kernel_size=1)
+        self.lat2 = nn.Conv2d(64, feat_dim, kernel_size=1)
+        self.lat1 = nn.Conv2d(32, feat_dim, kernel_size=1)
+
+        # Anti-aliasing smooth convs (3x3 convs)
+        self.smooth2 = nn.Sequential(
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.smooth1 = nn.Sequential(
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        c1 = self.stage1(x)  # Stride 2, C=32
+        c2 = self.stage2(c1) # Stride 4, C=64
+        c3 = self.stage3(c2) # Stride 8, C=128
+
+        p3 = self.lat3(c3)
+        p2 = self.smooth2(self.lat2(c2) + F.interpolate(p3, size=c2.shape[-2:], mode="nearest"))
+        p1 = self.smooth1(self.lat1(c1) + F.interpolate(p2, size=c1.shape[-2:], mode="nearest"))
+
+        return p1, p2, p3
+
+
 # ==============================================================================
 # 2. Mask Pooling & Object Spatial Geometry Encoder
 # ==============================================================================
@@ -252,12 +317,13 @@ class ObjectSinkhornMatcher(nn.Module):
 
 
 # ==============================================================================
-# 5. Full XFeatObjectMatcher Model (Pure Small Region Patch Bipartite Matcher)
+# 5. Full XFeatObjectMatcher Model (Multi-Scale Region Patch Bipartite Matcher)
 # ==============================================================================
 class XFeatObjectMatcher(nn.Module):
     """
-    Pure Small Region Patch Bipartite Matcher ("连连看").
-    Takes two sets of small region image patches (B, M0, 3, 112, 112) and (B, M1, 3, 112, 112),
+    Multi-Scale Region Patch Bipartite Matcher ("连连看").
+    Takes two sets of small region image patches (B, M0, 3, H_p, W_p) and (B, M1, 3, H_p, W_p),
+    extracts multi-scale feature pyramids (P1, P2, P3), pools and fuses them across scales,
     and outputs bipartite matching probabilities through graph transformer and Sinkhorn.
     Masks and full images DO NOT enter the network.
     """
@@ -269,17 +335,30 @@ class XFeatObjectMatcher(nn.Module):
         num_layers: int = 2,
         nhead: int = 4,
         sinkhorn_iters: int = 20,
+        use_pyramid: bool = True,
     ) -> None:
         super().__init__()
         self.d_model = d_model
         self.feat_dim = feat_dim
-        self.backbone = XFeatBackbone(in_channels=3, out_dim=feat_dim)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.token_proj = nn.Sequential(
-            nn.Linear(feat_dim, d_model),
-            nn.LayerNorm(d_model),
-            nn.ReLU(inplace=True),
-        )
+        self.use_pyramid = use_pyramid
+
+        if self.use_pyramid:
+            self.backbone = XFeatPyramidBackbone(in_channels=3, feat_dim=feat_dim)
+            self.pool = nn.AdaptiveAvgPool2d((1, 1))
+            self.token_proj = nn.Sequential(
+                nn.Linear(3 * feat_dim, d_model),
+                nn.LayerNorm(d_model),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.backbone = XFeatBackbone(in_channels=3, out_dim=feat_dim)
+            self.pool = nn.AdaptiveAvgPool2d((1, 1))
+            self.token_proj = nn.Sequential(
+                nn.Linear(feat_dim, d_model),
+                nn.LayerNorm(d_model),
+                nn.ReLU(inplace=True),
+            )
+
         self.transformer = ObjectGraphTransformer(d_model=d_model, num_layers=num_layers, nhead=nhead)
         self.matcher = ObjectSinkhornMatcher(d_model=d_model, sinkhorn_iters=sinkhorn_iters)
 
@@ -293,8 +372,16 @@ class XFeatObjectMatcher(nn.Module):
             return torch.zeros((B, 0, self.d_model), device=patches.device, dtype=patches.dtype)
 
         flat_patches = patches.view(B * M, C, H_p, W_p)
-        feat_map = self.backbone(flat_patches)  # (B*M, feat_dim, H_p/8, W_p/8)
-        pooled = self.pool(feat_map).flatten(1)  # (B*M, feat_dim)
+        if self.use_pyramid:
+            p1, p2, p3 = self.backbone(flat_patches)
+            f1 = self.pool(p1).flatten(1)  # (B*M, feat_dim) - Stride 2 fine texture / edge
+            f2 = self.pool(p2).flatten(1)  # (B*M, feat_dim) - Stride 4 part / geometric shape
+            f3 = self.pool(p3).flatten(1)  # (B*M, feat_dim) - Stride 8 macro semantic category
+            pooled = torch.cat([f1, f2, f3], dim=-1)  # (B*M, 3 * feat_dim)
+        else:
+            feat_map = self.backbone(flat_patches)  # (B*M, feat_dim, H_p/8, W_p/8)
+            pooled = self.pool(feat_map).flatten(1)  # (B*M, feat_dim)
+
         tokens = self.token_proj(pooled).view(B, M, self.d_model)
         return tokens
 

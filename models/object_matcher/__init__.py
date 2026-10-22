@@ -7,6 +7,7 @@ from __future__ import annotations
 from models.object_matcher.xfeat_object_matcher import (
     XFeatObjectMatcher,
     XFeatBackbone,
+    XFeatPyramidBackbone,
     MaskPooling,
     ObjectGeometryEncoder,
     ObjectGraphTransformer,
@@ -17,6 +18,7 @@ from models.object_matcher.loss import ObjectMatchingLoss
 __all__ = [
     "XFeatObjectMatcher",
     "XFeatBackbone",
+    "XFeatPyramidBackbone",
     "MaskPooling",
     "ObjectGeometryEncoder",
     "ObjectGraphTransformer",

@@ -117,6 +117,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dustbin-weight", type=float, default=0.3, help="Dustbin rejection loss weight for ObjectMatchingLoss (default: 0.3)")
     parser.add_argument("--motion-weight", type=float, default=0.2, help="Transformation consistency loss weight (方案一: 位移场共识损失, default: 0.2)")
     parser.add_argument("--motion-margin", type=float, default=0.15, help="Parallax tolerance margin in [-1, 1] normalized coordinates (default: 0.15)")
+    parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
+    parser.add_argument("--no-pyramid", dest="use_pyramid", action="store_false", help="Disable multi-scale feature pyramid (use single-scale legacy backbone)")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -153,6 +155,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"  Learning Rate:      {lr}")
     print(f"  Dustbin Weight:     {args.dustbin_weight}")
     print(f"  Motion Loss Weight: {args.motion_weight} (Margin: {args.motion_margin})")
+    print(f"  Pyramid Features:   {'Enabled (Multi-Scale FPN)' if getattr(args, 'use_pyramid', True) else 'Disabled (Single-Scale)'}")
     print(f"  Model Dimension:    {args.d_model} (Layers: {args.num_layers}, Heads: {args.nhead})")
     print(f"  Mixed Precision:    {'Enabled (AMP FP16)' if args.amp else 'Disabled (FP32)'}")
     print(f"  Checkpoint Base:    {base_save_dir}")
@@ -194,6 +197,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         num_layers=args.num_layers,
         nhead=args.nhead,
         sinkhorn_iters=20,
+        use_pyramid=getattr(args, "use_pyramid", True),
     ).to(device)
 
     loss_fn = build_loss(
@@ -256,6 +260,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             "d_model": args.d_model,
             "num_layers": args.num_layers,
             "nhead": args.nhead,
+            "use_pyramid": getattr(args, "use_pyramid", True),
             "sinkhorn_iters": 20,
             "total_parameters": num_total_params,
             "trainable_parameters": num_trainable_params,
