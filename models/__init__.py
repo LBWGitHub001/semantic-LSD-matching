@@ -1,32 +1,44 @@
 """
-Unified Model Registry and Factory for Object & Line Matching Networks.
+Unified Model Registry and Factory for the Three Matching Networks:
+1. Object Matching Network ("连连看"): XFeatObjectMatcher (models/object_matcher)
+2. 6-Channel Geometry Field Line Matcher: MaskLineFeatMatchNet (models/mask_line_matcher)
+3. Baseline Line Transformer Matcher: LineMatcherNet (models/line_transformer)
 """
 
 from __future__ import annotations
 
 import torch.nn as nn
 
+# 1. Object-Level Matcher ("连连看")
 from models.object_matcher import (
     XFeatObjectMatcher,
     ObjectMatchingLoss,
 )
-from models.line_matcher import (
+
+# 2. 6-Channel Geometry Field Line Matcher
+from models.mask_line_matcher import (
     MaskLineFeatMatchNet,
     MaskLineMatcherNet,
+)
+
+# 3. Baseline Line Transformer Matcher
+from models.line_transformer import (
     LineMatcherNet,
     LineMatchingLoss,
     MaskedMatrixLoss,
+    LineMatcher,
+    LineMatchPipeline,
 )
 
 MODEL_REGISTRY = {
-    # Object Bipartite Matchers ("连连看")
+    # Model 1: Object Bipartite Matchers ("连连看")
     "xfeat_object": XFeatObjectMatcher,
     "xfeat": XFeatObjectMatcher,
     "object": XFeatObjectMatcher,
-    # Line Matchers (6-Channel Geometry Field)
+    # Model 2: 6-Channel Continuous Geometry Field Line Matcher
     "mask_line": MaskLineFeatMatchNet,
     "mask": MaskLineFeatMatchNet,
-    # Line Matchers (Baseline Line-Transformer)
+    # Model 3: Baseline Line-Transformer Matcher
     "line_transformer": LineMatcherNet,
     "linefeat": LineMatcherNet,
 }
@@ -78,4 +90,6 @@ __all__ = [
     "LineMatcherNet",
     "LineMatchingLoss",
     "MaskedMatrixLoss",
+    "LineMatcher",
+    "LineMatchPipeline",
 ]

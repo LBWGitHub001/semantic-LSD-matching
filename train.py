@@ -43,6 +43,7 @@ from datasets import (
     collate_single_pair,
     predict_bipartite_matches,
     visualize_object_matches,
+    visualize_semantic_region_matches,
     LineFeatPairDataset,
 )
 
@@ -207,7 +208,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({epoch_sec:.1f}s) "
                   f"| Loss: {train_loss:.4f} "
                   f"| Val Prec: {val_metrics['precision']:5.1f}% | Rec: {val_metrics['recall']:5.1f}% "
-                  f"| F1: {val_f1:5.1f}% | Dustbin: {val_metrics['dustbin_acc']:5.1f}%{star}")
+                  f"| F1: {val_f1:5.1f}% | Dustbin: P={val_metrics['dustbin_prec']:4.1f}%/R={val_metrics['dustbin_rec']:4.1f}%{star}")
 
     print("=" * 80)
     print(f"[+] Training Complete! Best Val F1: {best_val_f1:.2f}%. Saved -> {best_ckpt_path}")
@@ -216,16 +217,28 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print("\nEvaluating best checkpoint on unseen test scenes...")
     ckpt = torch.load(best_ckpt_path, map_location=device)
     model.load_state_dict(ckpt["model_state"])
-    test_metrics = evaluate_object_pipeline(model, test_loader, device, desc="Testing")
 
-    print("-" * 65)
+    # 1. Unconstrained visual matching evaluation
+    raw_test_metrics = evaluate_object_pipeline(model, test_loader, device, desc="Testing (Raw Visual)")
+
+    # 2. Category-constrained evaluation (if class labels available)
+    cat_test_metrics = evaluate_object_pipeline(model, test_loader, device, desc="Testing (Semantic Constrained)", enforce_same_category=True)
+
+    print("-" * 75)
     print(f"TEST SET BENCHMARK RESULTS ({len(test_ds)} pairs):")
-    print(f"  Precision       : {test_metrics['precision']:.2f}%")
-    print(f"  Recall          : {test_metrics['recall']:.2f}%")
-    print(f"  F1-Score        : {test_metrics['f1']:.2f}%")
-    print(f"  Dustbin Accuracy: {test_metrics['dustbin_acc']:.2f}%")
-    print(f"  Matches         : {test_metrics['tp']} TP, {test_metrics['fp']} FP, {test_metrics['fn']} FN")
-    print("-" * 65)
+    print("  [1] Raw Visual Appearance Matching (Zero Class Prior):")
+    print(f"      Precision          : {raw_test_metrics['precision']:.2f}%")
+    print(f"      Recall             : {raw_test_metrics['recall']:.2f}%")
+    print(f"      F1-Score           : {raw_test_metrics['f1']:.2f}%")
+    print(f"      Matches            : {raw_test_metrics['tp']} TP, {raw_test_metrics['fp']} FP, {raw_test_metrics['fn']} FN")
+    print(f"      Cross-Category FP  : {raw_test_metrics['cross_cat_fp']} ({raw_test_metrics['cross_cat_rate']:.1f}% of all FPs)")
+    print(f"      Dustbin Precision  : {raw_test_metrics['dustbin_prec']:.2f}% (Recall: {raw_test_metrics['dustbin_rec']:.2f}%)")
+    print("  [2] Semantic Category Constrained Matching:")
+    print(f"      Precision          : {cat_test_metrics['precision']:.2f}%")
+    print(f"      Recall             : {cat_test_metrics['recall']:.2f}%")
+    print(f"      F1-Score           : {cat_test_metrics['f1']:.2f}%")
+    print(f"      Matches            : {cat_test_metrics['tp']} TP, {cat_test_metrics['fp']} FP, {cat_test_metrics['fn']} FN")
+    print("-" * 75)
 
     vis_dir = Path("outputs/object_matching_vis")
     vis_dir.mkdir(parents=True, exist_ok=True)
@@ -241,7 +254,23 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
             scene_tag = batch.get("scene_name", f"pair_{vis_idx+1}")
             save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
-            if "raw_img0" in batch and batch["raw_img0"] is not None:
+
+            if use_region_ds and "raw_img0" in batch and batch["raw_img0"] is not None:
+                visualize_semantic_region_matches(
+                    bgr0=batch["raw_img0"],
+                    bgr1=batch["raw_img1"],
+                    masks0=batch["masks0"],
+                    masks1=batch["masks1"],
+                    regs0=batch.get("regs0", []),
+                    regs1=batch.get("regs1", []),
+                    pred_matches=pred_matches,
+                    gt_matches=batch["gt_matches"][0],
+                    pred_un0=pred_un0,
+                    pred_un1=pred_un1,
+                    out_path=save_file,
+                    title=f"Sample {vis_idx + 1}: {scene_tag}",
+                )
+            elif "raw_img0" in batch and batch["raw_img0"] is not None:
                 visualize_object_matches(
                     batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
                     pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
@@ -254,10 +283,13 @@ def evaluate_object_pipeline(
     loader: DataLoader,
     device: torch.device,
     desc: str = "Evaluating",
+    enforce_same_category: bool = False,
 ) -> dict[str, float]:
     model.eval()
     total_tp, total_fp, total_fn = 0, 0, 0
-    total_dustbin_correct, total_dustbin_items = 0, 0
+    cross_cat_fp = 0
+    same_cat_fp = 0
+    dustbin_tp, dustbin_fp, dustbin_fn, dustbin_tn = 0, 0, 0, 0
 
     pbar = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False, unit="pair")
     with torch.no_grad():
@@ -267,52 +299,87 @@ def evaluate_object_pipeline(
             m1, b1 = batch["masks1"].to(device), batch["bboxes1"].to(device)
 
             out = model(img0, img1, m0, b0, m1, b1)
-            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
+
+            cats0 = [o.get("category", "") for o in batch.get("objs0", [])] if enforce_same_category else None
+            cats1 = [o.get("category", "") for o in batch.get("objs1", [])] if enforce_same_category else None
+
+            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
+                out["prob_matrix"][0], thresh=0.2, categories_0=cats0, categories_1=cats1
+            )
 
             gt_matches = set(batch["gt_matches"][0])
             pred_set = set(pred_matches)
 
-            tp = len(pred_set.intersection(gt_matches))
-            fp = len(pred_set - gt_matches)
-            fn = len(gt_matches - pred_set)
+            cur_tp = len(pred_set.intersection(gt_matches))
+            cur_fp_set = pred_set - gt_matches
+            cur_fn = len(gt_matches - pred_set)
 
-            total_tp += tp
-            total_fp += fp
-            total_fn += fn
+            total_tp += cur_tp
+            total_fp += len(cur_fp_set)
+            total_fn += cur_fn
 
-            gt_un0, gt_un1 = set(batch["unmatched_0"][0]), set(batch["unmatched_1"][0])
-            total_dustbin_correct += len(set(pred_un0).intersection(gt_un0)) + len(set(pred_un1).intersection(gt_un1))
-            total_dustbin_items += len(gt_un0) + len(gt_un1)
+            objs0 = batch.get("objs0", [])
+            objs1 = batch.get("objs1", [])
+            for i, j in cur_fp_set:
+                c0 = objs0[i].get("category", "") if i < len(objs0) else ""
+                c1 = objs1[j].get("category", "") if j < len(objs1) else ""
+                if c0 and c1 and c0 != c1:
+                    cross_cat_fp += 1
+                else:
+                    same_cat_fp += 1
+
+            # Dustbin 4-class confusion matrix
+            gt_un0 = set(batch["unmatched_0"][0])
+            gt_un1 = set(batch["unmatched_1"][0])
+            pred_un0_set = set(pred_un0)
+            pred_un1_set = set(pred_un1)
+
+            for i in range(m0.shape[1]):
+                is_un_gt = (i in gt_un0)
+                is_un_pred = (i in pred_un0_set)
+                if is_un_gt and is_un_pred:
+                    dustbin_tp += 1
+                elif not is_un_gt and is_un_pred:
+                    dustbin_fp += 1
+                elif is_un_gt and not is_un_pred:
+                    dustbin_fn += 1
+                else:
+                    dustbin_tn += 1
+
+            for j in range(m1.shape[1]):
+                is_un_gt = (j in gt_un1)
+                is_un_pred = (j in pred_un1_set)
+                if is_un_gt and is_un_pred:
+                    dustbin_tp += 1
+                elif not is_un_gt and is_un_pred:
+                    dustbin_fp += 1
+                elif is_un_gt and not is_un_pred:
+                    dustbin_fn += 1
+                else:
+                    dustbin_tn += 1
 
             cur_p = total_tp / (total_tp + total_fp + 1e-6)
             cur_r = total_tp / (total_tp + total_fn + 1e-6)
             cur_f1 = 2.0 * cur_p * cur_r / (cur_p + cur_r + 1e-6)
-            pbar.set_postfix({"f1": f"{cur_f1*100:.1f}%", "tp": total_tp, "fp": total_fp})
-
-            out = model(img0, img1, m0, b0, m1, b1)
-            pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(out["prob_matrix"][0])
-
-            gt_matches = set(batch["gt_matches"][0])
-            pred_set = set(pred_matches)
-
-            total_tp += len(pred_set.intersection(gt_matches))
-            total_fp += len(pred_set - gt_matches)
-            total_fn += len(gt_matches - pred_set)
-
-            gt_un0, gt_un1 = set(batch["unmatched_0"][0]), set(batch["unmatched_1"][0])
-            total_dustbin_correct += len(set(pred_un0).intersection(gt_un0)) + len(set(pred_un1).intersection(gt_un1))
-            total_dustbin_items += len(gt_un0) + len(gt_un1)
+            pbar.set_postfix({"f1": f"{cur_f1*100:.1f}%", "tp": total_tp, "fp": total_fp, "fn": total_fn})
 
     precision = total_tp / (total_tp + total_fp + 1e-6)
     recall = total_tp / (total_tp + total_fn + 1e-6)
     f1 = 2.0 * precision * recall / (precision + recall + 1e-6)
-    dustbin_acc = total_dustbin_correct / (total_dustbin_items + 1e-6) if total_dustbin_items > 0 else 1.0
+    dustbin_prec = dustbin_tp / (dustbin_tp + dustbin_fp + 1e-6)
+    dustbin_rec = dustbin_tp / (dustbin_tp + dustbin_fn + 1e-6)
+    dustbin_acc = (dustbin_tp + dustbin_tn) / (dustbin_tp + dustbin_fp + dustbin_fn + dustbin_tn + 1e-6)
+    cross_cat_rate = cross_cat_fp / (total_fp + 1e-6)
 
     return {
         "precision": precision * 100.0,
         "recall": recall * 100.0,
         "f1": f1 * 100.0,
+        "dustbin_prec": dustbin_prec * 100.0,
+        "dustbin_rec": dustbin_rec * 100.0,
         "dustbin_acc": dustbin_acc * 100.0,
+        "cross_cat_fp": cross_cat_fp,
+        "cross_cat_rate": cross_cat_rate * 100.0,
         "tp": total_tp,
         "fp": total_fp,
         "fn": total_fn,

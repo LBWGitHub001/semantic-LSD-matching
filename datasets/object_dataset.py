@@ -146,19 +146,31 @@ def collate_single_pair(batch: list[dict[str, Any]]) -> dict[str, Any]:
 def predict_bipartite_matches(
     prob_matrix: torch.Tensor | np.ndarray,
     thresh: float = 0.2,
+    categories_0: list[str] | None = None,
+    categories_1: list[str] | None = None,
 ) -> tuple[list[tuple[int, int]], list[int], list[int]]:
     """
     Computes mutual nearest neighbor (MNN) assignments from doubly-stochastic Sinkhorn matrix.
     prob_matrix: (M0 + 1, M1 + 1)
+    Optional categories_0 & categories_1 enforce class compatibility (masking out cross-class logits).
     """
     if isinstance(prob_matrix, torch.Tensor):
-        P = prob_matrix.detach().cpu().numpy()
+        P = prob_matrix.detach().cpu().numpy().copy()
     else:
-        P = prob_matrix
+        P = np.array(prob_matrix, copy=True)
 
     M0_plus_1, M1_plus_1 = P.shape
     M0 = M0_plus_1 - 1
     M1 = M1_plus_1 - 1
+
+    # Optional hard semantic masking: zero out matches between disparate classes
+    if categories_0 is not None and categories_1 is not None:
+        for i in range(min(M0, len(categories_0))):
+            c0 = categories_0[i]
+            for j in range(min(M1, len(categories_1))):
+                c1 = categories_1[j]
+                if c0 != c1:
+                    P[i, j] = 0.0
 
     matches = []
     unmatched_0 = []
