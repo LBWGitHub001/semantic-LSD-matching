@@ -81,7 +81,10 @@ def run_object_demo(args: argparse.Namespace) -> None:
 
     # Model
     model = build_model(args.model).to(device)
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    try:
+        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(args.checkpoint, map_location=device)
     state = ckpt["model_state"] if "model_state" in ckpt else ckpt
     model.load_state_dict(state)
     model.eval()

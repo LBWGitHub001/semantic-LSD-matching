@@ -71,7 +71,10 @@ def evaluate_object_model(args: argparse.Namespace) -> None:
 
     # 2. Load Model
     model = build_model(args.model).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
+    try:
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(ckpt_path, map_location=device)
     state = ckpt["model_state"] if "model_state" in ckpt else ckpt
     model.load_state_dict(state)
     model.eval()
