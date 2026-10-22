@@ -84,66 +84,69 @@ flowchart LR
   即物体 $i$ 匹配到 View 1 某个物体 $j$ 的概率，加上它落入垃圾桶（未匹配）的概率 $P_{i, M_1}$，**总和严格为 1**。
 - 这本质上构成了一个离散多项式概率分布。因此，最优的监督方法就是分类任务中最经典的**负对数似然（Negative Log-Likelihood, NLL）**。
 
-### 2. 损失函数的数学公式 (平衡正样本与垃圾桶负样本)
+### 2. 损失函数的数学公式 (平衡正负样本 + 变换一致性位移场共识损失)
 设样本的真实匹配对集合为 $\mathcal{M} = \{(i_1, j_1), (i_2, j_2), \dots\}$，View 0 中真实未匹配的落单集合为 $\mathcal{U}_0$，View 1 中真实未匹配的落单集合为 $\mathcal{U}_1$。
 
-在真实室内场景中，单视角可见的未匹配物体数量往往是双视角共视匹配对的 **3~4 倍**。若直接简单平均，垃圾桶梯度将占据整个 Loss 的 75% 以上，导致网络极度保守、不敢匹配（Recall 偏低）。
+总损失由两大部分构成：
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{nll}} + \lambda_{\text{motion}} \cdot \mathcal{L}_{\text{motion}}$$
 
-因此，损失函数采用**解耦正负样本均值并赋予垃圾桶平衡权重 $\lambda_{\text{dustbin}}$（默认 0.3）**：
-$$\mathcal{L} = \frac{\mathcal{L}_{\text{pos}}}{|\mathcal{M}|} + \lambda_{\text{dustbin}} \cdot \frac{\mathcal{L}_{\text{neg}}}{|\mathcal{U}_0| + |\mathcal{U}_1|}$$
-
+#### (1) 匹配与出画负对数似然损失 $\mathcal{L}_{\text{nll}}$
+$$\mathcal{L}_{\text{nll}} = \frac{\mathcal{L}_{\text{pos}}}{|\mathcal{M}|} + \lambda_{\text{dustbin}} \cdot \frac{\mathcal{L}_{\text{neg}}}{|\mathcal{U}_0| + |\mathcal{U}_1|}$$
 其中：
-$$\mathcal{L}_{\text{pos}} = -\sum_{(i, j) \in \mathcal{M}} \log P_{i, j}$$
-$$\mathcal{L}_{\text{neg}} = -\sum_{i \in \mathcal{U}_0} \log P_{i, M_1} - \sum_{j \in \mathcal{U}_1} \log P_{M_0, j}$$
+$$\mathcal{L}_{\text{pos}} = -\sum_{(i, j) \in \mathcal{M}} \log P_{i, j}, \quad \mathcal{L}_{\text{neg}} = -\sum_{i \in \mathcal{U}_0} \log P_{i, M_1} - \sum_{j \in \mathcal{U}_1} \log P_{M_0, j}$$
 
-* **正样本项**：确保每个共视物体对的互连似然最大化，内部平均后不受出画落单物体数量稀释；
-* **垃圾桶项**：对出画目标提供适度沉底惩罚，经 $\lambda_{\text{dustbin}}$（0.3）缩放后，既维持高准确率（Precision > 80%），又大幅释放召回率（Recall 50% $\to$ 67%+）。
+#### (2) 变换一致性位移场共识损失 $\mathcal{L}_{\text{motion}}$ (方案一)
+刚体室内场景中，相机位姿变换会诱发整体一致的 2D 视差位移场。对于 View 0 物体中心 $\mathbf{c}_i^{(0)}$ 与 View 1 物体中心 $\mathbf{c}_j^{(1)}$，其位移向量为 $\mathbf{u}_{ij} = \mathbf{c}_j^{(1)} - \mathbf{c}_i^{(0)}$。
+真实匹配对的全局共识运动趋势为：
+$$\bar{\mathbf{u}} = \frac{1}{|\mathcal{M}|} \sum_{(i, j) \in \mathcal{M}} (\mathbf{c}_j^{(1)} - \mathbf{c}_i^{(0)})$$
+若网络预测出的候选配对 $(i, j)$ 的位移严重偏离共识向量（残差超过视差容忍裕度 $\tau = 0.15$），对其分配的预测概率施加惩罚：
+$$\mathcal{L}_{\text{motion}} = \frac{1}{M_0} \sum_{i=0}^{M_0-1} \sum_{j=0}^{M_1-1} P_{ij} \cdot \max(0, \|\mathbf{u}_{ij} - \bar{\mathbf{u}}\|_2 - \tau)^2$$
+该损失能极其精准地打击同类别/跨类别的李鬼误匹配（如误把左侧白墙连到右侧白墙），迫使概率被 Sinkhorn 重新导向垃圾桶，大幅拉升 Precision。
 
 ### 3. 损失函数的代码逐行解析
 
 ```python
 class ObjectMatchingLoss(nn.Module):
-    def __init__(self, dustbin_weight: float = 0.3) -> None:
+    def __init__(self, dustbin_weight: float = 0.3, motion_weight: float = 0.2, motion_margin: float = 0.15) -> None:
         super().__init__()
         self.dustbin_weight = float(dustbin_weight)
+        self.motion_weight = float(motion_weight)
+        self.motion_margin = float(motion_margin)
 
-    def forward(self, log_P, gt_matches, unmatched_0, unmatched_1):
+    def forward(self, log_P, gt_matches, unmatched_0, unmatched_1, centroids0=None, centroids1=None):
         B, M0_plus_1, M1_plus_1 = log_P.shape
-        M0 = M0_plus_1 - 1  # View 0 物体数
-        M1 = M1_plus_1 - 1  # View 1 物体数
+        M0 = M0_plus_1 - 1
+        M1 = M1_plus_1 - 1
+        log_P = torch.clamp(log_P, min=-100.0, max=0.0)
 
-        total_loss = torch.tensor(0.0, device=log_P.device)
+        total_nll = 0.0
+        total_motion = 0.0
 
         for b in range(B):
             matches = gt_matches[b]
             un0 = unmatched_0[b]
             un1 = unmatched_1[b]
 
-            loss_pos = torch.tensor(0.0, device=log_P.device)
-            loss_neg = torch.tensor(0.0, device=log_P.device)
-            n_pos = len(matches)
-            n_neg = len(un0) + len(un1)
+            # 1. NLL 匹配损失与垃圾桶平衡损失
+            loss_pos = sum(-log_P[b, i, j] for i, j in matches)
+            loss_neg = sum(-log_P[b, i, M1] for i in un0) + sum(-log_P[b, M0, j] for j in un1)
+            mean_pos = (loss_pos / len(matches)) if matches else 0.0
+            mean_neg = (loss_neg / (len(un0) + len(un1))) if (un0 or un1) else 0.0
+            total_nll += mean_pos + self.dustbin_weight * mean_neg
 
-            # ① 针对真实同名匹配对 (i, j)：累加正样本 -log P[i, j]
-            for i, j in matches:
-                loss_pos = loss_pos - log_P[b, i, j]
+            # 2. 变换一致性位移场共识损失
+            if self.motion_weight > 0 and centroids0 is not None and matches:
+                c0 = centroids0[b]
+                c1 = centroids1[b]
+                disp_gt = torch.stack([c1[j] - c0[i] for i, j in matches], dim=0)
+                mean_disp = disp_gt.mean(dim=0, keepdim=True)
+                disp_all = c1.unsqueeze(0) - c0.unsqueeze(1)
+                residuals = torch.norm(disp_all - mean_disp, dim=-1)
+                penalty = (torch.clamp(residuals - self.motion_margin, min=0.0) ** 2).detach()
+                P_real = torch.exp(log_P[b, :M0, :M1])
+                total_motion += (P_real * penalty).sum() / max(float(M0), 1.0)
 
-            # ② 针对 View 0 中出画/无对应物体 i：累加垃圾桶列 M1 惩罚
-            for i in un0:
-                loss_neg = loss_neg - log_P[b, i, M1]
-
-            # ③ 针对 View 1 中出画/无对应物体 j：累加垃圾桶行 M0 惩罚
-            for j in un1:
-                loss_neg = loss_neg - log_P[b, M0, j]
-
-            # 各自内部算平均损失，互不干扰稀释
-            mean_pos = (loss_pos / float(n_pos)) if n_pos > 0 else torch.tensor(0.0, device=log_P.device)
-            mean_neg = (loss_neg / float(n_neg)) if n_neg > 0 else torch.tensor(0.0, device=log_P.device)
-
-            # 加权求和
-            total_loss = total_loss + mean_pos + self.dustbin_weight * mean_neg
-
-        return total_loss / float(B)
+        return (total_nll + self.motion_weight * total_motion) / float(B)
 ```
 
 ### 4. 为什么该损失函数不需要负采样？
@@ -158,7 +161,7 @@ class ObjectMatchingLoss(nn.Module):
 
 ### 训练模型与历史检查点保存：
 ```bash
-# 从头开始训练（每 5 个 Epoch 自动保存历史快照 epoch_XXX.pth，且每轮实时保存 last_model.pth）
+# 从头开始训练（含位移场共识一致性损失、每 5 轮存历史快照）
 python train.py \
   --model xfeat_object \
   --data-dir data/structured3d_semantic_regions \
@@ -166,6 +169,7 @@ python train.py \
   --epochs 20 \
   --save-interval 5 \
   --dustbin-weight 0.3 \
+  --motion-weight 0.2 \
   --lr 5e-4 \
   --amp \
   --num-workers 4
@@ -175,8 +179,10 @@ python train.py \
   --model xfeat_object \
   --data-dir data/structured3d_semantic_regions \
   --save-dir checkpoints/semantic_patch_matcher \
-  --epochs 30 \
-  --resume checkpoints/semantic_patch_matcher/epoch_015.pth \
+  --epochs 20 \
+  --resume checkpoints/semantic_patch_matcher/epoch_010.pth \
+  --motion-weight 0.2 \
+  --lr 2e-4 \
   --amp
 ```
 

@@ -157,6 +157,10 @@ class ObjectMatchingDataset(Dataset):
 def collate_single_pair(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """Single pair collator for variable-sized object sets."""
     item = batch[0]
+    b0 = item["bboxes0"]
+    c0 = torch.stack([(b0[:, 0] + b0[:, 2]) / 2.0, (b0[:, 1] + b0[:, 3]) / 2.0], dim=-1) if len(b0) > 0 else torch.zeros((0, 2))
+    b1 = item["bboxes1"]
+    c1 = torch.stack([(b1[:, 0] + b1[:, 2]) / 2.0, (b1[:, 1] + b1[:, 3]) / 2.0], dim=-1) if len(b1) > 0 else torch.zeros((0, 2))
     return {
         "patches0": item["patches0"].unsqueeze(0) if "patches0" in item else None,
         "patches1": item["patches1"].unsqueeze(0) if "patches1" in item else None,
@@ -166,8 +170,10 @@ def collate_single_pair(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "raw_img1": item["raw_img1"],
         "masks0": item["masks0"].unsqueeze(0),
         "bboxes0": item["bboxes0"].unsqueeze(0),
+        "centroids0": c0.unsqueeze(0),
         "masks1": item["masks1"].unsqueeze(0),
         "bboxes1": item["bboxes1"].unsqueeze(0),
+        "centroids1": c1.unsqueeze(0),
         "objs0": item["objs0"],
         "objs1": item["objs1"],
         "gt_matches": [item["gt_matches"]],

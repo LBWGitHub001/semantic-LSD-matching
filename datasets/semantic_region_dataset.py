@@ -160,6 +160,20 @@ class SemanticRegionDataset(Dataset):
         t_bboxes0 = torch.from_numpy(np.array(bboxes0_list, dtype=np.float32)) if M0 > 0 else torch.zeros((0, 4), dtype=torch.float32)
         t_bboxes1 = torch.from_numpy(np.array(bboxes1_list, dtype=np.float32)) if M1 > 0 else torch.zeros((0, 4), dtype=torch.float32)
 
+        # Normalized 2D centroids in [-1, 1] for motion & transformation consistency
+        centroids0_list = []
+        for r in regs0:
+            c = r.get("centroid_2d", [(r["bbox"][0] + r["bbox"][2]) / 2.0, (r["bbox"][1] + r["bbox"][3]) / 2.0])
+            centroids0_list.append([c[0] / float(W) * 2.0 - 1.0, c[1] / float(H) * 2.0 - 1.0])
+
+        centroids1_list = []
+        for r in regs1:
+            c = r.get("centroid_2d", [(r["bbox"][0] + r["bbox"][2]) / 2.0, (r["bbox"][1] + r["bbox"][3]) / 2.0])
+            centroids1_list.append([c[0] / float(W) * 2.0 - 1.0, c[1] / float(H) * 2.0 - 1.0])
+
+        t_centroids0 = torch.from_numpy(np.array(centroids0_list, dtype=np.float32)) if M0 > 0 else torch.zeros((0, 2), dtype=torch.float32)
+        t_centroids1 = torch.from_numpy(np.array(centroids1_list, dtype=np.float32)) if M1 > 0 else torch.zeros((0, 2), dtype=torch.float32)
+
         # 6. Target Assignment Matrix: (M0+1, M1+1)
         gt_matrix = torch.zeros((M0 + 1, M1 + 1), dtype=torch.float32)
         for i, j in gt_matches:
@@ -184,6 +198,8 @@ class SemanticRegionDataset(Dataset):
             "masks1": t_masks1,
             "bboxes0": t_bboxes0,
             "bboxes1": t_bboxes1,
+            "centroids0": t_centroids0,
+            "centroids1": t_centroids1,
             "gt_matches": gt_matches,
             "unmatched_0": unmatched_0,
             "unmatched_1": unmatched_1,
@@ -234,6 +250,8 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "masks1": item["masks1"].unsqueeze(0),
         "bboxes0": item["bboxes0"].unsqueeze(0),
         "bboxes1": item["bboxes1"].unsqueeze(0),
+        "centroids0": item["centroids0"].unsqueeze(0) if "centroids0" in item else None,
+        "centroids1": item["centroids1"].unsqueeze(0) if "centroids1" in item else None,
         "gt_matches": [item["gt_matches"]],
         "unmatched_0": [item["unmatched_0"]],
         "unmatched_1": [item["unmatched_1"]],

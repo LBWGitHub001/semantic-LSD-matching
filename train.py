@@ -81,6 +81,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-save-last", dest="save_last", action="store_false", default=True, help="Disable saving last_model.pth")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint (.pth) to resume training from")
     parser.add_argument("--dustbin-weight", type=float, default=0.3, help="Dustbin rejection loss weight for ObjectMatchingLoss (default: 0.3)")
+    parser.add_argument("--motion-weight", type=float, default=0.2, help="Transformation consistency loss weight (方案一: 位移场共识损失, default: 0.2)")
+    parser.add_argument("--motion-margin", type=float, default=0.15, help="Parallax tolerance margin in [-1, 1] normalized coordinates (default: 0.15)")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -104,6 +106,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"  Epochs:             {args.epochs}")
     print(f"  Learning Rate:      {lr}")
     print(f"  Dustbin Weight:     {args.dustbin_weight}")
+    print(f"  Motion Loss Weight: {args.motion_weight} (Margin: {args.motion_margin})")
     print(f"  Model Dimension:    {args.d_model} (Layers: {args.num_layers}, Heads: {args.nhead})")
     print(f"  Mixed Precision:    {'Enabled (AMP FP16)' if args.amp else 'Disabled (FP32)'}")
     print(f"  Checkpoint Dir:     {save_dir}")
@@ -146,7 +149,12 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         sinkhorn_iters=20,
     ).to(device)
 
-    loss_fn = build_loss(args.model_type, dustbin_weight=args.dustbin_weight).to(device)
+    loss_fn = build_loss(
+        args.model_type,
+        dustbin_weight=args.dustbin_weight,
+        motion_weight=args.motion_weight,
+        motion_margin=args.motion_margin,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
 
@@ -166,6 +174,9 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         if "optimizer_state" in ckpt and ckpt["optimizer_state"] is not None:
             try:
                 optimizer.load_state_dict(ckpt["optimizer_state"])
+                if args.lr is not None:
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = lr
             except Exception as e:
                 print(f"    [!] Warning: Failed to load optimizer state: {e}")
         if args.amp and "scaler_state" in ckpt and ckpt["scaler_state"] is not None:
@@ -199,9 +210,19 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
 
+            c0 = batch["centroids0"].to(device) if "centroids0" in batch and batch["centroids0"] is not None else None
+            c1 = batch["centroids1"].to(device) if "centroids1" in batch and batch["centroids1"] is not None else None
+
             with torch.amp.autocast("cuda", enabled=args.amp):
                 out = model(patches0, patches1)
-                loss = loss_fn(out["log_P"], batch["gt_matches"], batch["unmatched_0"], batch["unmatched_1"])
+                loss = loss_fn(
+                    out["log_P"],
+                    batch["gt_matches"],
+                    batch["unmatched_0"],
+                    batch["unmatched_1"],
+                    centroids0=c0,
+                    centroids1=c1,
+                )
                 loss_scaled = loss / args.grad_accum
 
             scaler.scale(loss_scaled).backward()
@@ -523,6 +544,9 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         if "optimizer_state" in ckpt and ckpt["optimizer_state"] is not None:
             try:
                 optimizer.load_state_dict(ckpt["optimizer_state"])
+                if args.lr is not None:
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = lr
             except Exception as e:
                 print(f"    [!] Warning: Failed to load optimizer state: {e}")
         if args.amp and "scaler_state" in ckpt and ckpt["scaler_state"] is not None:
