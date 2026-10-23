@@ -55,13 +55,78 @@ def extract_region_patch(bgr_img: np.ndarray, mask: np.ndarray, patch_size: int 
     return rgb
 
 
-def extract_region_patch_from_crop(crop_bgra: np.ndarray, patch_size: int = 112) -> np.ndarray:
+_SHARED_LSD = None
+
+
+def get_shared_lsd():
+    global _SHARED_LSD
+    if _SHARED_LSD is None:
+        _SHARED_LSD = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+    return _SHARED_LSD
+
+
+def extract_patch_lines_from_square(
+    square_bgr: np.ndarray,
+    max_lines: int = 16,
+    min_length: float = 6.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Ultra-fast LSD line extraction directly on the 112x112 square patch.
+    Takes ~1.5ms per patch instead of ~25ms on large crops.
+    """
+    import math
+
+    lines_5d = np.zeros((max_lines, 5), dtype=np.float32)
+    mask = np.zeros((max_lines,), dtype=bool)
+
+    if square_bgr is None or square_bgr.size == 0:
+        return lines_5d, mask
+
+    if square_bgr.ndim == 3:
+        gray = cv2.cvtColor(square_bgr, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = square_bgr
+
+    H_p, W_p = gray.shape[:2]
+    lsd = get_shared_lsd()
+    raw_lines, _, _, _ = lsd.detect(gray)
+
+    if raw_lines is not None:
+        valid_lines = []
+        for l_arr in raw_lines:
+            x1, y1, x2, y2 = [float(v) for v in l_arr.flatten()]
+            length = math.hypot(x2 - x1, y2 - y1)
+            if length < min_length:
+                continue
+            theta = math.atan2(y2 - y1, x2 - x1)
+            cu = (x1 + x2) / (2.0 * float(W_p))
+            cv = (y1 + y2) / (2.0 * float(H_p))
+            l_norm = length / float(max(H_p, W_p))
+            sin2 = math.sin(2.0 * theta)
+            cos2 = math.cos(2.0 * theta)
+            valid_lines.append(([cu, cv, l_norm, sin2, cos2], length))
+
+        valid_lines.sort(key=lambda x: x[1], reverse=True)
+        for k, (feat, _) in enumerate(valid_lines[:max_lines]):
+            lines_5d[k] = feat
+            mask[k] = True
+
+    return lines_5d, mask
+
+
+def extract_region_patch_from_crop(
+    crop_bgra: np.ndarray,
+    patch_size: int = 112,
+    return_square: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Directly pads and normalizes an already-segmented small image crop (BGRA or BGR)
     to a (3, patch_size, patch_size) float32 tensor.
+    If return_square=True, returns (rgb_tensor, square_uint8_bgr).
     """
     if crop_bgra is None or crop_bgra.size == 0:
-        return np.zeros((3, patch_size, patch_size), dtype=np.float32)
+        empty = np.zeros((3, patch_size, patch_size), dtype=np.float32)
+        return (empty, np.zeros((patch_size, patch_size, 3), dtype=np.uint8)) if return_square else empty
 
     if crop_bgra.ndim == 3 and crop_bgra.shape[2] == 4:
         crop_bgr = crop_bgra[..., :3] * (crop_bgra[..., 3:] > 0)
@@ -81,7 +146,7 @@ def extract_region_patch_from_crop(crop_bgra: np.ndarray, patch_size: int = 112)
     square[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
 
     rgb = ((square[..., ::-1] / 255.0 - IMAGENET_MEAN) / IMAGENET_STD).transpose(2, 0, 1).astype(np.float32)
-    return rgb
+    return (rgb, square) if return_square else rgb
 
 
 def extract_patch_lines_from_crop(
@@ -89,56 +154,10 @@ def extract_patch_lines_from_crop(
     max_lines: int = 16,
     min_length: float = 8.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Extracts straight lines inside a small region patch crop using OpenCV LSD.
-    Returns:
-      lines_5d: (max_lines, 5) float32 [cu, cv, length, sin2θ, cos2θ] in [0, 1]
-      mask: (max_lines,) bool
-    """
-    import math
-
-    lines_5d = np.zeros((max_lines, 5), dtype=np.float32)
-    mask = np.zeros((max_lines,), dtype=bool)
-
-    if crop_bgr is None or crop_bgr.size == 0:
-        return lines_5d, mask
-
-    if crop_bgr.ndim == 3 and crop_bgr.shape[2] == 4:
-        crop_gray = cv2.cvtColor(crop_bgr[..., :3], cv2.COLOR_BGR2GRAY)
-    elif crop_bgr.ndim == 3 and crop_bgr.shape[2] == 3:
-        crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    else:
-        crop_gray = crop_bgr
-
-    H_c, W_c = crop_gray.shape[:2]
-    if H_c < 4 or W_c < 4:
-        return lines_5d, mask
-
-    lsd = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
-    raw_lines, _, _, _ = lsd.detect(crop_gray)
-
-    if raw_lines is not None:
-        valid_lines = []
-        for l_arr in raw_lines:
-            x1, y1, x2, y2 = [float(v) for v in l_arr.flatten()]
-            length = math.hypot(x2 - x1, y2 - y1)
-            if length < min_length:
-                continue
-            theta = math.atan2(y2 - y1, x2 - x1)
-            cu = (x1 + x2) / (2.0 * max(W_c, 1))
-            cv = (y1 + y2) / (2.0 * max(H_c, 1))
-            l_norm = length / max(H_c, W_c, 1)
-            sin2 = math.sin(2.0 * theta)
-            cos2 = math.cos(2.0 * theta)
-            valid_lines.append(([cu, cv, l_norm, sin2, cos2], length))
-
-        # Sort by line length descending (most prominent lines first)
-        valid_lines.sort(key=lambda x: x[1], reverse=True)
-        for k, (feat, _) in enumerate(valid_lines[:max_lines]):
-            lines_5d[k] = feat
-            mask[k] = True
-
-    return lines_5d, mask
+    """Extracts straight lines inside a region crop (compatibility wrapper)."""
+    res = extract_region_patch_from_crop(crop_bgr, patch_size=112, return_square=True)
+    _, square = res if isinstance(res, tuple) else (res, np.zeros((112, 112, 3), dtype=np.uint8))
+    return extract_patch_lines_from_square(square, max_lines=max_lines, min_length=min_length)
 
 
 class SemanticRegionDataset(Dataset):
@@ -155,7 +174,7 @@ class SemanticRegionDataset(Dataset):
         transform: Callable[[np.ndarray], np.ndarray] | None = None,
         min_area_ratio: float = 0.50,
         load_masks: bool = False,
-        load_lines: bool = True,
+        load_lines: bool = False,
         max_lines_per_patch: int = 16,
     ) -> None:
         super().__init__()
@@ -247,6 +266,22 @@ class SemanticRegionDataset(Dataset):
         with open(p_dir / "regions_1.json", "r", encoding="utf-8") as f:
             regs1 = json.load(f)
 
+        # Check line cache if load_lines is True
+        cache_file = p_dir / "patch_lines.npz"
+        has_line_cache = False
+        cached_lines = None
+        if self.load_lines and cache_file.is_file():
+            try:
+                npz = np.load(cache_file)
+                t_patch_lines0 = torch.from_numpy(npz["lines0"])
+                t_line_mask0 = torch.from_numpy(npz["mask0"])
+                t_patch_lines1 = torch.from_numpy(npz["lines1"])
+                t_line_mask1 = torch.from_numpy(npz["mask1"])
+                cached_lines = (t_patch_lines0, t_line_mask0, t_patch_lines1, t_line_mask1)
+                has_line_cache = True
+            except Exception:
+                has_line_cache = False
+
         # 3. Extract Small Region Patches (112x112) directly from small crops
         masks0_list = []
         bboxes0_list = []
@@ -264,17 +299,22 @@ class SemanticRegionDataset(Dataset):
             crop_path = p_dir / "image_0" / f"region_{r['idx']:02d}.png"
             if crop_path.is_file():
                 crop_img = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
-                patches0_list.append(extract_region_patch_from_crop(crop_img, patch_size=self.patch_size))
+                patch, square = extract_region_patch_from_crop(crop_img, patch_size=self.patch_size, return_square=True)
+                patches0_list.append(patch)
             else:
                 if bgr0 is None:
                     bgr0 = cv2.imread(str(p_dir / "image_0.png"))
                 m_path = p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"
                 m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
-                crop_img = extract_region_patch(bgr0, m, patch_size=self.patch_size)
-                patches0_list.append(crop_img)
+                patch = extract_region_patch(bgr0, m, patch_size=self.patch_size)
+                patches0_list.append(patch)
+                square = None
 
-            if self.load_lines:
-                lines_5d, l_mask = extract_patch_lines_from_crop(crop_img, max_lines=self.max_lines_per_patch)
+            if self.load_lines and not has_line_cache:
+                if square is not None:
+                    lines_5d, l_mask = extract_patch_lines_from_square(square, max_lines=self.max_lines_per_patch)
+                else:
+                    lines_5d, l_mask = extract_patch_lines_from_crop(crop_img if crop_path.is_file() else bgr0, max_lines=self.max_lines_per_patch)
                 patch_lines0_list.append(lines_5d)
                 line_mask0_list.append(l_mask)
 
@@ -294,17 +334,22 @@ class SemanticRegionDataset(Dataset):
             crop_path = p_dir / "image_1" / f"region_{r['idx']:02d}.png"
             if crop_path.is_file():
                 crop_img = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
-                patches1_list.append(extract_region_patch_from_crop(crop_img, patch_size=self.patch_size))
+                patch, square = extract_region_patch_from_crop(crop_img, patch_size=self.patch_size, return_square=True)
+                patches1_list.append(patch)
             else:
                 if bgr1 is None:
                     bgr1 = cv2.imread(str(p_dir / "image_1.png"))
                 m_path = p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"
                 m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
-                crop_img = extract_region_patch(bgr1, m, patch_size=self.patch_size)
-                patches1_list.append(crop_img)
+                patch = extract_region_patch(bgr1, m, patch_size=self.patch_size)
+                patches1_list.append(patch)
+                square = None
 
-            if self.load_lines:
-                lines_5d, l_mask = extract_patch_lines_from_crop(crop_img, max_lines=self.max_lines_per_patch)
+            if self.load_lines and not has_line_cache:
+                if square is not None:
+                    lines_5d, l_mask = extract_patch_lines_from_square(square, max_lines=self.max_lines_per_patch)
+                else:
+                    lines_5d, l_mask = extract_patch_lines_from_crop(crop_img if crop_path.is_file() else bgr1, max_lines=self.max_lines_per_patch)
                 patch_lines1_list.append(lines_5d)
                 line_mask1_list.append(l_mask)
 
@@ -353,10 +398,23 @@ class SemanticRegionDataset(Dataset):
         t_centroids1 = torch.from_numpy(np.array(centroids1_list, dtype=np.float32)) if M1 > 0 else torch.zeros((0, 2), dtype=torch.float32)
 
         if self.load_lines:
-            t_patch_lines0 = torch.from_numpy(np.stack(patch_lines0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
-            t_line_mask0 = torch.from_numpy(np.stack(line_mask0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
-            t_patch_lines1 = torch.from_numpy(np.stack(patch_lines1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
-            t_line_mask1 = torch.from_numpy(np.stack(line_mask1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
+            if has_line_cache and cached_lines is not None:
+                t_patch_lines0, t_line_mask0, t_patch_lines1, t_line_mask1 = cached_lines
+            else:
+                t_patch_lines0 = torch.from_numpy(np.stack(patch_lines0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
+                t_line_mask0 = torch.from_numpy(np.stack(line_mask0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
+                t_patch_lines1 = torch.from_numpy(np.stack(patch_lines1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
+                t_line_mask1 = torch.from_numpy(np.stack(line_mask1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
+                try:
+                    np.savez_compressed(
+                        cache_file,
+                        lines0=t_patch_lines0.numpy(),
+                        mask0=t_line_mask0.numpy(),
+                        lines1=t_patch_lines1.numpy(),
+                        mask1=t_line_mask1.numpy(),
+                    )
+                except Exception:
+                    pass
         else:
             t_patch_lines0 = None
             t_line_mask0 = None

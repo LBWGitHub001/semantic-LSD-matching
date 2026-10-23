@@ -179,11 +179,12 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             if splits_data and (p_data / splits_data[0] / "correspondence.json").exists():
                 use_region_ds = True
 
+    needs_lines = args.model_type in ["xfeat_line_matcher", "xfeat_line", "line_object"]
     if use_region_ds:
         from datasets.semantic_region_dataset import SemanticRegionDataset, collate_region_pairs
-        train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train", min_area_ratio=args.min_area_ratio)
-        val_ds = SemanticRegionDataset(dataset_dir=data_dir, split="val", min_area_ratio=args.min_area_ratio)
-        test_ds = SemanticRegionDataset(dataset_dir=data_dir, split="test", min_area_ratio=args.min_area_ratio)
+        train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train", min_area_ratio=args.min_area_ratio, load_lines=needs_lines)
+        val_ds = SemanticRegionDataset(dataset_dir=data_dir, split="val", min_area_ratio=args.min_area_ratio, load_lines=needs_lines)
+        test_ds = SemanticRegionDataset(dataset_dir=data_dir, split="test", min_area_ratio=args.min_area_ratio, load_lines=needs_lines)
         collate_fn = collate_region_pairs
     else:
         train_ds = ObjectMatchingDataset(data_dir=data_dir, split="train")

@@ -81,16 +81,18 @@ def resolve_checkpoint_path(ckpt_path: Path | str) -> Tuple[Path, Optional[dict]
             except Exception:
                 pass
 
-        # If directory has a 'latest' symlink/subdir, prefer resolving latest first
+        # If directory has a 'latest' symlink/subdir, check if it contains valid .pth files
         if (path / "latest").exists():
-            return resolve_checkpoint_path(path / "latest")
+            resolved_latest = (path / "latest").resolve()
+            if any(resolved_latest.glob("*.pth")):
+                return resolve_checkpoint_path(path / "latest")
 
         if (path / "best_model.pth").is_file():
             path = path / "best_model.pth"
         elif (path / "last_model.pth").is_file():
             path = path / "last_model.pth"
         else:
-            pths = sorted(list(path.glob("*.pth")), key=lambda p: p.stat().st_mtime)
+            pths = sorted(list(path.glob("**/*.pth")), key=lambda p: p.stat().st_mtime)
             if pths:
                 path = pths[-1]
             else:
@@ -308,11 +310,13 @@ class DatasetFactory:
 
         if model_info["family"] == "object":
             if use_region_ds:
+                needs_lines = model_info.get("model_type") in ["xfeat_line_matcher", "xfeat_line", "line_object"]
                 dataset = SemanticRegionDataset(
                     dataset_dir=p_data,
                     split=split,
                     min_area_ratio=min_area_ratio,
                     load_masks=False,  # Lightweight fast loading
+                    load_lines=needs_lines,
                 )
                 collate_fn = collate_region_pairs
             else:
