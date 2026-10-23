@@ -479,6 +479,9 @@ class SemanticRegionDataset(Dataset):
             "areas1": areas1,
             "matched_area_ratio_0": ratio0,
             "matched_area_ratio_1": ratio1,
+            "line_matches": corr.get("line_matches", []),
+            "unmatched_lines_0": corr.get("unmatched_lines_0", []),
+            "unmatched_lines_1": corr.get("unmatched_lines_1", []),
         }
 
 
