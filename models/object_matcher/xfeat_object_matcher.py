@@ -326,6 +326,11 @@ class XFeatObjectMatcher(nn.Module):
     extracts multi-scale feature pyramids (P1, P2, P3), pools and fuses them across scales,
     and outputs bipartite matching probabilities through graph transformer and Sinkhorn.
     Masks and full images DO NOT enter the network.
+
+    Backward-compatible with:
+      - Multi-scale FPN pyramid models (use_pyramid=True)
+      - Single-scale lightweight models (use_pyramid=False)
+      - Legacy layout geometry-encoder models (with_geometry=True)
     """
 
     def __init__(
@@ -336,33 +341,41 @@ class XFeatObjectMatcher(nn.Module):
         nhead: int = 4,
         sinkhorn_iters: int = 20,
         use_pyramid: bool = True,
+        with_geometry: bool = False,
     ) -> None:
         super().__init__()
         self.d_model = d_model
         self.feat_dim = feat_dim
         self.use_pyramid = use_pyramid
+        self.with_geometry = with_geometry
 
         if self.use_pyramid:
             self.backbone = XFeatPyramidBackbone(in_channels=3, feat_dim=feat_dim)
             self.pool = nn.AdaptiveAvgPool2d((1, 1))
-            self.token_proj = nn.Sequential(
-                nn.Linear(3 * feat_dim, d_model),
-                nn.LayerNorm(d_model),
-                nn.ReLU(inplace=True),
-            )
+            in_dim = 3 * feat_dim + (feat_dim if self.with_geometry else 0)
         else:
             self.backbone = XFeatBackbone(in_channels=3, out_dim=feat_dim)
             self.pool = nn.AdaptiveAvgPool2d((1, 1))
-            self.token_proj = nn.Sequential(
-                nn.Linear(feat_dim, d_model),
-                nn.LayerNorm(d_model),
-                nn.ReLU(inplace=True),
-            )
+            in_dim = feat_dim + (feat_dim if self.with_geometry else 0)
+
+        if self.with_geometry:
+            self.geo_encoder = ObjectGeometryEncoder(out_dim=feat_dim)
+
+        self.token_proj = nn.Sequential(
+            nn.Linear(in_dim, d_model),
+            nn.LayerNorm(d_model),
+            nn.ReLU(inplace=True),
+        )
 
         self.transformer = ObjectGraphTransformer(d_model=d_model, num_layers=num_layers, nhead=nhead)
         self.matcher = ObjectSinkhornMatcher(d_model=d_model, sinkhorn_iters=sinkhorn_iters)
 
-    def extract_patch_tokens(self, patches: torch.Tensor) -> torch.Tensor:
+    def extract_patch_tokens(
+        self,
+        patches: torch.Tensor,
+        bboxes: torch.Tensor | None = None,
+        image_size: Tuple[int, int] = (480, 640),
+    ) -> torch.Tensor:
         """
         patches: (B, M, 3, H_p, W_p), e.g. (B, M, 3, 112, 112)
         Returns: (B, M, d_model)
@@ -382,6 +395,13 @@ class XFeatObjectMatcher(nn.Module):
             feat_map = self.backbone(flat_patches)  # (B*M, feat_dim, H_p/8, W_p/8)
             pooled = self.pool(feat_map).flatten(1)  # (B*M, feat_dim)
 
+        if self.with_geometry:
+            if bboxes is not None and bboxes.numel() > 0:
+                g_feat = self.geo_encoder(bboxes, image_size).view(B * M, self.feat_dim)
+            else:
+                g_feat = torch.zeros((B * M, self.feat_dim), device=pooled.device, dtype=pooled.dtype)
+            pooled = torch.cat([pooled, g_feat], dim=-1)
+
         tokens = self.token_proj(pooled).view(B, M, self.d_model)
         return tokens
 
@@ -392,6 +412,8 @@ class XFeatObjectMatcher(nn.Module):
         self,
         patches0: torch.Tensor,
         patches1: torch.Tensor,
+        bboxes0: torch.Tensor | None = None,
+        bboxes1: torch.Tensor | None = None,
         *args,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
@@ -400,8 +422,8 @@ class XFeatObjectMatcher(nn.Module):
         patches0: (B, M0, 3, 112, 112)
         patches1: (B, M1, 3, 112, 112)
         """
-        x0 = self.extract_patch_tokens(patches0)
-        x1 = self.extract_patch_tokens(patches1)
+        x0 = self.extract_patch_tokens(patches0, bboxes=bboxes0)
+        x1 = self.extract_patch_tokens(patches1, bboxes=bboxes1)
         x0_ctx, x1_ctx = self.transformer(x0, x1)
         log_P, P = self.matcher(x0_ctx, x1_ctx)
         return {
