@@ -79,6 +79,6 @@ $$M(P_{\pi_0} \mathcal{L}_0, P_{\pi_1} \mathcal{L}_1) = P_{\pi_0} M(\mathcal{L}_
 
 您可以通过运行单元测试进行机器精度核验：
 ```bash
-python tools/run_unit_tests.py
+python tests/run_unit_tests.py
 ```
 * 实测置换前后输出矩阵的最大绝对误差 $< 2.98 \times 10^{-8}$，严格达到机器浮点精度极限。

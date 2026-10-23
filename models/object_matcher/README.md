@@ -189,8 +189,8 @@ python train.py \
 ### 交互式验证与可视化：
 ```bash
 # 验证指定场景对
-python tools/verify_semantic_matches.py --sample-idx 0
+python tests/verify_semantic_matches.py --sample-idx 0
 
 # 开启类别约束验证
-python tools/verify_semantic_matches.py --sample-idx 1 --enforce-category
+python tests/verify_semantic_matches.py --sample-idx 1 --enforce-category
 ```

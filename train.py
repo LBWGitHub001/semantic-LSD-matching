@@ -132,7 +132,8 @@ def parse_args() -> argparse.Namespace:
 # ==============================================================================
 def train_object_pipeline(args: argparse.Namespace) -> None:
     data_dir = Path(args.data_dir or "data/synthetic_object_matching_scenes")
-    base_save_dir = Path(args.save_dir or "checkpoints/xfeat_object_matcher")
+    default_ckpt_dir = "checkpoints/xfeat_object_matcher" if args.model_type in ["xfeat_object", "xfeat", "object"] else f"checkpoints/{args.model_type}"
+    base_save_dir = Path(args.save_dir or default_ckpt_dir)
     start_time = datetime.now()
     start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
     if args.no_timestamp:

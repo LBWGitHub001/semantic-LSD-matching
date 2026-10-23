@@ -148,16 +148,22 @@ python demo.py --model xfeat_object --scene data/synthetic_object_matching_scene
 
 ---
 
-## 四、辅助工具与离线脚本 (`tools/`)
+## 四、辅助工具与测试验证 (`tools/` & `tests/`)
 
-所有辅助工具与离线加速脚本均归拢至 `tools/` 目录：
+### 1. 辅助工具与离线脚本 (`tools/`)
 - `tools/cache_line_features.py`：预先提取全图特征保存到内存缓存，将线段模型训练速度提升 **~50 倍**；
 - `tools/build_line_gt_dataset.py`：基于 3D CAD/室内真实点云投影生成线段真值对应；
-- `tools/run_unit_tests.py`：验证模型规范矩阵 (255x255)、数学置换等变性与反向传播梯度流；
-- `tools/verify_toy_task.py`：极简纯几何合成玩具任务（35 步极速验证模型 100% 收敛）；
+- `tools/build_semantic_region_dataset.py`：构建室内语义区域与掩膜匹配基准；
 - `tools/example_call.py`：纯 Python 极简跨视角线段匹配推理脚本；
 - `tools/download_structured3d.py` & `tools/unzip_structured3d.py`：`Structured3D` 真实室内场景数据集下载与自动解压；
 - `tools/sync_push.sh` & `tools/sync_pull.sh`：本地工作站与远程算力 GPU 服务器一键免密同步代码与权重。
+
+### 2. 自动化测试与验证套件 (`tests/`)
+- `tests/test_xfeat_line_matcher.py`：多模态物体-直线网络（端到端/小图、5D 几何、梯度反向）单元测试；
+- `tests/test_factories.py`：数据集生成工厂、模型拓扑自检工厂与双视角画布可视化回归测试；
+- `tests/run_unit_tests.py`：验证模型规范矩阵 (255x255)、数学置换等变性与反向传播梯度流；
+- `tests/verify_semantic_matches.py`：物体语义区域与掩膜匹配交互式诊断；
+- `tests/verify_toy_task.py`：极简纯几何合成玩具任务（35 步极速验证模型 100% 收敛）。
 
 ---
 

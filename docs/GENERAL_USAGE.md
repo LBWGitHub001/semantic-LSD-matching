@@ -164,18 +164,18 @@ python demo.py --model mask_line --scene data/synthetic_multiview_scenes/scene_0
 
 `tools/` 目录下集中了工程中的加速、验证与数据转化工具：
 
-### 1. `tools/run_unit_tests.py` (模型置换等变性与梯度单元测试)
+### 1. `tests/run_unit_tests.py` (模型置换等变性与梯度单元测试)
 - **功能**：自动生成随机几何场张量，数学证明随机打乱输入线段顺序后，输出规范矩阵 $(255, 255)$ 的对应行/列严格等价置换（误差 $< 10^{-7}$），并验证反向传播梯度流。
 - **运行**：
   ```bash
-  python tools/run_unit_tests.py
+  python tests/run_unit_tests.py
   ```
 
-### 2. `tools/verify_toy_task.py` (极简 2D 玩具任务验证)
+### 2. `tests/verify_toy_task.py` (极简 2D 玩具任务验证)
 - **功能**：在 1 秒内生成包含旋转和平移扰动的 2D 线段对，以 35 步极速训练检验网络架构、图推理和最优传输层能否达到 100% 完美收敛。
 - **运行**：
   ```bash
-  python tools/verify_toy_task.py
+  python tests/verify_toy_task.py
   ```
 
 ### 3. `tools/example_call.py` (极简 Python API 推理范例)

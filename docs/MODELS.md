@@ -176,7 +176,7 @@ model = XFeatObjectMatcher(
 `MaskLineFeatMatchNet` 满足严格的**行/列置换等变性（Permutation Equivariance）**：
 设 View 0 的线段置换矩阵为 $P_{\pi_0}$，View 1 的线段置换矩阵为 $P_{\pi_1}$，则网络预测的匹配矩阵满足：
 $$M(P_{\pi_0} \mathcal{L}_0, P_{\pi_1} \mathcal{L}_1) = P_{\pi_0} M(\mathcal{L}_0, \mathcal{L}_1) P_{\pi_1}^T$$
-**单元测试验证**：在 `tools/run_unit_tests.py` 中，经实际测试置换前后的矩阵差异绝对值 $< 2.98 \times 10^{-8}$，严格达到机器浮点精度极限！
+**单元测试验证**：在 `tests/run_unit_tests.py` 中，经实际测试置换前后的矩阵差异绝对值 $< 2.98 \times 10^{-8}$，严格达到机器浮点精度极限！
 
 ### 5. 参数配置与实测性能
 

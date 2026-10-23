@@ -306,5 +306,5 @@ python eval.py \
   --num-vis 50
 
 # 3. 运行工厂类与组件的自动化回归测试
-python tools/test_factories.py
+python tests/test_factories.py
 ```
