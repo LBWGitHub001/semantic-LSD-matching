@@ -12,6 +12,9 @@ import torch.nn as nn
 # 1. Object-Level Matcher ("连连看")
 from models.object_matcher import (
     XFeatObjectMatcher,
+    XFeatLineMatcher,
+    PatchLineGeometryEncoder,
+    RegionPatchExtractor,
     ObjectMatchingLoss,
 )
 
@@ -35,6 +38,10 @@ MODEL_REGISTRY = {
     "xfeat_object": XFeatObjectMatcher,
     "xfeat": XFeatObjectMatcher,
     "object": XFeatObjectMatcher,
+    # Model 1.5: Multi-Modal Object + Straight Line Hybrid Matcher
+    "xfeat_line_matcher": XFeatLineMatcher,
+    "xfeat_line": XFeatLineMatcher,
+    "line_object": XFeatLineMatcher,
     # Model 2: 6-Channel Continuous Geometry Field Line Matcher
     "mask_line": MaskLineFeatMatchNet,
     "mask": MaskLineFeatMatchNet,
@@ -47,6 +54,9 @@ LOSS_REGISTRY = {
     "xfeat_object": ObjectMatchingLoss,
     "xfeat": ObjectMatchingLoss,
     "object": ObjectMatchingLoss,
+    "xfeat_line_matcher": ObjectMatchingLoss,
+    "xfeat_line": ObjectMatchingLoss,
+    "line_object": ObjectMatchingLoss,
     "mask_line": LineMatchingLoss,
     "mask": LineMatchingLoss,
     "line_transformer": LineMatchingLoss,
@@ -84,6 +94,9 @@ __all__ = [
     "MODEL_REGISTRY",
     "LOSS_REGISTRY",
     "XFeatObjectMatcher",
+    "XFeatLineMatcher",
+    "PatchLineGeometryEncoder",
+    "RegionPatchExtractor",
     "ObjectMatchingLoss",
     "MaskLineFeatMatchNet",
     "MaskLineMatcherNet",

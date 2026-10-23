@@ -96,8 +96,8 @@ TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{el
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
-                        choices=["xfeat_object", "xfeat", "mask_line", "mask", "line_transformer", "linefeat"],
-                        help="Model architecture: 'xfeat_object' (XFeatObjectMatcher '连连看'), 'mask_line' (MaskLineFeatMatchNet), 'line_transformer' (LineMatcherNet)")
+                        choices=["xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "mask_line", "mask", "line_transformer", "linefeat"],
+                        help="Model architecture: 'xfeat_object' (XFeatObjectMatcher), 'xfeat_line_matcher' (XFeatLineMatcher), 'mask_line' (MaskLineFeatMatchNet), 'line_transformer' (LineMatcherNet)")
     parser.add_argument("--data-dir", type=str, default=None, help="Dataset directory or index path")
     parser.add_argument("--epochs", type=int, default=12, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=None, help="Learning rate (default: 5e-4 for xfeat_object, 1e-4 for line models)")
@@ -350,11 +350,22 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
 
+            model_kwargs = {}
+            if "patch_lines0" in batch and batch["patch_lines0"] is not None:
+                model_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
+                model_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
+            if "line_mask0" in batch and batch["line_mask0"] is not None:
+                model_kwargs["line_mask0"] = batch["line_mask0"].to(device)
+                model_kwargs["line_mask1"] = batch["line_mask1"].to(device)
+            if "bboxes0" in batch and batch["bboxes0"] is not None:
+                model_kwargs["bboxes0"] = batch["bboxes0"].to(device)
+                model_kwargs["bboxes1"] = batch["bboxes1"].to(device)
+
             c0 = batch["centroids0"].to(device) if "centroids0" in batch and batch["centroids0"] is not None else None
             c1 = batch["centroids1"].to(device) if "centroids1" in batch and batch["centroids1"] is not None else None
 
             with torch.amp.autocast("cuda", enabled=args.amp):
-                out = model(patches0, patches1)
+                out = model(patches0, patches1, **model_kwargs)
                 loss = loss_fn(
                     out["log_P"],
                     batch["gt_matches"],
@@ -509,7 +520,17 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                 break
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
-            out = model(patches0, patches1)
+            model_kwargs = {}
+            if "patch_lines0" in batch and batch["patch_lines0"] is not None:
+                model_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
+                model_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
+            if "line_mask0" in batch and batch["line_mask0"] is not None:
+                model_kwargs["line_mask0"] = batch["line_mask0"].to(device)
+                model_kwargs["line_mask1"] = batch["line_mask1"].to(device)
+            if "bboxes0" in batch and batch["bboxes0"] is not None:
+                model_kwargs["bboxes0"] = batch["bboxes0"].to(device)
+                model_kwargs["bboxes1"] = batch["bboxes1"].to(device)
+            out = model(patches0, patches1, **model_kwargs)
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                 out["prob_matrix"][0],
                 areas_0=batch.get("areas0"),
@@ -611,7 +632,18 @@ def evaluate_object_pipeline(
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
 
-            out = model(patches0, patches1)
+            model_kwargs = {}
+            if "patch_lines0" in batch and batch["patch_lines0"] is not None:
+                model_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
+                model_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
+            if "line_mask0" in batch and batch["line_mask0"] is not None:
+                model_kwargs["line_mask0"] = batch["line_mask0"].to(device)
+                model_kwargs["line_mask1"] = batch["line_mask1"].to(device)
+            if "bboxes0" in batch and batch["bboxes0"] is not None:
+                model_kwargs["bboxes0"] = batch["bboxes0"].to(device)
+                model_kwargs["bboxes1"] = batch["bboxes1"].to(device)
+
+            out = model(patches0, patches1, **model_kwargs)
 
             cats0 = [o.get("category", "") for o in batch.get("objs0", [])] if enforce_same_category else None
             cats1 = [o.get("category", "") for o in batch.get("objs1", [])] if enforce_same_category else None
@@ -989,7 +1021,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.model_type in ["xfeat_object", "xfeat"]:
+    if args.model_type in ["xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "line_object"]:
         train_object_pipeline(args)
     else:
         train_line_pipeline(args)

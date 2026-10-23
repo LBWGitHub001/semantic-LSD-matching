@@ -145,6 +145,26 @@ class ModelFactory:
             info["model_type"] = "line_transformer"
             return info
 
+        # 1.5. Multi-Modal Object + Straight Line Hybrid Matcher
+        if any("line_encoder" in k for k in state_dict):
+            info["family"] = "object"
+            info["model_type"] = "xfeat_line_matcher"
+            info["use_pyramid"] = any("visual_backbone.lat3" in k or "visual_backbone.smooth2" in k for k in state_dict)
+            info["with_geometry"] = any("geo_encoder.mlp" in k for k in state_dict)
+            if "fusion_proj.0.weight" in state_dict:
+                info["d_model"] = int(state_dict["fusion_proj.0.weight"].shape[0])
+            layer_indices = set()
+            for k in state_dict:
+                if "transformer.layers." in k:
+                    try:
+                        idx = int(k.split("transformer.layers.")[1].split(".")[0])
+                        layer_indices.add(idx)
+                    except ValueError:
+                        pass
+            if layer_indices:
+                info["num_layers"] = max(layer_indices) + 1
+            return info
+
         # 2. Object Matchers detection
         info["family"] = "object"
         info["model_type"] = "xfeat_object"
@@ -222,6 +242,18 @@ class ModelFactory:
         if info["model_type"] in ["xfeat_object", "xfeat", "object"]:
             model = XFeatObjectMatcher(
                 feat_dim=info["feat_dim"],
+                d_model=info["d_model"],
+                num_layers=info["num_layers"],
+                nhead=info["nhead"],
+                sinkhorn_iters=info["sinkhorn_iters"],
+                use_pyramid=info["use_pyramid"],
+                with_geometry=info["with_geometry"],
+            )
+        elif info["model_type"] in ["xfeat_line_matcher", "xfeat_line", "line_object"]:
+            from models.object_matcher import XFeatLineMatcher
+            model = XFeatLineMatcher(
+                feat_dim=info.get("feat_dim", 64),
+                line_dim=info.get("line_dim", 64),
                 d_model=info["d_model"],
                 num_layers=info["num_layers"],
                 nhead=info["nhead"],
@@ -357,7 +389,18 @@ class ObjectMatchingEvaluator(BaseEvaluator):
                 b0 = batch.get("bboxes0").to(device) if batch.get("bboxes0") is not None else None
                 b1 = batch.get("bboxes1").to(device) if batch.get("bboxes1") is not None else None
 
-                out = model(patches0, patches1, bboxes0=b0, bboxes1=b1)
+                m_kwargs = {}
+                if "patch_lines0" in batch and batch["patch_lines0"] is not None:
+                    m_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
+                    m_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
+                if "line_mask0" in batch and batch["line_mask0"] is not None:
+                    m_kwargs["line_mask0"] = batch["line_mask0"].to(device)
+                    m_kwargs["line_mask1"] = batch["line_mask1"].to(device)
+                if b0 is not None:
+                    m_kwargs["bboxes0"] = b0
+                    m_kwargs["bboxes1"] = b1
+
+                out = model(patches0, patches1, **m_kwargs)
                 pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                     out["prob_matrix"][0],
                     thresh=0.2,
@@ -435,7 +478,18 @@ class ObjectMatchingEvaluator(BaseEvaluator):
                 b0 = batch.get("bboxes0").to(device) if batch.get("bboxes0") is not None else None
                 b1 = batch.get("bboxes1").to(device) if batch.get("bboxes1") is not None else None
 
-                out = model(patches0, patches1, bboxes0=b0, bboxes1=b1)
+                m_kwargs = {}
+                if "patch_lines0" in batch and batch["patch_lines0"] is not None:
+                    m_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
+                    m_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
+                if "line_mask0" in batch and batch["line_mask0"] is not None:
+                    m_kwargs["line_mask0"] = batch["line_mask0"].to(device)
+                    m_kwargs["line_mask1"] = batch["line_mask1"].to(device)
+                if b0 is not None:
+                    m_kwargs["bboxes0"] = b0
+                    m_kwargs["bboxes1"] = b1
+
+                out = model(patches0, patches1, **m_kwargs)
                 pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                     out["prob_matrix"][0],
                     thresh=0.2,

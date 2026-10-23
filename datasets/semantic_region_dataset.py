@@ -84,6 +84,63 @@ def extract_region_patch_from_crop(crop_bgra: np.ndarray, patch_size: int = 112)
     return rgb
 
 
+def extract_patch_lines_from_crop(
+    crop_bgr: np.ndarray,
+    max_lines: int = 16,
+    min_length: float = 8.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Extracts straight lines inside a small region patch crop using OpenCV LSD.
+    Returns:
+      lines_5d: (max_lines, 5) float32 [cu, cv, length, sin2θ, cos2θ] in [0, 1]
+      mask: (max_lines,) bool
+    """
+    import math
+
+    lines_5d = np.zeros((max_lines, 5), dtype=np.float32)
+    mask = np.zeros((max_lines,), dtype=bool)
+
+    if crop_bgr is None or crop_bgr.size == 0:
+        return lines_5d, mask
+
+    if crop_bgr.ndim == 3 and crop_bgr.shape[2] == 4:
+        crop_gray = cv2.cvtColor(crop_bgr[..., :3], cv2.COLOR_BGR2GRAY)
+    elif crop_bgr.ndim == 3 and crop_bgr.shape[2] == 3:
+        crop_gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    else:
+        crop_gray = crop_bgr
+
+    H_c, W_c = crop_gray.shape[:2]
+    if H_c < 4 or W_c < 4:
+        return lines_5d, mask
+
+    lsd = cv2.createLineSegmentDetector(cv2.LSD_REFINE_STD)
+    raw_lines, _, _, _ = lsd.detect(crop_gray)
+
+    if raw_lines is not None:
+        valid_lines = []
+        for l_arr in raw_lines:
+            x1, y1, x2, y2 = [float(v) for v in l_arr.flatten()]
+            length = math.hypot(x2 - x1, y2 - y1)
+            if length < min_length:
+                continue
+            theta = math.atan2(y2 - y1, x2 - x1)
+            cu = (x1 + x2) / (2.0 * max(W_c, 1))
+            cv = (y1 + y2) / (2.0 * max(H_c, 1))
+            l_norm = length / max(H_c, W_c, 1)
+            sin2 = math.sin(2.0 * theta)
+            cos2 = math.cos(2.0 * theta)
+            valid_lines.append(([cu, cv, l_norm, sin2, cos2], length))
+
+        # Sort by line length descending (most prominent lines first)
+        valid_lines.sort(key=lambda x: x[1], reverse=True)
+        for k, (feat, _) in enumerate(valid_lines[:max_lines]):
+            lines_5d[k] = feat
+            mask[k] = True
+
+    return lines_5d, mask
+
+
 class SemanticRegionDataset(Dataset):
     """
     PyTorch Dataset for Cross-View Semantic Region Mask Matching.
@@ -98,6 +155,8 @@ class SemanticRegionDataset(Dataset):
         transform: Callable[[np.ndarray], np.ndarray] | None = None,
         min_area_ratio: float = 0.50,
         load_masks: bool = False,
+        load_lines: bool = True,
+        max_lines_per_patch: int = 16,
     ) -> None:
         super().__init__()
         self.root = Path(dataset_dir).resolve()
@@ -106,6 +165,8 @@ class SemanticRegionDataset(Dataset):
         self.transform = transform
         self.min_area_ratio = min_area_ratio
         self.load_masks = load_masks
+        self.load_lines = load_lines
+        self.max_lines_per_patch = max_lines_per_patch
 
         split_file = self.root / f"{split}_split.json"
         if not split_file.is_file():
@@ -190,6 +251,8 @@ class SemanticRegionDataset(Dataset):
         masks0_list = []
         bboxes0_list = []
         patches0_list = []
+        patch_lines0_list = []
+        line_mask0_list = []
         for r in regs0:
             bboxes0_list.append(r["bbox"])
             if self.load_masks:
@@ -207,11 +270,19 @@ class SemanticRegionDataset(Dataset):
                     bgr0 = cv2.imread(str(p_dir / "image_0.png"))
                 m_path = p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"
                 m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
-                patches0_list.append(extract_region_patch(bgr0, m, patch_size=self.patch_size))
+                crop_img = extract_region_patch(bgr0, m, patch_size=self.patch_size)
+                patches0_list.append(crop_img)
+
+            if self.load_lines:
+                lines_5d, l_mask = extract_patch_lines_from_crop(crop_img, max_lines=self.max_lines_per_patch)
+                patch_lines0_list.append(lines_5d)
+                line_mask0_list.append(l_mask)
 
         masks1_list = []
         bboxes1_list = []
         patches1_list = []
+        patch_lines1_list = []
+        line_mask1_list = []
         for r in regs1:
             bboxes1_list.append(r["bbox"])
             if self.load_masks:
@@ -229,7 +300,13 @@ class SemanticRegionDataset(Dataset):
                     bgr1 = cv2.imread(str(p_dir / "image_1.png"))
                 m_path = p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"
                 m = cv2.imread(str(m_path), cv2.IMREAD_GRAYSCALE)
-                patches1_list.append(extract_region_patch(bgr1, m, patch_size=self.patch_size))
+                crop_img = extract_region_patch(bgr1, m, patch_size=self.patch_size)
+                patches1_list.append(crop_img)
+
+            if self.load_lines:
+                lines_5d, l_mask = extract_patch_lines_from_crop(crop_img, max_lines=self.max_lines_per_patch)
+                patch_lines1_list.append(lines_5d)
+                line_mask1_list.append(l_mask)
 
         # 4. Load Correspondence Ground Truth
         with open(p_dir / "correspondence.json", "r", encoding="utf-8") as f:
@@ -275,6 +352,17 @@ class SemanticRegionDataset(Dataset):
         t_centroids0 = torch.from_numpy(np.array(centroids0_list, dtype=np.float32)) if M0 > 0 else torch.zeros((0, 2), dtype=torch.float32)
         t_centroids1 = torch.from_numpy(np.array(centroids1_list, dtype=np.float32)) if M1 > 0 else torch.zeros((0, 2), dtype=torch.float32)
 
+        if self.load_lines:
+            t_patch_lines0 = torch.from_numpy(np.stack(patch_lines0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
+            t_line_mask0 = torch.from_numpy(np.stack(line_mask0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
+            t_patch_lines1 = torch.from_numpy(np.stack(patch_lines1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
+            t_line_mask1 = torch.from_numpy(np.stack(line_mask1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
+        else:
+            t_patch_lines0 = None
+            t_line_mask0 = None
+            t_patch_lines1 = None
+            t_line_mask1 = None
+
         # 6. Target Assignment Matrix: (M0+1, M1+1)
         gt_matrix = torch.zeros((M0 + 1, M1 + 1), dtype=torch.float32)
         for i, j in gt_matches:
@@ -311,6 +399,10 @@ class SemanticRegionDataset(Dataset):
             "masks1": t_masks1,
             "bboxes0": t_bboxes0,
             "bboxes1": t_bboxes1,
+            "patch_lines0": t_patch_lines0,
+            "patch_lines1": t_patch_lines1,
+            "line_mask0": t_line_mask0,
+            "line_mask1": t_line_mask1,
             "centroids0": t_centroids0,
             "centroids1": t_centroids1,
             "gt_matches": gt_matches,
@@ -367,6 +459,10 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "masks1": item["masks1"].unsqueeze(0) if item.get("masks1") is not None else None,
         "bboxes0": item["bboxes0"].unsqueeze(0),
         "bboxes1": item["bboxes1"].unsqueeze(0),
+        "patch_lines0": item["patch_lines0"].unsqueeze(0) if item.get("patch_lines0") is not None else None,
+        "patch_lines1": item["patch_lines1"].unsqueeze(0) if item.get("patch_lines1") is not None else None,
+        "line_mask0": item["line_mask0"].unsqueeze(0) if item.get("line_mask0") is not None else None,
+        "line_mask1": item["line_mask1"].unsqueeze(0) if item.get("line_mask1") is not None else None,
         "centroids0": item["centroids0"].unsqueeze(0) if "centroids0" in item else None,
         "centroids1": item["centroids1"].unsqueeze(0) if "centroids1" in item else None,
         "gt_matches": [item["gt_matches"]],
