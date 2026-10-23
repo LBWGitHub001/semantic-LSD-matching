@@ -129,8 +129,8 @@ class PatchLineGeometryEncoder(nn.Module):
         # Step 2: Masked Pooling over K lines
         mask_expanded = flat_mask.unsqueeze(-1)  # (B*M, K, 1)
 
-        # Max pooling with -1e9 mask
-        h_for_max = h.masked_fill(~mask_expanded, -1e9)
+        # FP16-safe max pooling (use -1e4 instead of -1e9 to stay within FP16 dynamic range [-65504, 65504])
+        h_for_max = h.masked_fill(~mask_expanded, -1e4)
         max_pool = torch.max(h_for_max, dim=1)[0]  # (B*M, line_dim)
 
         # Average pooling

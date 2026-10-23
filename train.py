@@ -236,7 +236,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         motion_margin=args.motion_margin,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp, init_scale=2048.0)
 
     start_epoch = 1
     best_val_f1 = 0.0
@@ -367,27 +367,30 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             with torch.amp.autocast("cuda", enabled=args.amp):
                 out = model(patches0, patches1, **model_kwargs)
                 loss = loss_fn(
-                    out["log_P"],
+                    out["log_P"].float(),
                     batch["gt_matches"],
                     batch["unmatched_0"],
                     batch["unmatched_1"],
                     centroids0=c0,
                     centroids1=c1,
                 )
-                loss_scaled = loss / args.grad_accum
+                loss_scaled = loss.float() / args.grad_accum
 
             scaler.scale(loss_scaled).backward()
             step_count += 1
 
             if step_count % args.grad_accum == 0 or step == len(train_loader) - 1:
+                has_grads = any(p.grad is not None for p in model.parameters())
                 if args.amp:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    scaler.step(optimizer)
+                    if has_grads:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        scaler.step(optimizer)
                     scaler.update()
                 else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    optimizer.step()
+                    if has_grads:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        optimizer.step()
                 optimizer.zero_grad()
 
             loss_val = float(loss.item())
@@ -797,7 +800,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
 
     criterion = build_loss(args.model_type).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
-    scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp, init_scale=2048.0)
 
     start_epoch = 1
     best_val_acc = 0.0
