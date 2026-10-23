@@ -443,8 +443,28 @@ def visualize_semantic_region_matches(
     fp_set = pred_set - gt_set
     fn_set = gt_set - pred_set
 
-    # 1. 区域之间使用蓝色的线划分出来 (Blue boundary lines for all regions)
-    BLUE = (255, 90, 0)  # BGR Vivid Blue
+    # 1. 绿色掩膜一个匹配正确 (Green mask for correct matches - TP)
+    GREEN = (40, 220, 40)  # BGR Vivid Green
+    for i, j in tp_set:
+        if i < len(m0_arr):
+            mask_i = m0_arr[i] > 0.5
+            overlay0[mask_i] = (overlay0[mask_i] * 0.40 + np.array(GREEN) * 0.60).astype(np.uint8)
+        if j < len(m1_arr):
+            mask_j = m1_arr[j] > 0.5
+            overlay1[mask_j] = (overlay1[mask_j] * 0.40 + np.array(GREEN) * 0.60).astype(np.uint8)
+
+    # 2. 红色表示一个匹配不正确 (Red mask for incorrect matches - FP)
+    RED = (30, 30, 240)  # BGR Vivid Red
+    for i, j in fp_set:
+        if i < len(m0_arr):
+            mask_i = m0_arr[i] > 0.5
+            overlay0[mask_i] = (overlay0[mask_i] * 0.35 + np.array(RED) * 0.65).astype(np.uint8)
+        if j < len(m1_arr):
+            mask_j = m1_arr[j] > 0.5
+            overlay1[mask_j] = (overlay1[mask_j] * 0.35 + np.array(RED) * 0.65).astype(np.uint8)
+
+    # 3. 区域之间使用蓝色的线划分出来 (Blue boundary lines for all regions, drawn on top for sharpness)
+    BLUE = (255, 110, 0)  # BGR Vivid Cyan-Blue
     for i in range(len(m0_arr)):
         mask_i = (m0_arr[i] > 0.5).astype(np.uint8)
         cnts0, _ = cv2.findContours(mask_i, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -454,26 +474,6 @@ def visualize_semantic_region_matches(
         mask_j = (m1_arr[j] > 0.5).astype(np.uint8)
         cnts1, _ = cv2.findContours(mask_j, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(overlay1, cnts1, -1, BLUE, 2)
-
-    # 2. 绿色掩膜一个匹配正确 (Green mask for correct matches)
-    GREEN = (40, 220, 40)  # BGR Green
-    for i, j in tp_set:
-        if i < len(m0_arr):
-            mask_i = m0_arr[i] > 0.5
-            overlay0[mask_i] = (overlay0[mask_i] * 0.45 + np.array(GREEN) * 0.55).astype(np.uint8)
-        if j < len(m1_arr):
-            mask_j = m1_arr[j] > 0.5
-            overlay1[mask_j] = (overlay1[mask_j] * 0.45 + np.array(GREEN) * 0.55).astype(np.uint8)
-
-    # 3. 红色表示一个匹配不正确 (Red mask for incorrect matches)
-    RED = (30, 30, 240)  # BGR Red
-    for i, j in fp_set:
-        if i < len(m0_arr):
-            mask_i = m0_arr[i] > 0.5
-            overlay0[mask_i] = (overlay0[mask_i] * 0.4 + np.array(RED) * 0.6).astype(np.uint8)
-        if j < len(m1_arr):
-            mask_j = m1_arr[j] > 0.5
-            overlay1[mask_j] = (overlay1[mask_j] * 0.4 + np.array(RED) * 0.6).astype(np.uint8)
 
     canvas[header_h : header_h + H0, :W0] = overlay0
     canvas[header_h : header_h + H1, W0 + 30 :] = overlay1

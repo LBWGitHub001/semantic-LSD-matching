@@ -81,6 +81,10 @@ def resolve_checkpoint_path(ckpt_path: Path | str) -> Tuple[Path, Optional[dict]
             except Exception:
                 pass
 
+        # If directory has a 'latest' symlink/subdir, prefer resolving latest first
+        if (path / "latest").exists():
+            return resolve_checkpoint_path(path / "latest")
+
         if (path / "best_model.pth").is_file():
             path = path / "best_model.pth"
         elif (path / "last_model.pth").is_file():
@@ -90,9 +94,6 @@ def resolve_checkpoint_path(ckpt_path: Path | str) -> Tuple[Path, Optional[dict]
             if pths:
                 path = pths[-1]
             else:
-                # If directory has a 'latest' symlink inside
-                if (path / "latest").exists():
-                    return resolve_checkpoint_path(path / "latest")
                 raise FileNotFoundError(f"No .pth checkpoint files found in directory: {path}")
 
     if not path.is_file():
@@ -360,9 +361,7 @@ class ObjectMatchingEvaluator(BaseEvaluator):
                 pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                     out["prob_matrix"][0],
                     thresh=0.2,
-                    areas_0=batch.get("areas0"),
-                    areas_1=batch.get("areas1"),
-                    min_area_ratio=min_area_ratio,
+                    min_area_ratio=0.0,
                 )
 
                 gt_matches = set(batch["gt_matches"][0])
@@ -440,9 +439,7 @@ class ObjectMatchingEvaluator(BaseEvaluator):
                 pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                     out["prob_matrix"][0],
                     thresh=0.2,
-                    areas_0=batch.get("areas0"),
-                    areas_1=batch.get("areas1"),
-                    min_area_ratio=min_area_ratio,
+                    min_area_ratio=0.0,
                 )
 
                 scene_tag = batch.get("scene_name", f"sample_{vis_idx + 1}")
