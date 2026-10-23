@@ -29,10 +29,12 @@
 ```mermaid
 flowchart TD
     subgraph DataGenFactory["1. 数据生成工厂 (DatasetGeneratorFactory)"]
-        DGF_Create["DatasetGeneratorFactory.create()"] --> Comp_Obj["ObjectMaskComponent<br/>(目标与掩膜)"]
-        DGF_Create --> Comp_LSD["LSDLineComponent<br/>(直线检测与语义绑定)"]
+        DGF_Create["DatasetGeneratorFactory.create()"] --> Comp_S3D["Structured3DLineRegionComponent<br/>(真实CAD 3D线框/遮挡剔除/区域GT)"]
+        DGF_Create --> Comp_Obj["ObjectMaskComponent<br/>(目标与掩膜)"]
+        DGF_Create --> Comp_LSD["LSDLineComponent<br/>(程序化房间直线检测与绑定)"]
         DGF_Create --> Comp_Wire["Wireframe3DLineComponent<br/>(3D物理边缘)"]
-        Comp_Obj & Comp_LSD & Comp_Wire --> DGF_Gen["generate()<br/>输出图像+掩膜+直线+位姿"]
+        Comp_S3D --> DGF_S3D["generate_structured3d()<br/>生成真实GT直线与区域切片"]
+        Comp_Obj & Comp_LSD & Comp_Wire --> DGF_Gen["generate()<br/>输出合成图像+掩膜+直线+位姿"]
     end
 
     subgraph ModFactory["2. 模型工厂 (ModelFactory)"]
@@ -148,7 +150,44 @@ factory.generate(
 
 ---
 
-### 2.5 直线与区域跨视角配对效果图
+### 2.5 真实 Structured3D CAD 直线组件：`Structured3DLineRegionComponent`
+
+为彻底解决“训练时依赖 CPU LSD 实时动态提取直线变慢、缺乏绝对真值”的问题，我们在工厂中内置了 `Structured3DLineRegionComponent`，直接对接真实 Structured3D 原始室内基准：
+
+```mermaid
+flowchart LR
+    S3D["Structured3D 原始数据<br/>annotation_3d.json"] --> Line3D["1. 提取 3D CAD 线框骨架<br/>(lines & lineJunctionMatrix)"]
+    Line3D --> Proj["2. 相机透视投影 + 深度图<br/>Z-Buffer 遮挡剔除 (Occlusion Culling)"]
+    Proj --> GTLine["3. 获得 100% 验证的 2D GT 直线<br/>(lines_0.json, lines_1.json)"]
+    GTLine --> PatchClip["4. 投影裁剪至 112×112 Patch<br/>提取 5D 几何描述符 + 全局线ID"]
+    PatchClip --> NPZ["5. 一次性打包导出 patch_lines.npz<br/>训练时秒级载入 (0.2ms/对)"]
+```
+
+#### 命令行调用方式：
+```bash
+# 从 Structured3D 原始数据集直接构建含有 100% CAD GT 直线与语义区域的数据集：
+python generate_dataset.py --task structured3d_lines \
+  --s3d-dir Structured3D_perspective_full_00/Structured3D \
+  --out-dir data/structured3d_gt_line_regions \
+  --max-scenes 50 \
+  --num-workers 16 \
+  --min-matches 3 \
+  --min-area-ratio 0.40
+```
+
+#### 生成的样本包含以下完整模态文件：
+* `image_0.png` / `image_1.png`：跨视角渲染图；
+* `masks_0/` / `masks_1/`：物体与结构平面掩膜；
+* `image_0/` / `image_1/`：透明通道语义物体 Crop；
+* `regions_0.json` / `regions_1.json`：区域元数据（BBox、2D中心、3D世界中心、类别）；
+* `lines_0.json` / `lines_1.json`：视野内全部可见的 CAD 2D GT 直线（包含 3D 线段全局 ID、坐标与可见比例）；
+* `patch_lines.npz`：每个物体 Patch 关联的 Top-16 GT 直线 5D 特征与 ID，直接供 `xfeat_line_matcher` 训练读取；
+* `correspondence.json`：包含物体/区域配对真值以及 **GT 直线配对真值（`line_matches`）**；
+* `train_split.json`, `val_split.json`, `test_split.json`：标准划分索引。
+
+---
+
+### 2.6 直线与区域跨视角配对效果图
 
 下图展示了由 `DatasetGeneratorFactory` 生成的视角对与提取的 LSD 直线及其真实配对关联：
 

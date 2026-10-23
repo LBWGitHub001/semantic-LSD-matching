@@ -92,6 +92,9 @@ python generate_dataset.py --task line --num-scenes 50
 
 # 4. 生成所有模态（目标掩膜 + LSD 直线 + 3D 物理投影线 + 相机位姿）
 python generate_dataset.py --task all --num-scenes 50
+
+# 5. 从 Structured3D 真实场景提取 100% CAD 3D 线框真值 (包含 Z-Buffer 深度遮挡剔除与 Patch 几何编码)
+python generate_dataset.py --task structured3d_lines --s3d-dir Structured3D_perspective_full_00/Structured3D --out-dir data/structured3d_gt_lines --max-scenes 50
 ```
 
 ### 2. 统一训练入口 (`train.py`)

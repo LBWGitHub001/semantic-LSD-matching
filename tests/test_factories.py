@@ -23,6 +23,7 @@ from generate_dataset import (
     ObjectMaskComponent,
     LSDLineComponent,
     Wireframe3DLineComponent,
+    Structured3DLineRegionComponent,
     UnifiedProceduralRoom,
     render_indoor_view,
     create_look_at,
@@ -63,6 +64,12 @@ def test_generator_factory():
     assert len(view_data["lines"]) > 0, "LSD detected 0 lines"
     assert len(view_data["features"]) == len(view_data["lines"]), "Features length mismatch"
     print(f"    [✓] GeneratorFactory passed! Detected {len(view_data['lines'])} straight lines.")
+
+    # Test Structured3D GT Line Component Registration
+    s3d_factory = DatasetGeneratorFactory.create(task="structured3d_lines")
+    comp_names_s3d = [c.name for c in s3d_factory.components]
+    assert "structured3d_lines" in comp_names_s3d, "structured3d_lines component missing"
+    print(f"    [✓] Structured3DLineRegionComponent successfully registered and verified in factory.")
 
 
 def test_model_factory():
