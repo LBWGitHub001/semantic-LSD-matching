@@ -9,6 +9,7 @@
 ## 目录与专题技术文档
 
 - 📚 **专题技术文档**：
+  - [**工厂方法体系与多模态组件技术手册** (`docs/FACTORIES_AND_COMPONENTS.md`)](docs/FACTORIES_AND_COMPONENTS.md)：**【新】**四大工厂模式（数据生成工厂、模型工厂、数据管道工厂、评测工厂）、LSD 直线核心组件、5D 几何描述子与双排可视化规范。
   - [**全局通用文件与工作流使用指南** (`docs/GENERAL_USAGE.md`)](docs/GENERAL_USAGE.md)：`generate_dataset.py`、`train.py`、`eval.py`、`demo.py` 及 `tools/` 全参数配置与 CLI 最佳实践。
   - [**核心匹配网络模型技术详解** (`docs/MODELS.md`)](docs/MODELS.md)：`XFeatObjectMatcher`、`MaskLineFeatMatchNet`、`LineMatcherNet` 的网络结构、数学推导、参数规模、推理延迟与 Benchmark。
   - [**数据集架构与格式技术规范** (`docs/DATASETS.md`)](docs/DATASETS.md)：合成物体级（维度2材质光照）、合成线段级与真实 Structured3D 数据集的生成管线、JSON 标注格式与目录组织。
@@ -76,17 +77,20 @@ semantic-LSD-matching/
 
 ## 二、四步统一工作流 (CLI 快速开始)
 
-### 1. 统一生成数据集 (`generate_dataset.py`)
-支持一键渲染多视角室内场景，支持“维度 2”材质全随机化（彻底破除颜色作弊）与 3D 法线立体光照：
+### 1. 统一生成数据集工厂 (`generate_dataset.py`)
+支持基于可插拔组件的工厂模式（Factory Architecture），一键渲染多视角室内场景并提取 **LSD 亚像素直线**、实例掩膜与相机位姿，支持“维度 2”材质全随机化与 3D 法线立体光照：
 
 ```bash
-# 生成物体级“连连看”数据集 (50个场景，每场景8视点，带实例掩膜与匹配真值)
+# 1. 一键生成同时包含语义目标与 LSD 直线的数据集 (推荐)
+python generate_dataset.py --task semantic_line --num-scenes 50 --views-per-scene 8 --out-dir data/synthetic_semantic_lines
+
+# 2. 生成纯物体级“连连看”数据集 (带实例掩膜与匹配真值)
 python generate_dataset.py --task object --num-scenes 50 --random-colors
 
-# 生成线段级多视角数据集
+# 3. 生成纯线段级多视角数据集
 python generate_dataset.py --task line --num-scenes 50
 
-# 一次性生成全套多模态数据 (掩膜 + 线段 + 相机位姿)
+# 4. 生成所有模态（目标掩膜 + LSD 直线 + 3D 物理投影线 + 相机位姿）
 python generate_dataset.py --task all --num-scenes 50
 ```
 
@@ -95,7 +99,7 @@ python generate_dataset.py --task all --num-scenes 50
 
 ```bash
 # 训练物体级“连连看”模型 (XFeatObjectMatcher，推荐 GPU + AMP)
-python train.py --model xfeat_object --epochs 12 --lr 5e-4 --amp
+python train.py --model xfeat_object --epochs 50 --lr 5e-4 --amp
 
 # 训练 6 通道几何场线段匹配模型 (MaskLineFeatMatchNet)
 python train.py --model mask_line --epochs 8 --lr 2e-4 --amp
@@ -104,15 +108,16 @@ python train.py --model mask_line --epochs 8 --lr 2e-4 --amp
 python train.py --model line_transformer --epochs 8 --lr 2e-4
 ```
 
-### 3. 统一验证评测 (`eval.py`)
-在未见测试集（Test Set）上进行全量盲测，输出准确率、召回率、F1 分数以及垃圾桶过滤率：
+### 3. 统一评测工厂 (`eval.py`)
+采用智能模型工厂与评测器工厂，**自动嗅探 Checkpoint 结构（100% 兼容历史与最新权重）**，并在导出诊断图时采用**“上下双排布局”（上排模型预测诊断 + 下排真实真值基准）**：
 
 ```bash
-# 评测物体级模型在测试集上的表现
-python eval.py --model xfeat_object --checkpoint checkpoints/xfeat_object_matcher/best_model.pth --split test
-
-# 导出测试集前 5 对视角的可视化连线图
-python eval.py --model xfeat_object --num-vis 5 --out-dir outputs/eval_vis
+# 评测最佳检查点，自动识别网络结构 (FPN 金字塔 / 几何MLP / 单尺度)，并导出 50 对双排对比图
+python eval.py \
+  --checkpoint checkpoints/xfeat_object_matcher/best_model.pth \
+  --data-dir data/structured3d_semantic_regions \
+  --out-dir outputs/semantic_matching_vis \
+  --num-vis 50
 ```
 
 ### 4. 统一交互演示 (`demo.py`)

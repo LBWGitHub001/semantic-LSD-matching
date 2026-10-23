@@ -537,8 +537,11 @@ class EvaluatorFactory:
         cls._registry[family.lower()] = evaluator_cls
 
     @classmethod
-    def create(cls, model_info: Dict[str, Any]) -> BaseEvaluator:
-        family = model_info.get("family", "object").lower()
+    def create(cls, model_info: Dict[str, Any] | str) -> BaseEvaluator:
+        if isinstance(model_info, str):
+            family = model_info.lower()
+        else:
+            family = model_info.get("family", "object").lower()
         if family not in cls._registry:
             raise ValueError(f"Unknown model family '{family}'. Available: {list(cls._registry.keys())}")
         return cls._registry[family]()
@@ -675,6 +678,18 @@ def main() -> None:
         device=args.device,
         num_workers=args.num_workers,
     )
+
+
+__all__ = [
+    "ModelFactory",
+    "DatasetFactory",
+    "EvaluatorFactory",
+    "BaseEvaluator",
+    "ObjectMatchingEvaluator",
+    "LineMatchingEvaluator",
+    "resolve_checkpoint_path",
+    "evaluate",
+]
 
 
 if __name__ == "__main__":

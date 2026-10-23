@@ -23,6 +23,8 @@ outputs/
 *.jpg
 *.jpeg
 !docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
 
 # OS
 .DS_Store

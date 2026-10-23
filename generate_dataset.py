@@ -1018,5 +1018,17 @@ def main() -> None:
     )
 
 
+__all__ = [
+    "BaseDatasetComponent",
+    "ObjectMaskComponent",
+    "LSDLineComponent",
+    "Wireframe3DLineComponent",
+    "DatasetGeneratorFactory",
+    "UnifiedProceduralRoom",
+    "render_indoor_view",
+    "create_look_at",
+]
+
+
 if __name__ == "__main__":
     main()
