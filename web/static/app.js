@@ -22,6 +22,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadDatasets();
   loadCheckpoints();
   loadGallery();
+  initModelDocs();
 });
 
 // -------------------------------------------------------------
@@ -834,4 +835,449 @@ async function startDatasetGeneration() {
   } catch (e) {
     alert(`生成请求异常: ${e}`);
   }
+}
+
+// -------------------------------------------------------------
+// Tab 6: Interactive Models Guide & Architecture Docs
+// -------------------------------------------------------------
+let currentDocModel = "xfeat_line_matcher";
+let currentArchStages = [];
+let currentCodeSnippetKey = "python_api";
+
+const MODEL_DOCS_DATA = {
+  xfeat_line_matcher: {
+    badge: "多模态直线+目标区域混合网络 (SOTA)",
+    badgeClass: "badge-purple",
+    title: "XFeatLineMatcher: Multi-Scale Pyramid & 5D Line Geometry Matcher",
+    subtitle: "结合 XFeat FPN 多尺度视觉特征金字塔与 5D 亚像素直线几何编码，通过两层图交叉注意力机制与 Sinkhorn 双随机最优传输实现鲁棒配对。",
+    metric: "F1: 79.22%",
+    metricLabel: "Structured3D 真实室内盲测基准",
+    stages: [
+      {
+        num: "STAGE 01",
+        title: "多模态输入解析",
+        desc: "RGB 图像切片与 2D/3D LSD 直线段",
+        shapes: "Patches: (B, M, 3, 112, 112) | BBoxes: (B, M, 4) | Lines: (B, M, K, 5)",
+        code: "datasets/semantic_region_dataset.py",
+        detail: `<strong>多模态输入构造机制：</strong>
+<ul style="margin: 8px 0 0 20px; line-height: 1.6;">
+  <li><strong>候选目标切片 (Region Patches)</strong>：通过实例掩膜最小外接矩形自适应扩展裁剪并双线性插值到固定 112x112 分辨率。</li>
+  <li><strong>关联直线提取 (Line Association)</strong>：利用空间投票法检测落在各个目标 Patch 内的 LSD 连续直线段，每 Patch 截取至多 K=8 根最显著直线。</li>
+  <li><strong>5D 几何参数归一化</strong>：将直线端点转换为尺度不变向量: <code>[x_c/W, y_c/H, L/max(W,H), sin(2θ), cos(2θ)]</code>。</li>
+</ul>`
+      },
+      {
+        num: "STAGE 02",
+        title: "XFeat FPN 金字塔",
+        desc: "跨尺度多级视觉特征抽取与池化",
+        shapes: "输入 (B, M, 3, 112, 112) ➔ P1(64D, 1/4) + P2(64D, 1/8) + P3(64D, 1/16) ➔ (B, M, 192)",
+        code: "models/object_matcher/xfeat_line_matcher.py#L90",
+        detail: `<strong>Multi-Scale Feature Pyramid Network (FPN)：</strong>
+<ul style="margin: 8px 0 0 20px; line-height: 1.6;">
+  <li>基础骨干采用轻量级全卷积网络，输出 1/4, 1/8, 1/16 三级空间特征图。</li>
+  <li>通过 1x1 侧边卷积与最近邻上采样逐级融合高层语义与底层几何边缘纹理。</li>
+  <li>对各层级执行 Masked Global Average Pooling，拼接形成 <strong>192 维多尺度视觉描述子</strong>。</li>
+</ul>`
+      },
+      {
+        num: "STAGE 03",
+        title: "5D 线段几何编码",
+        desc: "PatchLineGeometryEncoder 与跨模态对齐",
+        shapes: "Lines: (B, M, K, 5) ➔ MLP(64D) ➔ Masked Mean Pooling ➔ Line Token (B, M, 64)",
+        code: "models/object_matcher/xfeat_line_matcher.py#L35",
+        detail: `<strong>线段几何编码与 Null Token 机制：</strong>
+<ul style="margin: 8px 0 0 20px; line-height: 1.6;">
+  <li><strong>线段特征投影</strong>：对 5D 几何向量施加两层非线性 MLP 映射至 64 维空间。</li>
+  <li><strong>掩膜均值池化 (Masked Pooling)</strong>：对各 Patch 内的有效直线特征取均值，消除直线排列顺序影响。</li>
+  <li><strong>Null Token 退化保护</strong>：若 Patch 内部未检测到任何直线，自动回退到可学习的 <code>null_line_token</code>，确保梯度平滑不断裂。</li>
+  <li><strong>多模态融合层</strong>：<code>Linear(192 + 64, 128) + LayerNorm + GELU</code> 将视觉与直线联合映射为 128 维 Joint Token。</li>
+</ul>`
+      },
+      {
+        num: "STAGE 04",
+        title: "图注意力网络 (GNN)",
+        desc: "自注意力结构内聚 + 跨视角注意力语义传递",
+        shapes: "Tokens0, Tokens1: (B, M, 128) ➔ 2-Layer Cross & Self Multi-Head Attention",
+        code: "models/object_matcher/xfeat_object_matcher.py#L140",
+        detail: `<strong>双视角注意力信息流动图：</strong>
+<ul style="margin: 8px 0 0 20px; line-height: 1.6;">
+  <li><strong>自注意力 (Self-Attention)</strong>：同视角内部建模空间布局几何拓扑关系，让邻近物体感知相对位置。</li>
+  <li><strong>跨注意力 (Cross-Attention)</strong>：跨视角在 View 0 与 View 1 间进行相似度寻址，解决视角旋转、形变与遮挡下的语义关联。</li>
+  <li>采用 4-Head 缩放点积注意力，配备残差连接与 LayerNorm 维持数值稳定性。</li>
+</ul>`
+      },
+      {
+        num: "STAGE 05",
+        title: "双随机最优传输",
+        desc: "Sinkhorn 迭代求解 + 扩展垃圾桶拒识",
+        shapes: "得分矩阵 (M0+1, M1+1) ➔ 20次 Sinkhorn 迭代 ➔ 双随机匹配概率矩阵 P",
+        code: "models/object_matcher/loss.py",
+        detail: `<strong>最优传输与出画落单拒识：</strong>
+<ul style="margin: 8px 0 0 20px; line-height: 1.6;">
+  <li>在相似度矩阵末尾拼接可学习的<strong>垃圾桶参数行/列 (Dustbin)</strong>，吸收出画、遮挡或无对应的目标。</li>
+  <li>基于对数域 Log-Sinkhorn 算法执行 20 次交替行列归一化，逼近双随机投影矩阵。</li>
+  <li><strong>位移场共识损失 (Motion Consensus Loss)</strong>：对几何位移偏离全局中位数的假阳性误匹配施加铰链惩罚（Hinge Margin 0.15）。</li>
+</ul>`
+      }
+    ]
+  },
+  mask_line: {
+    badge: "6通道连续几何场引导模型",
+    badgeClass: "badge-blue",
+    title: "MaskLineFeatMatchNet: Continuous EDT + AFM Geometry Prompted Line Matcher",
+    subtitle: "将线段离散端点转化为 2 通道欧氏距离场 (EDT) 与 4 通道方向角度场 (AFM)，以 6 通道稠密张量输入 CNN 提取全局拓扑特征。",
+    metric: "F1: 68.50%",
+    metricLabel: "无纹理纯几何场景直线基准",
+    stages: [
+      {
+        num: "STAGE 01",
+        title: "直线段几何栅格化",
+        desc: "OpenCV LSD 直线提取与多边形掩膜生成",
+        shapes: "RGB 图像 (3, H, W) + 线段集合 {(x1, y1, x2, y2)}",
+        code: "models/mask_line_matcher/geometric_field.py",
+        detail: "将离散线段转为空间布尔掩膜，作为距离变换的初始轮廓种子点。"
+      },
+      {
+        num: "STAGE 02",
+        title: "6通道几何场编码",
+        desc: "欧氏距离场 (EDT) + 朝向向量场 (AFM)",
+        shapes: "输出 6 通道张量 (6, H, W) = RGB(3) + EDT(1) + AFM_cos(1) + AFM_sin(1)",
+        code: "models/mask_line_matcher/geometric_field.py#L40",
+        detail: "通过快速距离变换计算图像每个像素到最近直线的精确距离与线段朝向正余弦，构建平滑连续的几何引导场。"
+      },
+      {
+        num: "STAGE 03",
+        title: "几何感知卷积骨干",
+        desc: "首层 6 通道卷积核直接提取几何与纹理混合特征",
+        shapes: "输入 (B, 6, H, W) ➔ 浅层 ResNet ➔ 特征图 (B, 64, H/4, W/4)",
+        code: "models/mask_line_matcher/mask_line_matcher.py#L45",
+        detail: "修改首层卷积权重适配 6 通道，让网络低层同时感知颜色梯度与直线几何边缘分布。"
+      },
+      {
+        num: "STAGE 04",
+        title: "规范最优传输矩阵",
+        desc: "固定规范尺寸 (255, 255) 置换等变矩阵映射",
+        shapes: "输出统一矩阵 (B, 255, 255)，未激活行/列严格置零",
+        code: "models/mask_line_matcher/mask_line_matcher.py#L120",
+        detail: "严格满足置换等变性（Permutation Equivariance），即交换输入线段顺序时，输出矩阵对应行/列严格同构置换。"
+      }
+    ]
+  },
+  line_transformer: {
+    badge: "基线线段图注意力模型",
+    badgeClass: "badge-warning",
+    title: "LineMatcherNet: Point Sampling & Graph Transformer Line Matcher",
+    subtitle: "在检测出的线段上均匀插值离散采样点，抽取局部视觉特征并拼接端点 4D 几何坐标，经 Transformer 自注意力配对。",
+    metric: "F1: 62.30%",
+    metricLabel: "基础线特征匹配基线",
+    stages: [
+      {
+        num: "STAGE 01",
+        title: "线段端点与均匀采样",
+        desc: "沿线等间距采样 5 个特征点",
+        shapes: "线段输入 (N, 4) ➔ 采样坐标点 (N, 5, 2)",
+        code: "models/line_transformer/line_transformer.py",
+        detail: "沿线段中心及两端等距采集局部像素点，规避单点特征漂移。"
+      },
+      {
+        num: "STAGE 02",
+        title: "视觉特征网格采样",
+        desc: "Grid Sample 双线性插值视觉特征",
+        shapes: "Feature Map (B, C, H, W) ➔ LineVisualSampler ➔ (B, N, C)",
+        code: "models/line_transformer/line_transformer.py#L80",
+        detail: "在 CNN 特征图上通过双线性插值直接提取采样点特征，并通过 1D 卷积聚合为单线视觉向量。"
+      },
+      {
+        num: "STAGE 03",
+        title: "自注意力图推理",
+        desc: "全图拓扑关联与交叉注意力匹配",
+        shapes: "Tokens (B, N, 128) ➔ Transformer Layers ➔ 相似度矩阵 (B, N0, N1)",
+        code: "models/line_transformer/line_transformer.py#L160",
+        detail: "利用标准 Transformer 建模线段间的平行、共线与正交关系，输出互为最近邻的双向配对。"
+      }
+    ]
+  }
+};
+
+const CODE_SNIPPETS = {
+  python_api: {
+    title: "Python API: 5行代码执行多模态匹配推理",
+    code: `# 导入统一模型与评估工厂
+from evaluation import ModelFactory
+from datasets import predict_bipartite_matches
+
+# 1. 自动探查并加载模型检查点 (自动识别金字塔与几何编码)
+model, info, ckpt = ModelFactory.create_from_checkpoint(
+    "checkpoints/xfeat_line_matcher/latest",
+    device="cuda"
+)
+
+# 2. 前向推理双视角候选切片与直线几何特征
+# patches: (1, M, 3, 112, 112), patch_lines: (1, M, K, 5)
+out = model(patches0=patches0, patches1=patches1, patch_lines0=lines0, patch_lines1=lines1)
+
+# 3. 提取双向最佳匹配与出画落单垃圾桶
+matches, unmatched_0, unmatched_1 = predict_bipartite_matches(out["prob_matrix"][0], thresh=0.2)
+print(f"匹配成功: {len(matches)} 对目标, 拒识落单: {len(unmatched_0)} (View0) / {len(unmatched_1)} (View1)")`
+  },
+  train_cli: {
+    title: "训练 CLI: 开启 FPN 金字塔、5D 直线编码与 AMP 极速训练",
+    code: `# 推荐训练命令 (Structured3D 真实室内场景数据集)
+python -u train.py \\
+    --model xfeat_line_matcher \\
+    --data-dir data/xfeat_line_matcher \\
+    --epochs 15 \\
+    --lr 5e-4 \\
+    --dustbin-weight 0.1 \\
+    --motion-weight 0.1 \\
+    --min-area-ratio 0.40 \\
+    --pyramid \\
+    --amp \\
+    --save-interval 5
+
+# 提示: 训练将自动生成 curves.png, metrics.csv, report.md 及 config.json`
+  },
+  eval_cli: {
+    title: "评测 CLI: 盲测基准评分与诊断大图生成",
+    code: `# 1. 评估最新实验运行 (自动加载最佳权重并在盲测集打分)
+python eval.py \\
+    --checkpoint checkpoints/xfeat_line_matcher/latest \\
+    --split test \\
+    --min-area-ratio 0.50 \\
+    --num-vis 10 \\
+    --out-dir outputs/semantic_matching_vis
+
+# 2. 导出成果物包含:
+#   - eval_report.md (Markdown 详报)
+#   - eval_results.json (定量指标 JSON)
+#   - eval_sample_*.jpg (全景双排可视化诊断大图)`
+  },
+  dataset_cli: {
+    title: "数据生成 CLI: 从 Structured3D 提取 CAD 直线真值与切片",
+    code: `# 从原始 Structured3D 场景提取 100% CAD 直线真值与 Patch 5D 几何数据
+python generate_dataset.py \\
+    --task structured3d_lines \\
+    --s3d-dir Structured3D_perspective_full_00/Structured3D \\
+    --out-dir data/xfeat_line_matcher \\
+    --max-scenes 50 \\
+    --num-workers 8 \\
+    --min-matches 3 \\
+    --min-area-ratio 0.40`
+  },
+  review_cli: {
+    title: "实验复盘 CLI: 命令行多实验对比与曲线渲染",
+    code: `# 1. 列出历史所有实验记录
+python review_runs.py --list
+
+# 2. 详细复盘指定单次实验并输出 Markdown
+python review_runs.py --run 20261026_145058
+
+# 3. 横向对比两个不同权重实验 (如比较不同 dustbin-weight)
+python review_runs.py --compare 20261023_233349 20261026_145058`
+  }
+};
+
+function initModelDocs() {
+  switchModelDoc("xfeat_line_matcher");
+  updateCalculator();
+  switchCodeSnippet("python_api");
+}
+
+function switchModelDoc(modelKey) {
+  currentDocModel = modelKey;
+  const data = MODEL_DOCS_DATA[modelKey];
+  if (!data) return;
+
+  // Update pills active status
+  document.querySelectorAll(".model-pill").forEach(p => p.classList.remove("active"));
+  const btnId = modelKey === "xfeat_line_matcher" ? "btn-doc-xfeat-line" :
+                modelKey === "mask_line" ? "btn-doc-mask-line" : "btn-doc-line-transformer";
+  const activeBtn = document.getElementById(btnId);
+  if (activeBtn) activeBtn.classList.add("active");
+
+  // Update headers
+  const badgeEl = document.getElementById("doc-model-badge");
+  if (badgeEl) {
+    badgeEl.innerText = data.badge;
+    badgeEl.className = `badge ${data.badgeClass}`;
+  }
+
+  const titleEl = document.getElementById("doc-model-title");
+  if (titleEl) titleEl.innerText = data.title;
+
+  const subEl = document.getElementById("doc-model-subtitle");
+  if (subEl) subEl.innerText = data.subtitle;
+
+  const metricEl = document.getElementById("doc-model-metric");
+  if (metricEl) metricEl.innerText = data.metric;
+
+  const metricLbl = document.getElementById("doc-model-metric-label");
+  if (metricLbl) metricLbl.innerText = data.metricLabel;
+
+  // Render stage nodes
+  currentArchStages = data.stages;
+  const stagesContainer = document.getElementById("arch-flow-stages");
+  if (stagesContainer) {
+    stagesContainer.innerHTML = data.stages.map((stg, idx) => `
+      <div class="arch-step-node ${idx === 0 ? 'active' : ''}" onclick="selectArchStage(${idx})" id="arch-node-${idx}">
+        <div class="step-num">${stg.num}</div>
+        <div class="step-title">${stg.title}</div>
+        <div class="step-desc">${stg.desc}</div>
+      </div>
+    `).join("");
+  }
+
+  selectArchStage(0);
+}
+
+function selectArchStage(idx) {
+  if (!currentArchStages || !currentArchStages[idx]) return;
+  const stage = currentArchStages[idx];
+
+  // Update active card
+  document.querySelectorAll(".arch-step-node").forEach(n => n.classList.remove("active"));
+  const activeNode = document.getElementById(`arch-node-${idx}`);
+  if (activeNode) activeNode.classList.add("active");
+
+  // Render inspector box
+  const panel = document.getElementById("arch-inspector-panel");
+  if (panel) {
+    panel.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom: 1px solid #233047; padding-bottom:8px;">
+        <div style="font-weight:700; color:#60A5FA; font-size:14px;">
+          ✦ ${stage.num}: ${stage.title} 深度解析
+        </div>
+        <div style="font-size:12px; font-family:monospace; color:#A78BFA; background:#1A2338; padding:3px 8px; border-radius:4px;">
+          源码定义: ${stage.code}
+        </div>
+      </div>
+      <div style="margin-bottom: 10px;">
+        <span style="font-size:11px; font-weight:700; color:#9CA3AF; text-transform:uppercase;">张量流动规格 (Tensor Dimensions):</span>
+        <div style="font-family:monospace; font-size:12px; color:#FBBF24; background:#080C14; padding:6px 10px; border-radius:4px; margin-top:4px;">
+          ${stage.shapes}
+        </div>
+      </div>
+      <div style="font-size:13px; color:#D1D5DB; line-height:1.6;">
+        ${stage.detail}
+      </div>
+    `;
+  }
+}
+
+function updateCalculator() {
+  const d_model = parseInt(document.getElementById("calc-dmodel").value) || 128;
+  const num_layers = parseInt(document.getElementById("calc-layers").value) || 2;
+  const nhead = parseInt(document.getElementById("calc-nhead").value) || 4;
+  const patches = parseInt(document.getElementById("calc-patches").value) || 24;
+  const lines = parseInt(document.getElementById("calc-lines").value) || 8;
+
+  // Update slider value labels
+  document.getElementById("calc-lbl-dmodel").innerText = `${d_model}`;
+  document.getElementById("calc-lbl-layers").innerText = `${num_layers} 层`;
+  document.getElementById("calc-lbl-nhead").innerText = `${nhead} Heads`;
+  document.getElementById("calc-lbl-patches").innerText = `${patches} 个`;
+  document.getElementById("calc-lbl-lines").innerText = `${lines} 根`;
+
+  // Theoretical param computation
+  // Backbone: ~1.08M (XFeat 5-stage Conv + FPN lateral layers)
+  const backbone_params = 1085000;
+  // Line encoder: MLP 5 -> 64 -> 64
+  const line_encoder_params = (5 * 64 + 64) + (64 * 64 + 64) + 64; // ~4.8K
+  // Fusion projection: Linear(192 + 64, d_model)
+  const fusion_params = (256 * d_model + d_model);
+  // GNN Transformer layers: each layer has 2 MHA (self + cross) + 2 FFN
+  const mha_params = 4 * (d_model * d_model + d_model);
+  const ffn_params = 2 * (d_model * (d_model * 2) + d_model * 2);
+  const layer_params = 2 * mha_params + ffn_params;
+  const total_gnn_params = num_layers * layer_params;
+  // Matcher proj: Linear(d_model, d_model)
+  const matcher_params = 2 * (d_model * d_model + d_model);
+
+  const total_params = backbone_params + line_encoder_params + fusion_params + total_gnn_params + matcher_params;
+  const total_params_m = (total_params / 1e6).toFixed(2);
+
+  // FLOPs computation:
+  // Backbone per 112x112 patch: ~0.25 GFLOPs * 2 * patches
+  const backbone_flops = 0.25 * 2 * patches;
+  // Attention FLOPs: O(M^2 * d_model)
+  const attn_flops = (num_layers * (4 * patches * patches * d_model * 2)) / 1e9;
+  const total_flops = (backbone_flops + attn_flops).toFixed(1);
+
+  // VRAM estimation (AMP):
+  const weights_mb = (total_params * 2) / (1024 * 1024); // FP16 weights
+  const gradients_mb = (total_params * 4) / (1024 * 1024); // FP32 gradients
+  const optimizer_mb = (total_params * 8) / (1024 * 1024); // Adam FP32 moments
+  const act_mb = (patches * 112 * 112 * 32 * 2 * 4) / (1024 * 1024);
+  const train_vram_gb = ((weights_mb + gradients_mb + optimizer_mb + act_mb + 450) / 1024).toFixed(2);
+
+  // Throughput FPS
+  const latency_ms = 10 + (patches * 0.35) + (num_layers * 1.5) + (d_model * 0.02);
+  const est_fps = Math.round(1000.0 / latency_ms);
+
+  document.getElementById("calc-out-params").innerText = `${total_params_m} M`;
+  document.getElementById("calc-out-flops").innerText = `${total_flops} G`;
+  document.getElementById("calc-out-train-vram").innerText = `${train_vram_gb} GB`;
+  document.getElementById("calc-out-fps").innerText = `${est_fps} FPS`;
+
+  const recEl = document.getElementById("calc-out-recommendation");
+  if (recEl) {
+    if (parseFloat(train_vram_gb) < 3.0) {
+      recEl.innerHTML = `💡 <strong>硬件适配诊断</strong>：当前参数配置非常轻量，完全可在 4GB~8GB 显卡（如 RTX 3050/4060 Laptop）开启 AMP 高速训练，单对推理延迟仅约 ~${Math.round(latency_ms)}ms。`;
+      recEl.style.color = "#A7F3D0";
+      recEl.style.borderColor = "rgba(16, 185, 129, 0.25)";
+    } else {
+      recEl.innerHTML = `⚠️ <strong>显存压力提示</strong>：候选切片或层数较多，训练显存预估达到 ${train_vram_gb} GB，建议在 DataLoader 中配置 <code>--grad-accum 2</code> 分摊显存开销。`;
+      recEl.style.color = "#FDE68A";
+      recEl.style.borderColor = "rgba(245, 158, 11, 0.25)";
+    }
+  }
+}
+
+function switchCodeSnippet(key) {
+  currentCodeSnippetKey = key;
+  const snip = CODE_SNIPPETS[key];
+  if (!snip) return;
+
+  // Update button highlights
+  const btnMap = {
+    python_api: "btn-snippet-python",
+    train_cli: "btn-snippet-train",
+    eval_cli: "btn-snippet-eval",
+    dataset_cli: "btn-snippet-dataset",
+    review_cli: "btn-snippet-review"
+  };
+  Object.values(btnMap).forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.className = "btn btn-secondary btn-sm";
+  });
+  const activeBtn = document.getElementById(btnMap[key]);
+  if (activeBtn) activeBtn.className = "btn btn-primary btn-sm";
+
+  const titleEl = document.getElementById("code-snippet-title");
+  if (titleEl) titleEl.innerText = snip.title;
+
+  const contentEl = document.getElementById("code-snippet-content");
+  if (contentEl) contentEl.innerText = snip.code;
+}
+
+function copyCurrentCodeSnippet() {
+  const contentEl = document.getElementById("code-snippet-content");
+  if (!contentEl) return;
+  const text = contentEl.innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById("btn-copy-code");
+    if (btn) {
+      const orig = btn.innerText;
+      btn.innerText = "✓ 已复制到剪贴板！";
+      btn.style.background = "#10B981";
+      btn.style.color = "#FFF";
+      setTimeout(() => {
+        btn.innerText = orig;
+        btn.style.background = "";
+        btn.style.color = "";
+      }, 2000);
+    }
+  }).catch(err => {
+    alert(`复制失败: ${err}`);
+  });
 }

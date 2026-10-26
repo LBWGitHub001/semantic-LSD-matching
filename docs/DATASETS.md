@@ -213,9 +213,34 @@ flowchart TD
 
 ## 五、PyTorch Dataset 数据管道与快速调用
 
-本项目的数据管道在 `datasets/` 中封装为开箱即用的 PyTorch Dataset，支持自动对齐批处理：
+本项目的数据管道在 `datasets/` 中封装为开箱即用的 PyTorch Dataset，支持自动对齐批处理与过滤：
 
-### 1. 物体级数据加载 (`ObjectMatchingDataset`)
+### 1. 区域与直线级数据加载 (`SemanticRegionDataset`，XFeatLineMatcher 专用)
+
+```python
+from datasets import SemanticRegionDataset
+from torch.utils.data import DataLoader
+
+# 载入 Structured3D 真实室内区域与直线切片数据集 (自动施加 >= 40% 共视面积过滤)
+dataset = SemanticRegionDataset(
+    data_dir="data/xfeat_line_matcher",
+    split="train",
+    min_area_ratio=0.40,  # 仅保留两视角重叠共视面积比 >= 40% 的高信噪比样本对
+)
+
+loader = DataLoader(dataset, batch_size=1, shuffle=True)
+
+for batch in loader:
+    # batch 字典包含:
+    # patches0, patches1: (1, N0, 3, 112, 112), (1, N1, 3, 112, 112)
+    # lines0, lines1:     (1, N0, 5), (1, N1, 5) -> 5D 归一化局部坐标 [x1, y1, x2, y2, len]
+    # gt_matrix:          (1, N0+1, N1+1) -> 包含真值配对与垃圾桶沉底标记
+    # labels0, labels1:   (1, N0), (1, N1) -> 语义类别 ID
+    print(f"Loaded pair: View 0 ({batch['lines0'].shape[1]} lines) <-> View 1 ({batch['lines1'].shape[1]} lines)")
+    break
+```
+
+### 2. 物体级数据加载 (`ObjectMatchingDataset`)
 
 ```python
 from datasets import ObjectMatchingDataset, collate_single_pair
@@ -238,7 +263,7 @@ for batch in loader:
     break
 ```
 
-### 2. 线段级数据加载 (`LineFeatPairDataset`)
+### 3. 线段级数据加载 (`LineFeatPairDataset`)
 
 ```python
 from datasets import LineFeatPairDataset, collate_line_pairs
@@ -259,3 +284,12 @@ for batch in loader:
     print(f"Loaded line pair: Lines 0 ({batch['lines0'].shape[1]}) <-> Lines 1 ({batch['lines1'].shape[1]})")
     break
 ```
+
+---
+
+## 六、模块化数据生成包 (`datasets/generators/`)
+
+为提升数据生成代码的可维护性与模块扩展能力，场景生成器已被重构至独立的 `datasets/generators/` 子包：
+- **`datasets/generators/procedural_room.py`**：室内 3D 参数化房间生成引擎，内建 Lambertian 漫反射立体光照、维度 2 材质随机化、家具空间碰撞检测与 LSD 直线亚像素提取；
+- **组件可插拔架构**：生成器支持与 `ObjectMaskComponent`、`LSDLineComponent`、`Wireframe3DLineComponent` 自由组合，一键定制多模态数据集。
+

@@ -1,72 +1,149 @@
 # 通用文件与工作流使用指南 (General Usage Guide)
 
-本指南系统介绍项目根目录下的 **4 个核心统一入口文件**（`generate_dataset.py`、`train.py`、`eval.py`、`demo.py`）以及 **`tools/` 辅助工具脚本** 的具体参数配置、调用命令与最佳实践。
+本指南系统介绍项目根目录下的 **Web 管理工作台**、**核心统一入口文件**（`train.py`、`eval.py`、`generate_dataset.py`、`demo.py`）、**实验复盘 CLI**（`review_runs.py`）以及 **`tools/` 辅助脚本** 的参数配置、调用命令与最佳实践。
 
 ---
 
 ## 目录
 
 - [一、全局快速启动流程](#一全局快速启动流程)
-- [二、数据集生成入口 (`generate_dataset.py`)](#二数据集生成入口-generate_datasetpy)
-- [三、模型训练入口 (`train.py`)](#三模型训练入口-trainpy)
-- [四、模型基准评测入口 (`eval.py`)](#四模型基准评测入口-evalpy)
-- [五、交互可视化入口 (`demo.py`)](#五交互可视化入口-demopy)
-- [六、辅助工具脚本 (`tools/`)](#六辅助工具脚本-tools)
-- [七、环境与 GPU 运行注意事项](#七环境与-gpu-运行注意事项)
+- [二、Web 可视化管理工作台 (`app.py` / `launch_ui.sh`)](#二web-可视化管理工作台-apppy--launch_uish)
+  - [1. 启动与访问方式](#1-启动与访问方式)
+  - [2. 六大功能标签页详解](#2-六大功能标签页详解)
+- [三、实验复盘与深度分析 CLI (`review_runs.py`)](#三实验复盘与深度分析-cli-review_runspy)
+  - [1. 常用命令清单](#1-常用命令清单)
+  - [2. 实验横向对比报告样例](#2-实验横向对比报告样例)
+- [四、模型训练入口 (`train.py`)](#四模型训练入口-trainpy)
+  - [1. 核心参数详解](#1-核心参数详解)
+  - [2. 经典训练配置范例](#2-经典训练配置范例)
+- [五、模型基准评测入口 (`eval.py`)](#五模型基准评测入口-evalpy)
+  - [1. 核心参数详解](#1-核心参数详解-1)
+  - [2. 评测调用范例](#2-评测调用范例)
+- [六、数据集生成入口 (`generate_dataset.py`)](#六数据集生成入口-generate_datasetpy)
+- [七、交互可视化入口 (`demo.py`)](#七交互可视化入口-demopy)
+- [八、辅助工具与测试验证 (`tools/` & `tests/`)](#八辅助工具与测试验证-tools--tests)
 
 ---
 
 ## 一、全局快速启动流程
 
-系统支持从“零数据”到“训练”、“评测”和“即时可视化”的完整四步闭环：
+系统提供两种使用模式：**图形化 Web 工作台**（推荐日常开发与实验管理）与 **命令行 CLI**（适合批处理与远程调度）：
 
 ```mermaid
-flowchart LR
-    A["1. 生成数据集<br>generate_dataset.py"] --> B["2. 统一训练<br>train.py"]
-    B --> C["3. 统一评测<br>eval.py"]
-    B --> D["4. 交互可视化<br>demo.py"]
+flowchart TD
+    subgraph WebMode["Web 工作台模式 (开箱即用)"]
+        UI["./launch_ui.sh (Port 7860)<br/>硬件监控 + 训练流式输出 + 评测 + 双排画廊 + 显存计算器"]
+    end
+
+    subgraph CLIMode["CLI 命令行闭环"]
+        D["1. generate_dataset.py<br/>生成合成或真实CAD线段数据"] --> T["2. train.py<br/>统一训练 xfeat_line_matcher 等模型"]
+        T --> E["3. eval.py<br/>盲测场景基准评分与双排图导出"]
+        T --> R["4. review_runs.py<br/>实验历史复盘与横向对比"]
+        T --> M["5. demo.py<br/>单对视角即时连线可视化"]
+    end
 ```
 
 ---
 
-## 二、数据集生成入口 (`generate_dataset.py`)
+## 二、Web 可视化管理工作台 (`app.py` / `launch_ui.sh`)
 
-`generate_dataset.py` 是全工程的统一场景生成器，内建 3D 室内参数化建模引擎，支持 Lambertian 漫反射立体光照与全随机材质（“维度 2”防颜色作弊升级）。
-
-### 1. 核心参数详解
-
-| 参数名 | 类型 | 默认值 | 说明 |
-| :--- | :---: | :---: | :--- |
-| `--task` | `str` | `object` | 生成任务类型：`object`（物体连连看）、`line`（多视角线段）、`all`（全模态联合生成） |
-| `--num-scenes` | `int` | `50` | 批量生成的独立 3D 室内场景总数 |
-| `--random-colors` | `flag` | `False` | **启用“维度 2”材质全随机化**（随机天花板、木地板、墙纸、物体颜色与纹理） |
-| `--views-per-scene` | `int` | `8` | 每个室内场景采样的虚拟相机视角数量 |
-| `--out-dir` | `str` | `None` | 自定义输出目录（若不指定，自动落入 `data/synthetic_*`） |
-| `--height` | `int` | `480` | 图像渲染垂直分辨率 |
-| `--width` | `int` | `640` | 图像渲染水平分辨率 |
-| `--seed` | `int` | `42` | 随机种子（保证生成场景 100% 可复现） |
-
-### 2. 常用操作指令
+### 1. 启动与访问方式
 
 ```bash
-# 模式 A：生成物体级“连连看”高质量训练集（带立体阴影与随机材质，推荐生产环境使用）
-python generate_dataset.py --task object --num-scenes 50 --random-colors
+# 方式一：一键启动脚本 (自动校验虚拟环境并启动后台服务)
+./launch_ui.sh
 
-# 模式 B：生成多视角几何线段匹配数据集（带 3D 投影真值与空间角点拓扑）
-python generate_dataset.py --task line --num-scenes 50
-
-# 模式 C：全量生成两种任务的多模态数据集
-python generate_dataset.py --task all --num-scenes 50 --random-colors
+# 方式二：Python 直接启动 (支持自定义端口)
+python app.py --port 7860
 ```
+启动成功后，使用现代浏览器（Chrome、Edge、Safari、Firefox）访问：**`http://localhost:7860`**
 
-### 3. 生成数据落盘结构
-执行完毕后将在 `data/` 目录下生成：
-- `data/synthetic_object_matching_scenes/`：包含各场景视角、实例掩膜、物体 JSON 标注及 `pair_matches.json`；
-- `data/synthetic_multiview_scenes/`：包含各场景各视角的 `view_XX.png`、`lines_XX.json` 与 `view_graph.json`。
+### 2. 六大功能标签页详解
+
+#### (1) 📊 实验复盘看板 (Dashboard)
+- **全局指标卡**：实时统计实验总次数、当前所有运行中的测试集最佳 Raw F1、Semantic F1 与主力架构；
+- **历史实验列表**：动态抓取 `checkpoints/` 下所有具备 `config.json` 的实验记录；
+- **侧向实验对比**：勾选任意 2 个实验，点击“横向对比”，弹出结构化超参数差异表与双模型 Loss/F1 收敛对比曲线。
+
+#### (2) 🚀 训练工作台 (Training Studio)
+- **超参数配置面板**：
+  - 支持选择模型架构（`xfeat_line_matcher`、`xfeat_object` 等）；
+  - 配置学习率、Epochs、垃圾桶权重（`dustbin-weight`）、位移场共识权重（`motion-weight`）、共视面积门限（`min-area-ratio`）；
+  - 开关 FPN 特征金字塔（`--pyramid`）与 PyTorch 自动混合精度（`--amp`）；
+- **硬件资源监控卡片 (Hardware Monitor)**：
+  - CPU 总体占用率与核心负载；
+  - 系统内存已用/总容量与使用比例；
+  - GPU 核心算力占用率（实时通过 NVML/`nvidia-smi` 轮询）；
+  - GPU 显存已用/总容量（GB）及占用进度条；
+- **实时日志与动态曲线**：
+  - 终端流式输出（支持 ANSI 颜色转义与平滑滚动）；
+  - 动态 SVG 训练 Loss 曲线与验证集 F1 曲线同步绘制；
+  - 支持一键发送 `SIGTERM` 优雅中止训练。
+
+#### (3) 🧪 评测基准中心 (Evaluation Benchmark)
+- 选择目标 Checkpoint 路径与测试数据集子集；
+- 启动盲测评测后，实时展示测试集 Precision、Recall、F1-Score，以及详细的混淆计数（TP 正确匹配、FP 错配、FN 漏配、跨类别恶性错配率）。
+
+#### (4) 🖼️ 结果可视化画廊 (Gallery)
+- 流式瀑布流展示 `outputs/` 下最新导出的上下双排高分辨率诊断图；
+- 支持键盘快捷键（`Left` / `Right`）翻页以及全屏缩放质检。
+
+#### (5) 📦 数据集生成工厂 (Dataset Studio)
+- 支持生成合成室内多视角场景（`semantic_line`、`object`、`line`）；
+- 支持批量解析 Structured3D 真实室内 CAD 3D 线段与遮挡剔除切片。
+
+#### (6) 📖 模型手册与交互文档 (Models Guide & Calculator)
+- **交互式架构探索器**：点击流水线各阶段节点（Backbone、Line MLP、Fusion、GNN、Sinkhorn），实时查看张量形状、数学公式与源码定位；
+- **参数量与显存/算力计算器**：拖动 $d_{model}$、层数、头数与匹配候选数滑块，实时计算网络参数量、FLOPs、训练/推理显存占用与预期 FPS；
+- **代码速查 cheatsheet**：一键复制 Python API、训练 CLI、评测 CLI、数据生成 CLI 与复盘 CLI。
 
 ---
 
-## 三、模型训练入口 (`train.py`)
+## 三、实验复盘与深度分析 CLI (`review_runs.py`)
+
+`review_runs.py` 是针对多实验管理与复盘研发的专业命令行工具：
+
+### 1. 常用命令清单
+
+```bash
+# 1. 打印所有历史实验摘要与最佳指标排行榜
+python review_runs.py --list
+
+# 2. 深度剖析单次实验（输出超参数、收敛轮次、测试集各项指标与诊断建议）
+python review_runs.py --run checkpoints/xfeat_line_matcher/20261023_233349
+
+# 3. 横向对比两个不同实验的超参数与指标差异
+python review_runs.py --compare \
+  checkpoints/xfeat_object_matcher/20261022_225315 \
+  checkpoints/xfeat_line_matcher/20261023_233349
+
+# 4. 为指定实验离线重新渲染训练与验证收敛曲线图
+python review_runs.py --plot checkpoints/xfeat_line_matcher/20261023_233349
+```
+
+### 2. 实验横向对比报告样例
+
+执行 `--compare` 后在终端输出对齐表格：
+```text
+========================================================================================
+                      CROSS-EXPERIMENT COMPARISON MATRIX
+========================================================================================
+Metric / Parameter            Run A (Baseline Object)         Run B (XFeatLineMatcher)
+----------------------------------------------------------------------------------------
+Model Architecture            xfeat_object                    xfeat_line_matcher
+Multi-Scale FPN Pyramid       Disabled                        Enabled (P1-P3)
+Geometry Descriptor           9D Object BBox                  5D Patch Line
+Loss Supervision              NLL + Dustbin                   NLL + Dustbin + Motion
+Best Val F1                   71.24%                          72.57%
+Test Set Raw F1               69.80%                          75.31% (+5.51%)
+Test Set Semantic F1          74.50%                          78.60% (+4.10%)
+Peak Training VRAM            0.85 GB                         1.24 GB
+========================================================================================
+```
+
+---
+
+## 四、模型训练入口 (`train.py`)
 
 `train.py` 提供单入口多网络模型训练能力。底层根据 `--model` 自动分发网络架构、损失函数、批处理对齐与最优超参数。
 
@@ -74,145 +151,99 @@ python generate_dataset.py --task all --num-scenes 50 --random-colors
 
 | 参数名 | 类型 | 默认值 | 说明 |
 | :--- | :---: | :---: | :--- |
-| `--model` | `str` | `xfeat_object` | 目标网络架构：`xfeat_object` / `mask_line` / `line_transformer` |
-| `--epochs` | `int` | `12` | 训练总轮数 |
-| `--lr` | `float` | `5e-4` | 优化器初始学习率（物体网络建议 5e-4，线段网络建议 2e-4） |
-| `--weight-decay` | `float` | `1e-4` | AdamW 权重衰减系数 |
-| `--batch-size` | `int` | `1` | 批处理大小（因每张图物体/线段数目动态变化，默认按单对配准） |
-| `--grad-accum` | `int` | `1` | 梯度累加步数（显存受限时通过累加模拟大 Batch） |
-| `--amp` | `flag` | `False` | **启用 PyTorch 自动混合精度（FP16）加速**（推荐 RTX 显卡开启） |
-| `--d-model` | `int` | `128` | 图注意力（Graph Transformer）隐藏特征维度 |
-| `--num-layers` | `int` | `4` | 自注意力与交叉注意力图网络堆叠层数 |
-| `--data-dir` | `str` | `None` | 数据集根目录（自动根据 model 选取默认路径） |
-| `--save-dir` | `str` | `None` | 检查点输出目录（自动保存至 `checkpoints/<model_name>/`） |
-| `--device` | `str` | `cuda` | 计算设备（`cuda` 或 `cpu`） |
+| `--model` | `str` | `xfeat_line_matcher` | 目标网络：`xfeat_line_matcher` / `xfeat_object` / `mask_line` / `line_transformer` |
+| `--data-dir` | `str` | 自动匹配 | 训练数据集根目录 |
+| `--epochs` | `int` | `15` | 训练总轮数 |
+| `--lr` | `float` | `5e-4` | 优化器初始学习率 |
+| `--dustbin-weight`| `float` | `0.3` | 垃圾桶未匹配损失惩罚权重 ($\lambda_{\text{dustbin}}$) |
+| `--motion-weight` | `float` | `0.2` | 位移场刚体共识边界损失权重 ($\lambda_{\text{motion}}$) |
+| `--motion-margin` | `float` | `0.15`| 位移容差门限 ($\tau_{\text{margin}}$) |
+| `--min-area-ratio`| `float` | `0.40`| 训练样本对共视面积最小重叠率阈值 |
+| `--pyramid` | `flag` | `True` | 启用 XFeat 多尺度 FPN 金字塔骨干 |
+| `--amp` | `flag` | `True` | 启用 PyTorch 自动混合精度 (FP16) 加速 |
+| `--d-model` | `int` | `128` | 图注意力隐藏特征维度 |
+| `--num-layers` | `int` | `2` | 图网络堆叠层数 |
+| `--save-interval` | `int` | `5` | 历史检查点保存间隔轮数 |
 
 ### 2. 经典训练配置范例
 
 ```bash
-# 1. 训练物体级“连连看”网络 (XFeatObjectMatcher，带 AMP 加速)
-python train.py --model xfeat_object --epochs 12 --lr 5e-4 --amp
+# 1. 训练主力多模态线段网络 (XFeatLineMatcher, 包含 FPN 金字塔与位移共识损失)
+python train.py --model xfeat_line_matcher \
+  --data-dir data/xfeat_line_matcher \
+  --epochs 15 \
+  --lr 5e-4 \
+  --dustbin-weight 0.3 \
+  --motion-weight 0.2 \
+  --min-area-ratio 0.40 \
+  --pyramid \
+  --amp \
+  --save-interval 5
 
-# 2. 训练 6 通道几何场线段匹配网络 (MaskLineFeatMatchNet)
+# 2. 训练物体级“连连看”网络 (XFeatObjectMatcher)
+python train.py --model xfeat_object --epochs 20 --lr 5e-4 --amp
+
+# 3. 训练 6 通道几何场线段网络 (MaskLineFeatMatchNet)
 python train.py --model mask_line --epochs 8 --lr 2e-4 --amp
-
-# 3. 训练基线线段 Transformer (LineMatcherNet)
-python train.py --model line_transformer --epochs 8 --lr 2e-4
 ```
-
-### 3. 训练产物与早停机制
-- 训练过程自动输出每轮的 Training Loss、Validation Loss、Matching Accuracy 与 F1 分数；
-- 最佳验证集权重自动保存为 `checkpoints/<model_name>/best_model.pth`；
-- 最新权重自动保存为 `checkpoints/<model_name>/latest_model.pth`。
 
 ---
 
-## 四、模型基准评测入口 (`eval.py`)
+## 五、模型基准评测入口 (`eval.py`)
 
-`eval.py` 在**未见测试场景（Test Split）**上进行全量盲测评测，计算严格的双向互斥匹配指标（Precision、Recall、F1-Score）以及未匹配物体（落入垃圾桶 Dustbin）的过滤准确率。
+`eval.py` 在未见测试场景（Test Split）上进行全量盲测评测，计算严格的双向互斥匹配指标并导出上下双排诊断图。
 
 ### 1. 核心参数详解
 
 | 参数名 | 类型 | 默认值 | 说明 |
 | :--- | :---: | :---: | :--- |
-| `--model` | `str` | `xfeat_object` | 评测的模型架构名称 |
-| `--checkpoint` | `str` | 自动匹配 | 待评估的权重文件路径 |
+| `--checkpoint` | `str` | 自动匹配 | 待评估权重路径（支持目录、`.pth` 文件或 `latest` 别名） |
 | `--data-dir` | `str` | 自动匹配 | 测试数据集目录 |
 | `--split` | `str` | `test` | 评估数据子集（`test` / `val` / `train`） |
 | `--thresh` | `float` | `0.2` | 匹配概率矩阵二值化截断阈值 |
-| `--num-vis` | `int` | `5` | 随机导出评测可视化连线图像的对数 |
-| `--out-dir` | `str` | `outputs/eval_vis` | 评测可视化图保存目录 |
+| `--min-area-ratio`| `float` | `0.40` | 样本对共视面积过滤阈值 |
+| `--num-vis` | `int` | `50` | 导出的高分辨率上下双排对比诊断图张数 |
+| `--out-dir` | `str` | `outputs/eval_vis` | 诊断图导出目录 |
 
 ### 2. 评测调用范例
 
 ```bash
-# 对测试集 140 对视角进行全量盲测，并导出 5 对高分辨率连线大图
-python eval.py --model xfeat_object --checkpoint checkpoints/xfeat_object_matcher/best_model.pth --num-vis 5
+# 评测 XFeatLineMatcher 最佳权重，并在 outputs/xfeat_line_eval_vis 导出 50 对双排诊断图
+python eval.py \
+  --checkpoint checkpoints/xfeat_line_matcher/20261023_233349/best_model.pth \
+  --data-dir data/xfeat_line_matcher \
+  --out-dir outputs/xfeat_line_eval_vis \
+  --num-vis 50
 ```
 
 ---
 
-## 五、交互可视化入口 (`demo.py`)
-
-`demo.py` 用于单对图像与任意视角的即时推理与可视化连线展示，适合用户直观调试、展示算法在旋转、遮挡场景下的表现。
-
-### 1. 核心参数详解
-
-| 参数名 | 类型 | 默认值 | 说明 |
-| :--- | :---: | :---: | :--- |
-| `--model` | `str` | `xfeat_object` | 匹配模型：`xfeat_object` 或 `mask_line` |
-| `--checkpoint` | `str` | 自动匹配 | 模型权重文件 |
-| `--scene` | `str` | 样例场景目录 | 测试场景的绝对或相对路径 |
-| `--v0` | `int` | `0` | 参考图（View 0）视角编号 |
-| `--v1` | `int` | `3` | 查询图（View 1）视角编号 |
-| `--thresh` | `float` | `0.2` | 过滤阈值 |
-| `--out` | `str` | `outputs/demo_result.jpg` | 输出大图文件路径 |
-
-### 2. 演示指令范例
+## 六、数据集生成入口 (`generate_dataset.py`)
 
 ```bash
-# 1. 物体级连连看交互测试 (视角 0 对视 视角 3)
-python demo.py --model xfeat_object --scene data/synthetic_object_matching_scenes/scene_0045 --v0 0 --v1 3 --out outputs/object_demo.jpg
+# 1. 生成多模态合成数据集 (物体掩膜 + LSD 直线 + 相机位姿)
+python generate_dataset.py --task semantic_line --num-scenes 50 --views-per-scene 8 --out-dir data/synthetic_semantic_lines
 
-# 2. 线段级多视角交互测试 (视角 0 对视 视角 1)
-python demo.py --model mask_line --scene data/synthetic_multiview_scenes/scene_0000 --v0 0 --v1 1 --out outputs/line_demo.jpg
+# 2. 生成带“维度 2”材质全随机化的纯物体连连看数据集
+python generate_dataset.py --task object --num-scenes 50 --random-colors
+
+# 3. 从 Structured3D 真实室内 CAD 场景提取 3D 直线真值 (带 Z-Buffer 遮挡剔除)
+python generate_dataset.py --task structured3d_lines --s3d-dir Structured3D_perspective_full_00/Structured3D --out-dir data/xfeat_line_matcher --max-scenes 50
 ```
 
 ---
 
-## 六、辅助工具脚本 (`tools/`)
+## 七、交互可视化入口 (`demo.py`)
 
-`tools/` 目录下集中了工程中的加速、验证与数据转化工具：
-
-### 1. `tests/run_unit_tests.py` (模型置换等变性与梯度单元测试)
-- **功能**：自动生成随机几何场张量，数学证明随机打乱输入线段顺序后，输出规范矩阵 $(255, 255)$ 的对应行/列严格等价置换（误差 $< 10^{-7}$），并验证反向传播梯度流。
-- **运行**：
-  ```bash
-  python tests/run_unit_tests.py
-  ```
-
-### 2. `tests/verify_toy_task.py` (极简 2D 玩具任务验证)
-- **功能**：在 1 秒内生成包含旋转和平移扰动的 2D 线段对，以 35 步极速训练检验网络架构、图推理和最优传输层能否达到 100% 完美收敛。
-- **运行**：
-  ```bash
-  python tests/verify_toy_task.py
-  ```
-
-### 3. `tools/example_call.py` (极简 Python API 推理范例)
-- **功能**：展示如何通过 `LineMatchPipeline` 仅需数行 Python 代码实现端到端线段跨视角匹配并保存结果。
-- **运行**：
-  ```bash
-  python tools/example_call.py
-  ```
-
-### 4. `tools/cache_line_features.py` (离线特征预抽取缓存)
-- **功能**：使用多线程生产者-消费者队列在后台批量预提取全图卷积特征，将线段匹配模型的端到端训练提速 **~50 倍**。
-- **运行**：
-  ```bash
-  python tools/cache_line_features.py --gt-dir data/line_gt_dataset --cache-dir data/line_feature_cache
-  ```
-
-### 5. `tools/build_line_gt_dataset.py` (3D 真实室内线段真值构建)
-- **功能**：多进程批量解析真实 `Structured3D` 数据集的 3D 线框，施加视锥裁剪、近平面剔除与基于深度图的 Z-Buffer 遮挡消除。
-- **运行**：
-  ```bash
-  python tools/build_line_gt_dataset.py --num-workers 16
-  ```
-
-### 6. `tools/download_structured3d.py` & `tools/unzip_structured3d.py`
-- **功能**：官方 Structured3D 真实室内全景/透视子集自动化断点续传下载与自动解压校验。
-
-### 7. `tools/sync_push.sh` & `tools/sync_pull.sh`
-- **功能**：本地工作站与远程 GPU 服务器代码、日志与权重的双向免密同步工具。
+```bash
+python demo.py --model xfeat_line_matcher --scene data/synthetic_multiview_scenes/scene_0000 --v0 0 --v1 1 --out outputs/demo_result.jpg
+```
 
 ---
 
-## 七、环境与 GPU 运行注意事项
+## 八、辅助工具与测试验证 (`tools/` & `tests/`)
 
-1. **Python 环境推荐**：
-   - Python $\ge$ 3.10
-   - PyTorch $\ge$ 2.1 (支持 CUDA 12.x)
-   - OpenCV、NumPy、SciPy、Pillow
-2. **显存占用参考**：
-   - `xfeat_object`：轻量残差卷积，推理仅需约 **0.6 GB** 显存，训练单对约 **1.2 GB**；
-   - `mask_line`：6 通道几何场卷积，推理约 **1.5 GB** 显存，训练建议启用 `--amp` 优化显存峰值。
+- `python -m unittest discover tests`：运行全套 19 项单元测试（涵盖置换等变性、FPN 特征维度、梯度反向流与工厂模式）；
+- `python tests/run_unit_tests.py`：矩阵等变性与梯度流数学严密性验证；
+- `python tools/example_call.py`：极简 Python API 调用范例；
+- `python tools/cache_line_features.py`：离线特征预抽取缓存工具。

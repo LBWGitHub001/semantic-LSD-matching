@@ -35,6 +35,7 @@
     <button class="tab-btn" data-tab="eval">🧪 评测基准</button>
     <button class="tab-btn" data-tab="gallery">🖼️ 结果可视化画廊</button>
     <button class="tab-btn" data-tab="dataset">📦 数据集生成</button>
+    <button class="tab-btn" data-tab="models_guide">📖 模型手册与交互文档</button>
   </nav>
 
   <!-- Main Container -->
@@ -411,6 +412,277 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- Tab 6: 模型架构与交互手册 (Models & Interactive Docs)    -->
+    <!-- ======================================================== -->
+    <div class="tab-pane" id="tab-models_guide">
+
+      <!-- Header & Model Selector Pill Group -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 20px; font-weight: 700;">📖 核心匹配网络全景架构与使用手册</h2>
+          <p style="color: var(--text-muted); font-size: 13px; margin-top: 4px;">深度探索多模态网络图推理、最优传输算子推导、实时显存推演与 CLI 极速范例。</p>
+        </div>
+        <div class="model-pill-group" style="margin-bottom: 0;">
+          <button class="model-pill active" id="btn-doc-xfeat-line" onclick="switchModelDoc('xfeat_line_matcher')">
+            <span>🌟</span> XFeatLineMatcher (SOTA 79.2%)
+          </button>
+          <button class="model-pill" id="btn-doc-mask-line" onclick="switchModelDoc('mask_line')">
+            <span>📐</span> MaskLineFeatMatchNet (6通道几何场)
+          </button>
+          <button class="model-pill" id="btn-doc-line-transformer" onclick="switchModelDoc('line_transformer')">
+            <span>📏</span> LineMatcherNet (基线线段 Transformer)
+          </button>
+        </div>
+      </div>
+
+      <!-- Section 1: Interactive Model Overview Card -->
+      <div class="card doc-section">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <div class="badge badge-purple" id="doc-model-badge">多模态直线+目标区域混合网络 (SOTA)</div>
+            <h3 style="font-size: 18px; font-weight: 700; margin-top: 8px;" id="doc-model-title">XFeatLineMatcher Architecture</h3>
+            <p style="color: var(--text-muted); font-size: 13px; margin-top: 4px; max-width: 800px;" id="doc-model-subtitle">
+              结合 XFeat FPN 多尺度视觉特征金字塔与 5D 亚像素直线几何编码，通过两层图交叉注意力机制与 Sinkhorn 双随机最优传输实现鲁棒配对。
+            </p>
+          </div>
+          <div style="text-align: right;">
+            <div style="font-size: 26px; font-weight: 800; color: #34D399;" id="doc-model-metric">F1: 79.22%</div>
+            <div style="font-size: 11px; color: var(--text-muted);" id="doc-model-metric-label">Structured3D 盲测基准</div>
+          </div>
+        </div>
+
+        <!-- Interactive Pipeline Flow Diagram -->
+        <div style="margin-bottom: 8px;">
+          <div style="font-size: 12px; font-weight: 600; color: #9CA3AF; margin-bottom: 8px;">
+            ✦ 点击下方数据流水线各处理阶段，即时查看张量形状、数学公式与核心源码设计：
+          </div>
+          <div class="arch-flow-container" id="arch-flow-stages">
+            <!-- Populated dynamically by JS -->
+          </div>
+        </div>
+
+        <!-- Inspector Details Panel -->
+        <div class="arch-inspector-box" id="arch-inspector-panel">
+          <!-- Populated dynamically by JS -->
+        </div>
+      </div>
+
+      <!-- Section 2: Interactive Parameter & VRAM Calculator -->
+      <div class="grid-2 doc-section" style="gap: 20px;">
+        <div class="card">
+          <div class="card-title">🧮 交互式模型规模与显存推演计算器</div>
+          <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 16px;">
+            动态调节网络超参数与批处理规模，实时推算模型参数总量、理论 FLOPs 及训练/推理显存开销：
+          </p>
+          
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                <span>特征通道维度 (d_model)</span>
+                <span id="calc-lbl-dmodel" style="color:#60A5FA; font-weight:600;">128</span>
+              </div>
+              <input type="range" class="form-control" id="calc-dmodel" min="64" max="256" step="64" value="128" oninput="updateCalculator()">
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                <span>Transformer 交互层数 (num_layers)</span>
+                <span id="calc-lbl-layers" style="color:#60A5FA; font-weight:600;">2 层</span>
+              </div>
+              <input type="range" class="form-control" id="calc-layers" min="1" max="6" step="1" value="2" oninput="updateCalculator()">
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                <span>注意力多头数量 (nhead)</span>
+                <span id="calc-lbl-nhead" style="color:#60A5FA; font-weight:600;">4 Heads</span>
+              </div>
+              <input type="range" class="form-control" id="calc-nhead" min="2" max="8" step="2" value="4" oninput="updateCalculator()">
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                <span>单视角候选目标切片数 (M0 / M1)</span>
+                <span id="calc-lbl-patches" style="color:#60A5FA; font-weight:600;">24 个</span>
+              </div>
+              <input type="range" class="form-control" id="calc-patches" min="8" max="64" step="4" value="24" oninput="updateCalculator()">
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+                <span>单切片最大关联直线数 (K)</span>
+                <span id="calc-lbl-lines" style="color:#60A5FA; font-weight:600;">8 根</span>
+              </div>
+              <input type="range" class="form-control" id="calc-lines" min="4" max="32" step="4" value="8" oninput="updateCalculator()">
+            </div>
+          </div>
+        </div>
+
+        <!-- Computed Outputs -->
+        <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
+          <div>
+            <div class="card-title">⚡ 理论性能与硬件资源开销预估</div>
+            <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 16px;">基于 NVIDIA RTX 4060 Tensor Cores 及 PyTorch 算子实现推算：</p>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+              <div class="calc-card">
+                <div class="calc-label">模型可学习参数总量</div>
+                <div class="calc-val" id="calc-out-params">1.72 M</div>
+                <div style="font-size: 11px; color: var(--text-muted);">约 6.88 MB 权重文件</div>
+              </div>
+              <div class="calc-card">
+                <div class="calc-label">单对推理计算量 (FLOPs)</div>
+                <div class="calc-val" id="calc-out-flops" style="color: #34D399;">12.4 G</div>
+                <div style="font-size: 11px; color: var(--text-muted);">含双分支骨干推演</div>
+              </div>
+              <div class="calc-card">
+                <div class="calc-label">训练显存占用预估 (AMP)</div>
+                <div class="calc-val" id="calc-out-train-vram" style="color: #F59E0B;">1.45 GB</div>
+                <div style="font-size: 11px; color: var(--text-muted);">含激活、梯度与Adam状态</div>
+              </div>
+              <div class="calc-card">
+                <div class="calc-label">推理端到端吞吐率</div>
+                <div class="calc-val" id="calc-out-fps" style="color: #A78BFA;">48 FPS</div>
+                <div style="font-size: 11px; color: var(--text-muted);">单张 RTX 4060 Laptop</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 12px; font-size: 12px; color: #A7F3D0;" id="calc-out-recommendation">
+            💡 <strong>硬件适配诊断</strong>：当前参数配置非常轻量，完全可在 4GB~8GB 显卡（如 RTX 3050/4060 Laptop）开启 AMP 高速训练，单对推理仅 ~20ms。
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 3: Architecture Comparison Matrix -->
+      <div class="card doc-section">
+        <div class="card-title">📊 三大匹配网络技术全景横向对比矩阵</div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>网络模型</th>
+                <th>核心输入模态</th>
+                <th>视觉骨干网络</th>
+                <th>直线几何融合方式</th>
+                <th>出画落单过滤</th>
+                <th>位移共识损失</th>
+                <th>盲测 F1-Score</th>
+                <th>推荐应用场景</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="background: rgba(59, 130, 246, 0.08);">
+                <td><strong style="color: #60A5FA;">XFeatLineMatcher</strong> <span class="badge badge-success">SOTA</span></td>
+                <td>RGB 切片 + 实例区域 + 2D/3D 线段</td>
+                <td>XFeat + FPN 多尺度金字塔</td>
+                <td>5D 归一化参数 + 掩膜池化 + MLP</td>
+                <td><span style="color:#10B981;">✓</span> 扩展维度垃圾桶</td>
+                <td><span style="color:#10B981;">✓</span> 视差边缘一致性</td>
+                <td><strong style="color:#34D399;">79.22%</strong></td>
+                <td>室内复杂场景跨视角语义目标与直线联合对齐</td>
+              </tr>
+              <tr>
+                <td><strong>MaskLineFeatMatchNet</strong></td>
+                <td>RGB 图像 + 6通道连续几何场</td>
+                <td>ResNet/VGG 浅层骨干 (Conv6ch)</td>
+                <td>欧氏距离场 (EDT) + 角度朝向场 (AFM)</td>
+                <td><span style="color:#F59E0B;">-</span> 规范 255x255 零填充</td>
+                <td><span style="color:#EF4444;">✗</span> 无</td>
+                <td><strong>68.5%</strong></td>
+                <td>纹理缺失、依赖连续几何场引导的纯直线配对</td>
+              </tr>
+              <tr>
+                <td><strong>LineMatcherNet</strong></td>
+                <td>端点坐标 + 局部线段采样点</td>
+                <td>局部线段插值采样视觉特征</td>
+                <td>LineGeometryEncoder MLP (端点向量)</td>
+                <td><span style="color:#F59E0B;">-</span> 距离阈值简单剔除</td>
+                <td><span style="color:#EF4444;">✗</span> 无</td>
+                <td><strong>62.3%</strong></td>
+                <td>轻量快速端点几何变换匹配基线</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Section 4: Interactive Code Cheatsheet & Copy Snippets -->
+      <div class="card doc-section">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+          <div class="card-title" style="margin-bottom: 0;">💻 交互式代码手册与 CLI 速查命令库</div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn btn-secondary btn-sm" id="btn-snippet-python" onclick="switchCodeSnippet('python_api')">🐍 Python API</button>
+            <button class="btn btn-secondary btn-sm" id="btn-snippet-train" onclick="switchCodeSnippet('train_cli')">🚀 训练 CLI</button>
+            <button class="btn btn-secondary btn-sm" id="btn-snippet-eval" onclick="switchCodeSnippet('eval_cli')">🧪 评测 CLI</button>
+            <button class="btn btn-secondary btn-sm" id="btn-snippet-dataset" onclick="switchCodeSnippet('dataset_cli')">📦 数据生成 CLI</button>
+            <button class="btn btn-secondary btn-sm" id="btn-snippet-review" onclick="switchCodeSnippet('review_cli')">📊 实验复盘 CLI</button>
+          </div>
+        </div>
+
+        <div class="code-block-container">
+          <div class="code-block-header">
+            <span id="code-snippet-title">Python API: 5行代码执行多模态匹配推理</span>
+            <button class="btn-copy" id="btn-copy-code" onclick="copyCurrentCodeSnippet()">📋 一键复制命令</button>
+          </div>
+          <div class="code-snippet" id="code-snippet-content"></div>
+        </div>
+      </div>
+
+      <!-- Section 5: Hyperparameter Tuning Guide -->
+      <div class="card doc-section">
+        <div class="card-title">🎯 核心超参数调优宝典 (Hyperparameter Cheat Sheet)</div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>超参数名称</th>
+                <th>CLI 命令行标志</th>
+                <th>推荐默认值</th>
+                <th>物理机制与调优建议</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>垃圾桶损失权重</strong></td>
+                <td><code>--dustbin-weight</code></td>
+                <td><code>0.1 ~ 0.3</code></td>
+                <td>控制未配对/出画目标的惩罚力度。如果误匹配过多，调高至 <code>0.4</code>；如果召回率偏低，调低至 <code>0.1</code>。</td>
+              </tr>
+              <tr>
+                <td><strong>位移场共识权重</strong></td>
+                <td><code>--motion-weight</code></td>
+                <td><code>0.1 ~ 0.2</code></td>
+                <td>施加空间刚体位移连续性约束。在跨视角视差剧烈、存在多处相似物体的场景中推荐设为 <code>0.2</code>。</td>
+              </tr>
+              <tr>
+                <td><strong>位移容差门限</strong></td>
+                <td><code>--motion-margin</code></td>
+                <td><code>0.15</code></td>
+                <td>归一化坐标下的深度视差容差边界。较小的值（如 <code>0.10</code>）惩罚更严格，适合平面或低视差场景。</td>
+              </tr>
+              <tr>
+                <td><strong>共视面积门限</strong></td>
+                <td><code>--min-area-ratio</code></td>
+                <td><code>0.40 ~ 0.50</code></td>
+                <td>过滤视线完全脱节、无有效重叠区域的负样本对，保证训练样本信噪比。</td>
+              </tr>
+              <tr>
+                <td><strong>多尺度金字塔</strong></td>
+                <td><code>--pyramid</code></td>
+                <td><code>Enabled</code></td>
+                <td>融合 P1/P2/P3 三级特征金字塔，相比单尺度模型直接提升 F1 约 <strong>+6.3%</strong>，推荐全程开启。</td>
+              </tr>
+              <tr>
+                <td><strong>混合精度训练</strong></td>
+                <td><code>--amp</code></td>
+                <td><code>Enabled</code></td>
+                <td>启用 PyTorch FP16 自动混合精度，训练速度提升 <strong>2.2x</strong>，显存开销降低 <strong>50%</strong>。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </div>
 
   </main>
