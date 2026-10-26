@@ -603,6 +603,49 @@ async function loadDatasets() {
   }
 }
 
+// -------------------------------------------------------------
+// Data Ratio Slider & Input Two-Way Sync
+// -------------------------------------------------------------
+function syncDataRatioFromSlider(val) {
+  const fVal = Math.max(0.01, Math.min(1.0, parseFloat(val) || 1.0));
+  const input = document.getElementById("train-data-ratio-input");
+  const badge = document.getElementById("train-data-ratio-badge");
+  if (input) input.value = fVal.toFixed(2);
+  if (badge) {
+    const pct = Math.round(fVal * 100);
+    badge.textContent = `(${pct}%)`;
+    badge.style.color = fVal >= 1.0 ? "#34D399" : "#60A5FA";
+  }
+}
+
+function syncDataRatioFromInput(val) {
+  let fVal = parseFloat(val);
+  if (isNaN(fVal)) return;
+  fVal = Math.max(0.01, Math.min(1.0, fVal));
+  const slider = document.getElementById("train-data-ratio-slider");
+  const badge = document.getElementById("train-data-ratio-badge");
+  if (slider) slider.value = fVal;
+  if (badge) {
+    const pct = Math.round(fVal * 100);
+    badge.textContent = `(${pct}%)`;
+    badge.style.color = fVal >= 1.0 ? "#34D399" : "#60A5FA";
+  }
+}
+
+function setDataRatio(val) {
+  const fVal = Math.max(0.01, Math.min(1.0, parseFloat(val)));
+  const slider = document.getElementById("train-data-ratio-slider");
+  const input = document.getElementById("train-data-ratio-input");
+  const badge = document.getElementById("train-data-ratio-badge");
+  if (slider) slider.value = fVal;
+  if (input) input.value = fVal.toFixed(2);
+  if (badge) {
+    const pct = Math.round(fVal * 100);
+    badge.textContent = `(${pct}%)`;
+    badge.style.color = fVal >= 1.0 ? "#34D399" : "#60A5FA";
+  }
+}
+
 async function startTraining() {
   const model = document.getElementById("train-model").value;
   const data_dir = document.getElementById("train-data-dir").value;
@@ -611,6 +654,8 @@ async function startTraining() {
   const dustbin_weight = parseFloat(document.getElementById("train-dustbin").value);
   const motion_weight = parseFloat(document.getElementById("train-motion").value);
   const min_area_ratio = parseFloat(document.getElementById("train-area-ratio").value);
+  const data_ratio_el = document.getElementById("train-data-ratio-input");
+  const data_ratio = data_ratio_el ? Math.max(0.01, Math.min(1.0, parseFloat(data_ratio_el.value) || 1.0)) : 1.0;
   const pyramid = document.getElementById("train-pyramid").checked;
   const amp = document.getElementById("train-amp").checked;
 
@@ -624,7 +669,8 @@ async function startTraining() {
   if (logSelect) logSelect.value = "live";
 
   clearTerminal();
-  appendTerminalLine(`[+] 正在请求启动训练: model=${model}, data=${data_dir}, epochs=${epochs}, lr=${lr}...`);
+  const ratioLabel = data_ratio < 1.0 ? `, ratio=${Math.round(data_ratio * 100)}%` : "";
+  appendTerminalLine(`[+] 正在请求启动训练: model=${model}, data=${data_dir}${ratioLabel}, epochs=${epochs}, lr=${lr}...`);
 
   liveLossHistory = [];
   liveF1History = [];
@@ -635,7 +681,7 @@ async function startTraining() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model, data_dir, epochs, lr, dustbin_weight, motion_weight, min_area_ratio, pyramid, amp
+        model, data_dir, epochs, lr, dustbin_weight, motion_weight, min_area_ratio, data_ratio, pyramid, amp
       }),
     });
     const result = await res.json();

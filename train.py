@@ -121,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--motion-weight", type=float, default=0.2, help="Transformation consistency loss weight (方案一: 位移场共识损失, default: 0.2)")
     parser.add_argument("--motion-margin", type=float, default=0.15, help="Parallax tolerance margin in [-1, 1] normalized coordinates (default: 0.15)")
     parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
+    parser.add_argument("--data-ratio", "--data-fraction", dest="data_ratio", type=float, default=1.0, help="Fraction of training dataset to randomly sample (0.0 to 1.0, default: 1.0)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
     parser.add_argument("--no-pyramid", dest="use_pyramid", action="store_false", help="Disable multi-scale feature pyramid (use single-scale legacy backbone)")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
@@ -161,6 +162,10 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     print(f"  Dustbin Weight:     {args.dustbin_weight}")
     print(f"  Motion Loss Weight: {args.motion_weight} (Margin: {args.motion_margin})")
     print(f"  Min Area Ratio:     {args.min_area_ratio * 100:.0f}% (Mutual Co-visible Region Filter)")
+    if getattr(args, "data_ratio", 1.0) < 1.0:
+        print(f"  Data Ratio:         {args.data_ratio * 100:.1f}% (Random Subset Fraction)")
+    else:
+        print(f"  Data Ratio:         100% (Full Dataset)")
     print(f"  Pyramid Features:   {'Enabled (Multi-Scale FPN)' if getattr(args, 'use_pyramid', True) else 'Disabled (Single-Scale)'}")
     print(f"  Model Dimension:    {args.d_model} (Layers: {args.num_layers}, Heads: {args.nhead})")
     print(f"  Mixed Precision:    {'Enabled (AMP FP16)' if args.amp else 'Disabled (FP32)'}")
@@ -192,6 +197,15 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         val_ds = ObjectMatchingDataset(data_dir=data_dir, split="val")
         test_ds = ObjectMatchingDataset(data_dir=data_dir, split="test")
         collate_fn = collate_single_pair
+
+    orig_train_len = len(train_ds)
+    if getattr(args, "data_ratio", 1.0) < 1.0:
+        ratio = max(0.001, min(1.0, float(args.data_ratio)))
+        subset_size = max(1, int(orig_train_len * ratio))
+        rng = np.random.RandomState(42)  # reproducible random subset
+        subset_indices = rng.choice(orig_train_len, size=subset_size, replace=False).tolist()
+        train_ds = torch.utils.data.Subset(train_ds, subset_indices)
+        print(f"[*] Dataset subset: Randomly sampled {len(train_ds)}/{orig_train_len} ({ratio*100:.1f}%) pairs for training.\n")
 
     train_loader = DataLoader(
         train_ds,
@@ -307,6 +321,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             "motion_loss_weight": args.motion_weight,
             "motion_margin": args.motion_margin,
             "min_area_ratio": args.min_area_ratio,
+            "data_ratio": getattr(args, "data_ratio", 1.0),
             "save_interval": args.save_interval,
             "save_last": args.save_last,
             "val_interval": args.val_interval,
@@ -316,7 +331,9 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         "dataset": {
             "dataset_type": "SemanticRegionDataset" if use_region_ds else "ObjectMatchingDataset",
             "dataset_dir": str(p_data.resolve()),
+            "total_train_pairs": orig_train_len,
             "train_pairs": len(train_ds),
+            "data_ratio": getattr(args, "data_ratio", 1.0),
             "val_pairs": len(val_ds),
             "test_pairs": len(test_ds),
         },
@@ -808,6 +825,15 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         min_matches=args.min_matches,
         load_images=True,
     )
+    orig_line_train_len = len(train_dataset)
+    if getattr(args, "data_ratio", 1.0) < 1.0:
+        ratio = max(0.001, min(1.0, float(args.data_ratio)))
+        subset_size = max(1, int(orig_line_train_len * ratio))
+        rng = np.random.RandomState(42)
+        subset_indices = rng.choice(orig_line_train_len, size=subset_size, replace=False).tolist()
+        train_dataset = torch.utils.data.Subset(train_dataset, subset_indices)
+        print(f"[*] Dataset subset: Randomly sampled {len(train_dataset)}/{orig_line_train_len} ({ratio*100:.1f}%) pairs for training.\n")
+
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers)
 

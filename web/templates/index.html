@@ -155,6 +155,38 @@
             <input type="number" step="0.05" class="form-control" id="train-area-ratio" value="0.40">
           </div>
 
+          <!-- 数据集使用比例 (0-1 拖拽条 + 手动输入数字) -->
+          <div class="form-group" style="background: rgba(31, 41, 55, 0.4); border: 1px solid #374151; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <label class="form-label" style="margin-bottom: 0; font-weight: 600; color: #E5E7EB;">
+                📊 数据集采样比例 (Data Fraction)
+              </label>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <input type="number" id="train-data-ratio-input" class="form-control" style="width: 76px; padding: 4px 6px; font-size: 13px; font-weight: bold; text-align: center; color: #60A5FA; background: #111827;" min="0.01" max="1.0" step="0.01" value="1.0" oninput="syncDataRatioFromInput(this.value)">
+                <span id="train-data-ratio-badge" style="font-size: 12px; color: #34D399; font-weight: 600; min-width: 48px;">(100%)</span>
+              </div>
+            </div>
+            
+            <div class="range-slider-container">
+              <span style="font-size: 11px; color: #6B7280; font-family: monospace;">0.01</span>
+              <input type="range" id="train-data-ratio-slider" class="range-slider" min="0.01" max="1.0" step="0.01" value="1.0" oninput="syncDataRatioFromSlider(this.value)">
+              <span style="font-size: 11px; color: #6B7280; font-family: monospace;">1.0</span>
+            </div>
+
+            <!-- 快捷预设按钮 -->
+            <div style="display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary btn-xs" onclick="setDataRatio(0.1)">10%</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="setDataRatio(0.25)">25%</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="setDataRatio(0.50)">50% (随机半量)</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="setDataRatio(0.75)">75%</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="setDataRatio(1.0)">100% (全量)</button>
+            </div>
+
+            <div style="font-size: 11px; color: #9CA3AF; margin-top: 8px; line-height: 1.4;">
+              💡 拖动滑块或直接输入数字（0.01 ~ 1.0）。例如 <b>0.5</b> 表示随机使用数据集的 50% 样本，适用于快速原型验证与小样本学习实验。
+            </div>
+          </div>
+
           <div class="form-row" style="margin-bottom: 20px;">
             <label class="checkbox-label">
               <input type="checkbox" id="train-pyramid" checked> 多尺度金字塔 (Pyramid FPN)

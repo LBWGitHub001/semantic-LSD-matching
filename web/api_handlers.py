@@ -319,6 +319,7 @@ class TrainHandler(BaseApiHandler):
         dustbin_weight = body.get("dustbin_weight", 0.1)
         motion_weight = body.get("motion_weight", 0.4)
         min_area_ratio = body.get("min_area_ratio", 0.40)
+        data_ratio = float(body.get("data_ratio", 1.0))
         use_pyramid = body.get("pyramid", True)
         use_amp = body.get("amp", True)
         save_interval = body.get("save_interval", 5)
@@ -335,6 +336,8 @@ class TrainHandler(BaseApiHandler):
             "--min-area-ratio", str(min_area_ratio),
             "--save-interval", str(save_interval),
         ]
+        if data_ratio < 1.0:
+            cmd.extend(["--data-ratio", str(data_ratio)])
         if use_pyramid:
             cmd.append("--pyramid")
         else:

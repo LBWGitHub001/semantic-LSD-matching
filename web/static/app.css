@@ -400,6 +400,58 @@ body {
   font-size: 12px;
 }
 
+.btn-xs {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+/* Range Slider Styles */
+.range-slider-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.range-slider {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #1F2937;
+  border-radius: 3px;
+  outline: none;
+  transition: opacity .2s;
+}
+
+.range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3B82F6;
+  cursor: pointer;
+  border: 2px solid #FFF;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.6);
+  transition: transform .1s, background-color .2s;
+}
+
+.range-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  background: #60A5FA;
+}
+
+.range-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3B82F6;
+  cursor: pointer;
+  border: 2px solid #FFF;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.6);
+}
+
 /* Tables */
 .table-container {
   overflow-x: auto;
