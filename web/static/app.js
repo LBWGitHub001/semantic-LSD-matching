@@ -743,6 +743,89 @@ function closeModal(id) {
   document.getElementById(id).style.display = "none";
 }
 
+function openReviewTab(runName) {
+  const url = "/review?run=" + encodeURIComponent(runName);
+  window.open(url, "_blank");
+}
+
+async function previewCurrentModel() {
+  const modelEl = document.getElementById("train-model");
+  const pyramidEl = document.getElementById("train-pyramid");
+  const model = modelEl ? modelEl.value : "xfeat_line_matcher";
+  const pyramid = pyramidEl ? pyramidEl.checked : true;
+  const modal = document.getElementById("model-preview-modal");
+  if (!modal) return;
+
+  try {
+    const res = await fetch(`/api/model/preview?model=${encodeURIComponent(model)}&pyramid=${pyramid}&d_model=128`);
+    const data = await res.json();
+    if (data.error) {
+      alert("获取模型预览失败: " + data.message);
+      return;
+    }
+
+    const titleEl = document.getElementById("preview-model-name");
+    if (titleEl) titleEl.innerText = `📐 ${data.name} (${data.model_type})`;
+
+    const taglineEl = document.getElementById("preview-model-tagline");
+    if (taglineEl) taglineEl.innerText = data.tagline || "";
+
+    const totalParamsEl = document.getElementById("preview-total-params");
+    if (totalParamsEl) totalParamsEl.innerText = data.params_total || "-";
+
+    const trainableParamsEl = document.getElementById("preview-trainable-params");
+    if (trainableParamsEl) trainableParamsEl.innerText = data.trainable_params || "-";
+
+    // Shapes
+    const shapesTbody = document.getElementById("preview-shapes-tbody");
+    if (shapesTbody) {
+      shapesTbody.innerHTML = "";
+      (data.input_shapes || []).forEach(s => {
+        shapesTbody.innerHTML += `
+          <tr>
+            <td><b style="color:#F3F4F6;">${s.name}</b></td>
+            <td><code style="color:#60A5FA; background:#1F2937; padding:2px 6px; border-radius:4px; font-weight:600;">${s.shape}</code></td>
+            <td style="color:#9CA3AF;">${s.desc}</td>
+          </tr>
+        `;
+      });
+    }
+
+    // Stages
+    const stagesTbody = document.getElementById("preview-stages-tbody");
+    if (stagesTbody) {
+      stagesTbody.innerHTML = "";
+      (data.pipeline_stages || []).forEach(st => {
+        stagesTbody.innerHTML += `
+          <tr>
+            <td><b style="color:#A78BFA;">${st.stage}</b></td>
+            <td><span class="badge badge-blue">${st.dim}</span></td>
+            <td style="color:#D1D5DB;">${st.desc}</td>
+          </tr>
+        `;
+      });
+    }
+
+    // Code
+    const codeEl = document.getElementById("preview-pytorch-code");
+    if (codeEl) codeEl.innerText = data.pytorch_repr || "// 暂无代码表示";
+
+    modal.style.display = "flex";
+  } catch (e) {
+    alert("请求模型预览发生异常: " + e);
+  }
+}
+
+function copyModelPytorchRepr() {
+  const codeEl = document.getElementById("preview-pytorch-code");
+  if (!codeEl) return;
+  navigator.clipboard.writeText(codeEl.innerText).then(() => {
+    alert("已成功复制 PyTorch 模型结构文本到剪贴板！");
+  }).catch(() => {
+    alert("复制失败，请手动选取复制。");
+  });
+}
+
 // -------------------------------------------------------------
 // Tab 2: Training Studio Controls
 // -------------------------------------------------------------
