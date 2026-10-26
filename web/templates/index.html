@@ -860,15 +860,33 @@
 
   <!-- Model Architecture Preview Modal -->
   <div class="modal-overlay" id="model-preview-modal" style="display: none;">
-    <div class="modal-content" style="max-width: 960px; max-height: 90vh; display: flex; flex-direction: column;">
+    <div class="modal-content" style="max-width: 1050px; max-height: 92vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div>
-          <div class="modal-title" id="preview-model-name">📐 模型结构预览</div>
+          <div class="modal-title" id="preview-model-name">📐 模型结构与张量流向图</div>
           <div style="font-size: 12px; color: #9CA3AF; margin-top: 3px;" id="preview-model-tagline">多模态多尺度直线与目标区域联合对齐网络</div>
         </div>
         <button class="modal-close" onclick="closeModal('model-preview-modal')">&times;</button>
       </div>
       <div class="modal-body" style="overflow-y: auto; padding: 20px;">
+
+        <!-- 🖼️ 核心：高清晰度网络详细架构拓扑与张量流向图 -->
+        <div class="card" style="margin-bottom: 20px; padding: 16px; background: #0D1322; border: 1px solid #1E293B;">
+          <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 16px;">🖼️</span>
+              <span style="font-weight: 700; color: #F3F4F6;">网络全层详细结构与各模块张量流向图 (Data Flow & Tensor Shapes)</span>
+            </div>
+            <button class="btn btn-secondary btn-xs" type="button" onclick="openDiagramZoomModal()">🔍 全屏高清放大</button>
+          </div>
+          <div style="text-align: center; background: #080C14; border-radius: 8px; padding: 8px; border: 1px solid #1F2937;">
+            <img id="preview-model-diagram" src="/static/img/xfeat_line_matcher_architecture.png" style="width: 100%; max-height: 480px; object-fit: contain; border-radius: 6px; cursor: zoom-in;" onclick="openDiagramZoomModal()" title="点击全屏高清放大查看">
+            <div style="color: #9CA3AF; font-size: 11px; margin-top: 8px;">
+              💡 <b>直观图解提示</b>：图中已逐级标注各阶段的输入/输出张量形状（如 <code>(B, M, 3, 112, 112)</code>、<code>(B, M, 8, 5)</code>、<code>(B, M, 192)</code>、<code>(B, M, 128)</code> 及 <code>(B, M0+1, M1+1)</code>），点击图片可全屏高清放大。
+            </div>
+          </div>
+        </div>
+
         <!-- Parameter Stats -->
         <div class="grid-2" style="margin-bottom: 20px;">
           <div class="stat-card" style="padding: 14px 18px;">
@@ -921,14 +939,31 @@
           </div>
         </div>
 
-        <!-- PyTorch Module Structure -->
-        <div class="card" style="padding: 16px;">
-          <div class="card-title" style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
-            <span>🧠 PyTorch Module 模块拓扑定义 (__repr__)</span>
-            <button class="btn btn-secondary btn-xs" onclick="copyModelPytorchRepr()">📋 复制结构文本</button>
+        <!-- PyTorch Module Structure (Collapsible Code) -->
+        <details class="card" style="padding: 14px; margin-top: 10px;">
+          <summary style="font-size: 13px; font-weight: 600; color: #9CA3AF; cursor: pointer; user-select: none;">
+            <span>💻 点击展开查看原始 PyTorch Module 代码拓扑定义 (__repr__)</span>
+          </summary>
+          <div style="margin-top: 12px;">
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+              <button class="btn btn-secondary btn-xs" onclick="copyModelPytorchRepr()">📋 复制结构文本</button>
+            </div>
+            <pre id="preview-pytorch-code" style="background: #080C14; border: 1px solid #1F2937; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 12px; color: #E5E7EB; max-height: 240px; overflow-y: auto; white-space: pre; line-height: 1.45;"></pre>
           </div>
-          <pre id="preview-pytorch-code" style="background: #080C14; border: 1px solid #1F2937; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 12px; color: #E5E7EB; max-height: 280px; overflow-y: auto; white-space: pre; line-height: 1.45;"></pre>
-        </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <!-- High-Res Architecture Diagram Zoom Modal -->
+  <div class="modal-overlay" id="diagram-zoom-modal" style="display: none;">
+    <div class="modal-content" style="max-width: 95vw; max-height: 95vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <div class="modal-title">🖼️ 网络详细架构拓扑与全层张量规格图 (4K Ultra-HD Architecture Diagram)</div>
+        <button class="modal-close" onclick="closeModal('diagram-zoom-modal')">&times;</button>
+      </div>
+      <div class="modal-body" style="text-align: center; background: #080C14; padding: 12px; overflow: auto;">
+        <img id="diagram-zoom-img" src="/static/img/xfeat_line_matcher_architecture.png" style="max-width: 100%; border-radius: 8px;">
       </div>
     </div>
   </div>

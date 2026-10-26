@@ -113,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=2, help="Number of Transformer layers")
     parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads")
     parser.add_argument("--grad-accum", type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument("--num-workers", type=int, default=2, help="DataLoader worker processes (default: 2)")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes (default: 4)")
     parser.add_argument("--amp", action="store_true", default=True, help="Enable Automatic Mixed Precision (FP16)")
     parser.add_argument("--save-dir", type=Path, default=None, help="Checkpoint directory")
     parser.add_argument("--run-name", type=str, default=None, help="Custom run subfolder name (default: start time YYYYMMDD_HHMMSS)")
@@ -226,7 +226,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         num_workers=args.num_workers,
         pin_memory=True if torch.cuda.is_available() else False,
         persistent_workers=True if args.num_workers > 0 else False,
-        prefetch_factor=2 if args.num_workers > 0 else None,
+        prefetch_factor=4 if args.num_workers > 0 else None,
         worker_init_fn=worker_init_fn if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(
@@ -864,7 +864,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         num_workers=args.num_workers,
         pin_memory=True if torch.cuda.is_available() else False,
         persistent_workers=True if args.num_workers > 0 else False,
-        prefetch_factor=2 if args.num_workers > 0 else None,
+        prefetch_factor=4 if args.num_workers > 0 else None,
         worker_init_fn=worker_init_fn if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(

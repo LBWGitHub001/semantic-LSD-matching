@@ -102,6 +102,34 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("Semantic LSD Matching", html)
         self.assertIn("tab-history", html)
         self.assertIn("tab-train", html)
+        self.assertIn("previewCurrentModel", html)
+        self.assertIn("model-preview-modal", html)
+
+    def test_train_live_html_serving(self) -> None:
+        response = self.fetch("/train_live")
+        self.assertEqual(response.code, 200)
+        html = response.body.decode("utf-8")
+        self.assertIn("实时训练监控", html)
+        self.assertIn("sendBeacon", html)
+
+    def test_review_html_serving(self) -> None:
+        response = self.fetch("/review?run=20261026_145058")
+        self.assertEqual(response.code, 200)
+        html = response.body.decode("utf-8")
+        self.assertIn("实验深度复盘", html)
+        self.assertIn("eval-terminal-logs", html)
+        self.assertIn("gallery-grid-container", html)
+
+    def test_model_preview_endpoint(self) -> None:
+        response = self.fetch("/api/model/preview?model=xfeat_line_matcher&pyramid=true&d_model=128")
+        self.assertEqual(response.code, 200)
+        data = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(data["model_type"], "xfeat_line_matcher")
+        self.assertIn("params_total", data)
+        self.assertIn("input_shapes", data)
+        self.assertIn("pipeline_stages", data)
+        self.assertIn("pytorch_repr", data)
+        self.assertIn("XFeatLineMatcher", data["pytorch_repr"])
 
 
 if __name__ == "__main__":

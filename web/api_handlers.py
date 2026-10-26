@@ -437,6 +437,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
             "tagline": "多模态多尺度直线与目标区域联合对齐网络 (SOTA 79.2%)",
             "params_total": "1,722,081 (约 1.72 M 参数)",
             "trainable_params": "1,722,081",
+            "diagram_url": "/static/img/xfeat_line_matcher_architecture.png",
             "input_shapes": [
                 {"name": "候选目标切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "RGB三通道切片，经过自适应扩边裁剪插值"},
                 {"name": "关联LSD直线 (Associated Lines)", "shape": "(B, M, K, 5)", "desc": "每切片至多K=8根，5D亚像素归一化几何向量"},
@@ -564,7 +565,7 @@ class TrainHandler(BaseApiHandler):
         use_pyramid = body.get("pyramid", True)
         use_amp = body.get("amp", True)
         save_interval = body.get("save_interval", 5)
-        num_workers = body.get("num_workers", 2)
+        num_workers = body.get("num_workers", 4)
         resume = body.get("resume")
 
         cmd = [

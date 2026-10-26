@@ -44,7 +44,7 @@ def extract_region_patch(bgr_img: np.ndarray, mask: np.ndarray, patch_size: int 
     new_w = max(1, min(patch_size, int(round(w_c * scale))))
     new_h = max(1, min(patch_size, int(round(h_c * scale))))
 
-    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
     square = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
     pad_y = (patch_size - new_h) // 2
@@ -138,7 +138,7 @@ def extract_region_patch_from_crop(
     new_w = max(1, min(patch_size, int(round(w_c * scale))))
     new_h = max(1, min(patch_size, int(round(h_c * scale))))
 
-    resized = cv2.resize(crop_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(crop_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
     square = np.zeros((patch_size, patch_size, 3), dtype=np.uint8)
     pad_y = (patch_size - new_h) // 2
