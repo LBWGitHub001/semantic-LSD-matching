@@ -18,9 +18,8 @@ import cv2
 import numpy as np
 import torch
 
-from models.line_matcher.matcher import LineMatcher
-from models.line_matcher.line_transformer import LineMatcherNet
-from models.line_matcher.mask_line_matcher import MaskLineMatcherNet, MaskLineFeatMatchNet
+from models.line_transformer.matcher import LineMatcher
+from models.line_transformer.line_transformer import LineMatcherNet
 
 
 @dataclass
@@ -112,6 +111,7 @@ class LineMatchPipeline:
 
         # Model instantiation
         if self.model_type in ("mask", "masklinefeatmatchnet", "masklinematchernet", "mask_line_matcher"):
+            from models.mask_line_matcher.mask_line_matcher import MaskLineFeatMatchNet
             self.model = MaskLineFeatMatchNet(
                 d_model=d_model,
                 num_layers=num_layers,

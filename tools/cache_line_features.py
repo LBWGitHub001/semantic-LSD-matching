@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.line_dataset import LineFeatPairDataset
-from models.line_matcher.line_transformer import LineMatcherNet
+from models.line_transformer import LineMatcherNet
 
 
 def load_all_scene_matches(gt_dir: Path) -> dict[str, list[dict[str, Any]]]:

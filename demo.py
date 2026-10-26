@@ -26,14 +26,15 @@ if str(ROOT) not in sys.path:
 
 from models import build_model
 from datasets import predict_bipartite_matches, visualize_object_matches
+from evaluation import ModelFactory
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Interactive Matching Demo")
-    parser.add_argument("--model", type=str, default="xfeat_object",
-                        choices=["xfeat_object", "xfeat", "mask_line", "line_transformer"],
+    parser.add_argument("--model", type=str, default="xfeat_line_matcher",
+                        choices=["xfeat_line_matcher", "xfeat_object", "xfeat", "mask_line", "line_transformer"],
                         help="Model architecture name")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/xfeat_object_matcher/best_model.pth",
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/xfeat_line_matcher/latest",
                         help="Checkpoint weights path")
     parser.add_argument("--scene", type=str, default="data/synthetic_object_matching_scenes/scene_0045",
                         help="Path to scene directory")
@@ -79,15 +80,10 @@ def run_object_demo(args: argparse.Namespace) -> None:
     print(f"[*] View {args.v1} Objects: {[o['category'] for o in objs1]}")
     print(f"[*] Checkpoint:     {args.checkpoint}")
 
-    # Model
-    model = build_model(args.model).to(device)
-    try:
-        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    except TypeError:
-        ckpt = torch.load(args.checkpoint, map_location=device)
-    state = ckpt["model_state"] if "model_state" in ckpt else ckpt
-    model.load_state_dict(state)
-    model.eval()
+    # Model: Auto-detect architecture and load weights
+    model, model_info, ckpt_resolved = ModelFactory.create_from_checkpoint(
+        args.checkpoint, device=device, model_type_hint=args.model
+    )
 
     # Normalize RGB
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 3)
@@ -183,7 +179,7 @@ def run_line_demo(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.model in ["xfeat_object", "xfeat"]:
+    if args.model in ["xfeat_object", "xfeat", "object", "xfeat_line_matcher", "xfeat_line", "line_object"]:
         run_object_demo(args)
     else:
         run_line_demo(args)
