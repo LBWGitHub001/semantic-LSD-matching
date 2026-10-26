@@ -5,6 +5,7 @@ Tornado Web Server for Semantic LSD Matching Management System.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,16 @@ def make_app() -> tornado.web.Application:
 def start_server(host: str = "0.0.0.0", port: int = 7860) -> None:
     """Starts the Tornado web server."""
     app = make_app()
-    app.listen(port, address=host)
+    try:
+        app.listen(port, address=host)
+    except OSError as e:
+        if getattr(e, "errno", None) == 98:  # Address already in use
+            print(f"\n[!] 端口冲突错误: 端口 {port} 已被占用 (Address already in use)。")
+            print(f"    • 若已在后台运行服务，请直接在浏览器中访问: http://localhost:{port}")
+            print(f"    • 若需释放端口并重启，可运行: fuser -k {port}/tcp")
+            print(f"    • 若需更换端口启动，可传入参数: python app.py --port <新端口> (例如 7861)\n")
+            sys.exit(1)
+        raise e
     print("\n" + "=" * 70)
     print("   Semantic LSD Matching: Visual Management System (管理系统)  ")
     print("=" * 70)
