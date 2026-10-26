@@ -27,7 +27,7 @@ class DatasetFactory:
         data_dir: Path | str,
         split: str = "test",
         min_area_ratio: float = 0.50,
-        num_workers: int = 4,
+        num_workers: int = 2,
     ) -> Tuple[DataLoader, bool]:
         p_data = Path(data_dir).resolve()
         use_region_ds = False

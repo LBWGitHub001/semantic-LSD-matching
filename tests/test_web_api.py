@@ -38,7 +38,11 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertGreaterEqual(len(data["runs"]), 5)
         first = data["runs"][0]
         self.assertIn("run_name", first)
+        self.assertIn("run_tag", first)
         self.assertIn("model_type", first)
+        self.assertIn("+", first["run_tag"])
+        self.assertIn("【", first["run_tag"])
+        self.assertIn("】", first["run_tag"])
 
     def test_run_detail_endpoint(self) -> None:
         response = self.fetch("/api/runs/20261023_233349")
@@ -96,7 +100,7 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertEqual(response.code, 200)
         html = response.body.decode("utf-8")
         self.assertIn("Semantic LSD Matching", html)
-        self.assertIn("tab-dashboard", html)
+        self.assertIn("tab-history", html)
         self.assertIn("tab-train", html)
 
 

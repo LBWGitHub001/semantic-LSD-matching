@@ -22,6 +22,7 @@ from web.api_handlers import (
     GalleryHandler,
     HistoricalLogsHandler,
     LogsWebSocketHandler,
+    ModelPreviewHandler,
     RunDetailHandler,
     RunsHandler,
     StatusHandler,
@@ -43,6 +44,28 @@ class MainHandler(tornado.web.RequestHandler):
             self.write("<h1>Semantic LSD Matching Management System</h1><p>index.html not found.</p>")
 
 
+class TrainLiveHandler(tornado.web.RequestHandler):
+    """Serves the standalone live training monitor page."""
+
+    def get(self) -> None:
+        html_path = WEB_DIR / "templates" / "train_live.html"
+        if html_path.is_file():
+            self.render(str(html_path))
+        else:
+            self.write("<h1>Training Monitor</h1><p>train_live.html not found.</p>")
+
+
+class ReviewHandler(tornado.web.RequestHandler):
+    """Serves the standalone experiment post-mortem review page."""
+
+    def get(self) -> None:
+        html_path = WEB_DIR / "templates" / "review.html"
+        if html_path.is_file():
+            self.render(str(html_path))
+        else:
+            self.write("<h1>Experiment Review</h1><p>review.html not found.</p>")
+
+
 def make_app() -> tornado.web.Application:
     """Configures and returns the Tornado Application."""
     settings: dict[str, Any] = {
@@ -55,6 +78,8 @@ def make_app() -> tornado.web.Application:
     handlers = [
         # Main UI
         (r"/", MainHandler),
+        (r"/train_live", TrainLiveHandler),
+        (r"/review", ReviewHandler),
 
         # REST APIs
         (r"/api/status", StatusHandler),
@@ -64,6 +89,7 @@ def make_app() -> tornado.web.Application:
         (r"/api/checkpoints", CheckpointsHandler),
         (r"/api/datasets", DatasetsHandler),
         (r"/api/gallery", GalleryHandler),
+        (r"/api/model/preview", ModelPreviewHandler),
         (r"/api/train", TrainHandler),
         (r"/api/eval", EvalHandler),
         (r"/api/dataset", DatasetGenHandler),

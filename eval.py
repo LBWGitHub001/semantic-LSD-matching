@@ -68,8 +68,8 @@ def parse_args() -> argparse.Namespace:
                         help="Optional model override (xfeat_object, xfeat_line_matcher, mask_line, line_transformer)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to run evaluation on")
-    parser.add_argument("--num-workers", type=int, default=4,
-                        help="DataLoader worker count (default: 4)")
+    parser.add_argument("--num-workers", type=int, default=2,
+                        help="DataLoader worker count (default: 2)")
     return parser.parse_args()
 
 

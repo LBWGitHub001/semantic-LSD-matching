@@ -206,24 +206,28 @@ class SemanticRegionDataset(Dataset):
             with open(split_file, "r", encoding="utf-8") as f:
                 raw_pair_ids = json.load(f)
 
-        # Filter pairs by minimum mutually matched area ratio
-        if self.min_area_ratio > 0.0:
-            filtered_ids = []
-            for pid in raw_pair_ids:
-                p_dir = self.root / pid
-                corr_file = p_dir / "correspondence.json"
-                r0_file = p_dir / "regions_0.json"
-                r1_file = p_dir / "regions_1.json"
-                if not (corr_file.is_file() and r0_file.is_file() and r1_file.is_file()):
-                    continue
-                try:
-                    with open(corr_file, "r", encoding="utf-8") as f:
-                        corr = json.load(f)
-                    with open(r0_file, "r", encoding="utf-8") as f:
-                        regs0 = json.load(f)
-                    with open(r1_file, "r", encoding="utf-8") as f:
-                        regs1 = json.load(f)
+        # In-memory metadata cache for parsed JSON/NPZ structures
+        # Avoids repeated disk opens, json parsing, and OS file descriptor pressure across epochs
+        self._meta_cache: dict[str, tuple[list[dict], list[dict], dict, Any]] = {}
 
+        # Filter pairs by minimum mutually matched area ratio
+        filtered_ids = []
+        for pid in raw_pair_ids:
+            p_dir = self.root / pid
+            corr_file = p_dir / "correspondence.json"
+            r0_file = p_dir / "regions_0.json"
+            r1_file = p_dir / "regions_1.json"
+            if not (corr_file.is_file() and r0_file.is_file() and r1_file.is_file()):
+                continue
+            try:
+                with open(corr_file, "r", encoding="utf-8") as f:
+                    corr = json.load(f)
+                with open(r0_file, "r", encoding="utf-8") as f:
+                    regs0 = json.load(f)
+                with open(r1_file, "r", encoding="utf-8") as f:
+                    regs1 = json.load(f)
+
+                if self.min_area_ratio > 0.0:
                     area0_map = {r["idx"]: r.get("pixel_area", 0) for r in regs0}
                     area1_map = {r["idx"]: r.get("pixel_area", 0) for r in regs1}
                     tot0 = sum(area0_map.values())
@@ -234,14 +238,19 @@ class SemanticRegionDataset(Dataset):
                     m1 = sum(area1_map.get(m["mask1_idx"], 0) for m in corr["matches"])
                     ratio0 = m0 / tot0
                     ratio1 = m1 / tot1
-                    if min(ratio0, ratio1) >= self.min_area_ratio:
-                        filtered_ids.append(pid)
-                except Exception:
-                    continue
-            self.pair_ids = filtered_ids
+                    if min(ratio0, ratio1) < self.min_area_ratio:
+                        continue
+
+                filtered_ids.append(pid)
+                # Store parsed metadata directly in shared memory cache
+                self._meta_cache[pid] = (regs0, regs1, corr, None)
+            except Exception:
+                continue
+
+        self.pair_ids = filtered_ids
+        if self.min_area_ratio > 0.0:
             print(f"[*] SemanticRegionDataset ({split}): Filtered {len(self.pair_ids)}/{len(raw_pair_ids)} pairs with matched area ratio >= {self.min_area_ratio*100:.0f}%.")
         else:
-            self.pair_ids = raw_pair_ids
             print(f"[*] SemanticRegionDataset ({split}): Loaded {len(self.pair_ids)} cross-view region pairs.")
 
     def __len__(self) -> int:
@@ -260,27 +269,37 @@ class SemanticRegionDataset(Dataset):
             if bgr0 is not None:
                 H, W = bgr0.shape[:2]
 
-        # 2. Load Region Metadata
-        with open(p_dir / "regions_0.json", "r", encoding="utf-8") as f:
-            regs0 = json.load(f)
-        with open(p_dir / "regions_1.json", "r", encoding="utf-8") as f:
-            regs1 = json.load(f)
+        # 2. Retrieve In-Memory Metadata (regions & correspondence)
+        if pair_id in self._meta_cache:
+            regs0, regs1, corr, cached_lines = self._meta_cache[pair_id]
+        else:
+            with open(p_dir / "regions_0.json", "r", encoding="utf-8") as f:
+                regs0 = json.load(f)
+            with open(p_dir / "regions_1.json", "r", encoding="utf-8") as f:
+                regs1 = json.load(f)
+            with open(p_dir / "correspondence.json", "r", encoding="utf-8") as f:
+                corr = json.load(f)
+            cached_lines = None
+            self._meta_cache[pair_id] = (regs0, regs1, corr, cached_lines)
 
         # Check line cache if load_lines is True
         cache_file = p_dir / "patch_lines.npz"
         has_line_cache = False
-        cached_lines = None
-        if self.load_lines and cache_file.is_file():
-            try:
-                npz = np.load(cache_file)
-                t_patch_lines0 = torch.from_numpy(npz["lines0"])
-                t_line_mask0 = torch.from_numpy(npz["mask0"])
-                t_patch_lines1 = torch.from_numpy(npz["lines1"])
-                t_line_mask1 = torch.from_numpy(npz["mask1"])
-                cached_lines = (t_patch_lines0, t_line_mask0, t_patch_lines1, t_line_mask1)
+        if self.load_lines:
+            if cached_lines is not None:
                 has_line_cache = True
-            except Exception:
-                has_line_cache = False
+            elif cache_file.is_file():
+                try:
+                    npz = np.load(cache_file)
+                    t_patch_lines0 = torch.from_numpy(npz["lines0"])
+                    t_line_mask0 = torch.from_numpy(npz["mask0"])
+                    t_patch_lines1 = torch.from_numpy(npz["lines1"])
+                    t_line_mask1 = torch.from_numpy(npz["mask1"])
+                    cached_lines = (t_patch_lines0, t_line_mask0, t_patch_lines1, t_line_mask1)
+                    has_line_cache = True
+                    self._meta_cache[pair_id] = (regs0, regs1, corr, cached_lines)
+                except Exception:
+                    has_line_cache = False
 
         # 3. Extract Small Region Patches (112x112) directly from small crops
         masks0_list = []
@@ -353,10 +372,7 @@ class SemanticRegionDataset(Dataset):
                 patch_lines1_list.append(lines_5d)
                 line_mask1_list.append(l_mask)
 
-        # 4. Load Correspondence Ground Truth
-        with open(p_dir / "correspondence.json", "r", encoding="utf-8") as f:
-            corr = json.load(f)
-
+        # 4. Correspondence Ground Truth (loaded from metadata cache)
         gt_matches = [(m["mask0_idx"], m["mask1_idx"]) for m in corr["matches"]]
         unmatched_0 = corr.get("unmatched_in_view0", [])
         unmatched_1 = corr.get("unmatched_in_view1", [])
@@ -399,12 +415,17 @@ class SemanticRegionDataset(Dataset):
 
         if self.load_lines:
             if has_line_cache and cached_lines is not None:
-                t_patch_lines0, t_line_mask0, t_patch_lines1, t_line_mask1 = cached_lines
+                t_patch_lines0 = cached_lines[0].clone()
+                t_line_mask0 = cached_lines[1].clone()
+                t_patch_lines1 = cached_lines[2].clone()
+                t_line_mask1 = cached_lines[3].clone()
             else:
                 t_patch_lines0 = torch.from_numpy(np.stack(patch_lines0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
                 t_line_mask0 = torch.from_numpy(np.stack(line_mask0_list, axis=0)) if M0 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
                 t_patch_lines1 = torch.from_numpy(np.stack(patch_lines1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch, 5), dtype=torch.float32)
                 t_line_mask1 = torch.from_numpy(np.stack(line_mask1_list, axis=0)) if M1 > 0 else torch.zeros((0, self.max_lines_per_patch), dtype=torch.bool)
+                cached_lines = (t_patch_lines0, t_line_mask0, t_patch_lines1, t_line_mask1)
+                self._meta_cache[pair_id] = (regs0, regs1, corr, cached_lines)
                 try:
                     np.savez_compressed(
                         cache_file,

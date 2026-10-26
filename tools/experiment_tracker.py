@@ -37,7 +37,9 @@ class DualStreamTee:
         clean_msg = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", message)
         # Replace carriage return \r with newline if followed by fresh content
         self.log_file.write(clean_msg)
-        self.log_file.flush()
+        # Only flush to disk upon complete line to avoid blocking training loops with synchronous I/O
+        if "\n" in message:
+            self.log_file.flush()
 
     def flush(self) -> None:
         self.target_stream.flush()

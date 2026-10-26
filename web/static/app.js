@@ -4,7 +4,9 @@
  */
 
 // Global State
-let currentTab = "dashboard";
+let currentTab = "history";
+let currentSelectedRun = null;
+let currentRunDetails = null;
 let socket = null;
 let autoScroll = true;
 let allRuns = [];
@@ -21,12 +23,11 @@ document.addEventListener("DOMContentLoaded", () => {
   loadDashboard();
   loadDatasets();
   loadCheckpoints();
-  loadGallery();
   initModelDocs();
 });
 
 // -------------------------------------------------------------
-// Tabs Navigation
+// Tabs Navigation (Top Level)
 // -------------------------------------------------------------
 function initTabs() {
   const tabs = document.querySelectorAll(".tab-btn");
@@ -40,12 +41,19 @@ function initTabs() {
       document.querySelectorAll(".tab-pane").forEach(pane => {
         pane.classList.remove("active");
       });
-      document.getElementById(`tab-${target}`).classList.add("active");
+      const targetPane = document.getElementById(`tab-${target}`);
+      if (targetPane) targetPane.classList.add("active");
 
       // Tab specific refresh
-      if (target === "dashboard") loadDashboard();
-      if (target === "gallery") loadGallery();
-      if (target === "eval") loadCheckpoints();
+      if (target === "history") {
+        const detailView = document.getElementById("history-detail-view");
+        const listView = document.getElementById("history-list-view");
+        if (detailView) detailView.style.display = "none";
+        if (listView) listView.style.display = "block";
+        loadDashboard();
+      } else if (target === "train") {
+        loadDatasets();
+      }
     });
   });
 }
@@ -80,6 +88,10 @@ function initWebSocket() {
     } catch (e) {
       console.error("[WS] Parse error:", e);
     }
+  };
+
+  socket.onerror = (err) => {
+    console.warn("[WS] Socket error:", err);
   };
 
   socket.onclose = () => {
@@ -313,20 +325,20 @@ function updateStatusUI(status) {
   const gpuBadge = document.getElementById("gpu-badge");
 
   if (status.is_busy && status.active_task) {
-    dot.className = "dot dot-busy";
-    text.innerText = `运行中: ${status.active_task.task_type} (${status.active_task.task_id})`;
+    if (dot) dot.className = "dot dot-busy";
+    if (text) text.innerText = `运行中: ${status.active_task.task_type} (${status.active_task.task_id})`;
   } else {
-    dot.className = "dot dot-idle";
-    text.innerText = "系统空闲 (Ready)";
+    if (dot) dot.className = "dot dot-idle";
+    if (text) text.innerText = "系统空闲 (Ready)";
   }
 
   const res = status.resources || {};
   const gpu = (res.gpu && res.gpu.available) ? res.gpu : status.gpu;
 
   if (gpu && gpu.available) {
-    gpuBadge.innerText = `GPU: ${gpu.memory_used_mb}MB / ${gpu.memory_total_mb}MB (${gpu.memory_pct}%) | ${gpu.temperature_c}°C`;
+    if (gpuBadge) gpuBadge.innerText = `GPU: ${gpu.memory_used_mb}MB / ${gpu.memory_total_mb}MB (${gpu.memory_pct}%) | ${gpu.temperature_c}°C`;
   } else {
-    gpuBadge.innerText = "CPU 模式";
+    if (gpuBadge) gpuBadge.innerText = "CPU 模式";
   }
 
   // Update Right-side Hardware Resource Monitor
@@ -394,7 +406,7 @@ function updateStatusUI(status) {
 }
 
 // -------------------------------------------------------------
-// Tab 1: Dashboard & Runs
+// Tab 1: 实验历史数据 & 实验复盘看板
 // -------------------------------------------------------------
 async function loadDashboard() {
   try {
@@ -403,7 +415,8 @@ async function loadDashboard() {
     allRuns = data.runs || [];
 
     // Summary Cards
-    document.getElementById("stat-total-runs").innerText = allRuns.length;
+    const statTotalEl = document.getElementById("stat-total-runs");
+    if (statTotalEl) statTotalEl.innerText = allRuns.length;
 
     let bestRaw = 0;
     let bestSem = 0;
@@ -411,11 +424,14 @@ async function loadDashboard() {
       if (r.test_raw_f1 && r.test_raw_f1 > bestRaw) bestRaw = r.test_raw_f1;
       if (r.test_sem_f1 && r.test_sem_f1 > bestSem) bestSem = r.test_sem_f1;
     });
-    document.getElementById("stat-best-raw-f1").innerText = bestRaw ? `${bestRaw.toFixed(1)}%` : "-";
-    document.getElementById("stat-best-sem-f1").innerText = bestSem ? `${bestSem.toFixed(1)}%` : "-";
+    const bestRawEl = document.getElementById("stat-best-raw-f1");
+    const bestSemEl = document.getElementById("stat-best-sem-f1");
+    if (bestRawEl) bestRawEl.innerText = bestRaw ? `${bestRaw.toFixed(1)}%` : "-";
+    if (bestSemEl) bestSemEl.innerText = bestSem ? `${bestSem.toFixed(1)}%` : "-";
 
     // Table rows
     const tbody = document.getElementById("runs-table-body");
+    if (!tbody) return;
     tbody.innerHTML = "";
 
     // Update log source select dropdown in terminal
@@ -424,7 +440,8 @@ async function loadDashboard() {
       const cur = logSelect.value;
       logSelect.innerHTML = `<option value="live">实时任务输出 (Live)</option>`;
       allRuns.forEach(r => {
-        logSelect.innerHTML += `<option value="${r.run_name}">历史日志: ${r.run_name} (${r.model_type})</option>`;
+        const tagText = r.run_tag || r.run_name;
+        logSelect.innerHTML += `<option value="${r.run_name}">历史日志: ${tagText}</option>`;
       });
       if (cur) logSelect.value = cur;
     }
@@ -434,25 +451,36 @@ async function loadDashboard() {
       const bestF1Str = r.val_f1 ? `${r.val_f1.toFixed(1)}% (Ep ${r.best_epoch})` : "-";
       const rawF1Str = r.test_raw_f1 ? `<b style="color:#60A5FA;">${r.test_raw_f1.toFixed(1)}%</b>` : "-";
       const semF1Str = r.test_sem_f1 ? `<b style="color:#34D399;">${r.test_sem_f1.toFixed(1)}%</b>` : "-";
+      const displayTag = r.run_tag || r.run_name;
 
       tr.innerHTML = `
         <td><input type="checkbox" class="run-select-box" value="${r.run_name}" onchange="updateCompareBtn()"></td>
-        <td><b>${r.run_name}</b></td>
+        <td style="max-width: 440px;">
+          <div class="run-tag-pill" title="${displayTag}">${displayTag}</div>
+        </td>
         <td><span class="badge badge-purple">${r.model_type}</span></td>
-        <td>${r.start_time}</td>
+        <td style="color: #9CA3AF; font-size: 13px;">${r.start_time}</td>
         <td>${r.epochs}</td>
         <td>${bestF1Str}</td>
         <td>${rawF1Str}</td>
         <td>${semF1Str}</td>
         <td>
-          <button class="btn btn-secondary btn-sm" onclick="viewRunDetails('${r.run_name}')">复盘报告</button>
+          <button class="btn btn-primary btn-sm" onclick="openReviewTab('${r.run_name}')">新标签页打开复盘 ↗</button>
         </td>
       `;
       tbody.appendChild(tr);
     });
+
+    if (allRuns.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:#9CA3AF; padding: 24px;">暂无历史实验记录，请前往【启动新的训练】开始第一次实验！</td></tr>`;
+    }
     updateCompareBtn();
   } catch (e) {
     console.error("Failed to load runs:", e);
+    const tbody = document.getElementById("runs-table-body");
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:#EF4444; padding: 24px;">加载历史实验失败: ${e.message || e}</td></tr>`;
+    }
   }
 }
 
@@ -470,7 +498,7 @@ async function compareSelectedRuns() {
   if (selected.length !== 2) return;
 
   try {
-    const res = await fetch(`/api/runs/compare?run1=${selected[0]}&run2=${selected[1]}`);
+    const res = await fetch(`/api/runs/compare?run1=${encodeURIComponent(selected[0])}&run2=${encodeURIComponent(selected[1])}`);
     const data = await res.json();
     if (data.error) {
       alert(data.message);
@@ -506,39 +534,197 @@ async function compareSelectedRuns() {
   }
 }
 
-async function viewRunDetails(runName) {
+// -------------------------------------------------------------
+// Selected Run Review Workspace (二级复盘与评测工作台)
+// -------------------------------------------------------------
+async function openRunDetailWorkspace(runName) {
+  currentSelectedRun = runName;
   try {
-    const res = await fetch(`/api/runs/${runName}`);
+    const res = await fetch(`/api/runs/${encodeURIComponent(runName)}`);
     const data = await res.json();
     if (data.error) {
-      alert(data.message);
+      alert(`无法加载实验详情: ${data.message}`);
       return;
     }
+    currentRunDetails = data;
 
-    const modal = document.getElementById("run-modal");
-    document.getElementById("run-modal-title").innerText = `实验复盘详情: ${data.run_name} (${data.model_type})`;
+    // Header & Tag
+    const tagTitle = document.getElementById("detail-run-tag");
+    if (tagTitle) tagTitle.innerText = data.run_tag || data.run_name;
 
-    // Render report markdown (simple parser)
-    const reportContainer = document.getElementById("run-report-container");
-    if (data.report_markdown) {
-      reportContainer.innerHTML = simpleMarkdownRender(data.report_markdown);
-    } else {
-      reportContainer.innerHTML = "<p style='color:#9CA3AF;'>该次实验尚未生成 report.md 复盘报告。</p>";
+    const statusPill = document.getElementById("detail-status-pill");
+    const isDone = data.config && data.config.test_benchmark != null;
+    if (statusPill) {
+      statusPill.innerText = isDone ? "Done ★ 已完成" : "Recorded 已记录";
+      statusPill.className = isDone ? "badge badge-success" : "badge badge-blue";
     }
 
-    // Curves image
-    const curveImg = document.getElementById("run-curves-img");
+    // Badges
+    const modelBadge = document.getElementById("detail-badge-model");
+    if (modelBadge) modelBadge.innerText = `架构: ${data.model_type}`;
+
+    const epochsBadge = document.getElementById("detail-badge-epochs");
+    const hparams = data.config?.hyperparameters || {};
+    if (epochsBadge) epochsBadge.innerText = `轮数: ${hparams.epochs || data.history?.length || "-"} 轮`;
+
+    const bestVal = data.config?.best_validation || {};
+    const valBadge = document.getElementById("detail-badge-val");
+    if (valBadge) valBadge.innerText = `最佳验证 F1: ${bestVal.f1 ? bestVal.f1.toFixed(1) + "%" : "-"}`;
+
+    const testBench = data.config?.test_benchmark || {};
+    const rawF1 = testBench.raw_visual?.f1;
+    const semF1 = testBench.semantic_constrained?.f1;
+    const rawBadge = document.getElementById("detail-badge-raw");
+    if (rawBadge) rawBadge.innerText = `盲测 Raw F1: ${rawF1 ? rawF1.toFixed(1) + "%" : "-"}`;
+    const semBadge = document.getElementById("detail-badge-sem");
+    if (semBadge) semBadge.innerText = `语义约束 F1: ${semF1 ? semF1.toFixed(1) + "%" : "-"}`;
+
+    const dirBadge = document.getElementById("detail-badge-dir");
+    if (dirBadge) {
+      const relDir = data.run_dir.includes("checkpoints/") ? data.run_dir.split("checkpoints/")[1] : data.run_dir;
+      dirBadge.innerText = `目录: ${relDir}`;
+    }
+
+    // Subpane 1: Curves & Report
+    const curvesImg = document.getElementById("detail-curves-img");
+    const noCurves = document.getElementById("detail-no-curves");
     if (data.curves_url) {
-      curveImg.src = data.curves_url;
-      curveImg.style.display = "block";
+      if (curvesImg) {
+        curvesImg.src = data.curves_url;
+        curvesImg.style.display = "block";
+      }
+      if (noCurves) noCurves.style.display = "none";
     } else {
-      curveImg.style.display = "none";
+      if (curvesImg) curvesImg.style.display = "none";
+      if (noCurves) noCurves.style.display = "block";
     }
 
-    modal.style.display = "flex";
+    const reportContainer = document.getElementById("detail-report-container");
+    if (reportContainer) {
+      if (data.report_markdown) {
+        reportContainer.innerHTML = simpleMarkdownRender(data.report_markdown);
+      } else {
+        reportContainer.innerHTML = "<p style='color:#9CA3AF;'>该实验目录尚未生成 report.md 分析报告文件。</p>";
+      }
+    }
+
+    // Checkpoints in this run
+    const ckptList = document.getElementById("detail-checkpoints-list");
+    if (ckptList) {
+      ckptList.innerHTML = "";
+      if (data.checkpoints && data.checkpoints.length > 0) {
+        data.checkpoints.forEach(c => {
+          const star = c.is_best ? "★ 最佳模型 " : "";
+          const badgeClass = c.is_best ? "badge badge-success" : "badge badge-blue";
+          ckptList.innerHTML += `
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#1F2937; padding:8px 12px; border-radius:6px; border:1px solid #374151;">
+              <div>
+                <b style="color:#F3F4F6; font-size:13px;">${c.name}</b>
+                <span class="${badgeClass}" style="margin-left:8px; font-size:11px;">${star}${c.size_mb} MB</span>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="setEvalCheckpoint('${c.rel_path}')">选中评测</button>
+            </div>
+          `;
+        });
+      } else {
+        ckptList.innerHTML = "<span style='color:#9CA3AF;'>暂无权重文件</span>";
+      }
+    }
+
+    // Subpane 2: Setup evaluation with current run's best_model
+    const bestCkpt = data.checkpoints?.find(c => c.is_best) || data.checkpoints?.[0];
+    const bestPath = bestCkpt ? bestCkpt.rel_path : (data.config?.checkpoints?.best_checkpoint || "");
+    await loadCheckpoints(bestPath);
+
+    // Set dataset in eval if available
+    const dsDir = data.config?.dataset?.dataset_dir || data.config?.hyperparameters?.all_cli_args?.data_dir;
+    if (dsDir) {
+      const evalDataSelect = document.getElementById("eval-data-dir");
+      if (evalDataSelect) {
+        const dsName = dsDir.split("/").pop();
+        for (let i = 0; i < evalDataSelect.options.length; i++) {
+          if (evalDataSelect.options[i].value.includes(dsName)) {
+            evalDataSelect.selectedIndex = i;
+            break;
+          }
+        }
+      }
+    }
+
+    // Subpane 3: Gallery
+    await loadGallery(runName);
+
+    // Switch view
+    document.getElementById("history-list-view").style.display = "none";
+    document.getElementById("history-detail-view").style.display = "block";
+    switchDetailSubTab("report");
+
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (e) {
-    console.error("Fetch run detail error:", e);
+    console.error("Open run workspace error:", e);
+    alert(`加载实验详情异常: ${e}`);
   }
+}
+
+function backToHistoryList() {
+  document.getElementById("history-detail-view").style.display = "none";
+  document.getElementById("history-list-view").style.display = "block";
+  loadDashboard();
+}
+
+function switchDetailSubTab(subtab) {
+  document.querySelectorAll(".sub-tab-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.subtab === subtab);
+  });
+  document.querySelectorAll(".sub-tab-pane").forEach(pane => {
+    pane.classList.toggle("active", pane.id === `subpane-${subtab}`);
+  });
+  if (subtab === "gallery" && currentSelectedRun) {
+    loadGallery(currentSelectedRun);
+  }
+}
+
+function reloadCurrentRunGallery() {
+  if (currentSelectedRun) {
+    loadGallery(currentSelectedRun);
+  } else {
+    loadGallery();
+  }
+}
+
+function openCurvesModal() {
+  const modal = document.getElementById("curves-modal");
+  const curvesImg = document.getElementById("detail-curves-img");
+  const modalImg = document.getElementById("curves-modal-img");
+  if (modal && curvesImg && modalImg) {
+    modalImg.src = curvesImg.src;
+    modal.style.display = "flex";
+  }
+}
+
+function setEvalCheckpoint(relPath) {
+  const select = document.getElementById("eval-checkpoint");
+  if (select) {
+    for (let i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === relPath || select.options[i].value.endsWith(relPath)) {
+        select.selectedIndex = i;
+        break;
+      }
+    }
+  }
+  switchDetailSubTab("eval");
+}
+
+function toggleDatasetFactory() {
+  const body = document.getElementById("dataset-factory-body");
+  if (body) {
+    body.style.display = body.style.display === "none" ? "block" : "none";
+  }
+}
+
+async function viewRunDetails(runName) {
+  openRunDetailWorkspace(runName);
 }
 
 function simpleMarkdownRender(md) {
@@ -663,7 +849,9 @@ async function startTraining() {
       alert(`启动失败: ${result.message}`);
       appendTerminalLine(`\n[!] 启动失败: ${result.message}\n`);
     } else {
-      appendTerminalLine(`\n[✓] 训练子进程成功启动! PID: ${result.task.pid}\n[*] 实时输出监听中...\n`);
+      appendTerminalLine(`\n[✓] 训练子进程成功启动! PID: ${result.task.pid}\n[*] 实时输出监听中...\n[*] 正在为您在新标签页中打开实时监控工作台...\n`);
+      // Open standalone live training monitor in a new browser tab
+      window.open("/train_live", "_blank");
     }
   } catch (e) {
     alert(`网络请求异常: ${e}`);
@@ -690,7 +878,7 @@ async function stopTraining() {
 // -------------------------------------------------------------
 // Tab 3: Evaluation Benchmark Controls
 // -------------------------------------------------------------
-async function loadCheckpoints() {
+async function loadCheckpoints(selectedRunCkpt = null) {
   try {
     const res = await fetch("/api/checkpoints");
     const data = await res.json();
@@ -700,8 +888,18 @@ async function loadCheckpoints() {
     select.innerHTML = "";
     (data.checkpoints || []).forEach(c => {
       const star = c.is_best ? "★ " : "";
-      select.innerHTML += `<option value="${c.rel_path}">${star}${c.folder}/${c.name} (${c.size_mb} MB)</option>`;
+      const isSel = selectedRunCkpt && (c.rel_path === selectedRunCkpt || c.path === selectedRunCkpt || c.name === selectedRunCkpt);
+      select.innerHTML += `<option value="${c.rel_path}" ${isSel ? "selected" : ""}>${star}${c.folder}/${c.name} (${c.size_mb} MB)</option>`;
     });
+
+    if (selectedRunCkpt) {
+      for (let i = 0; i < select.options.length; i++) {
+        if (select.options[i].value.includes(selectedRunCkpt) || select.options[i].text.includes(selectedRunCkpt)) {
+          select.selectedIndex = i;
+          break;
+        }
+      }
+    }
   } catch (e) {
     console.error("Failed to load checkpoints:", e);
   }
@@ -714,7 +912,7 @@ async function startEvaluation() {
   const min_area_ratio = parseFloat(document.getElementById("eval-area-ratio").value);
   const num_vis = parseInt(document.getElementById("eval-num-vis").value);
 
-  const btnEval = document.querySelector("#tab-eval .btn-primary");
+  const btnEval = document.querySelector("#subpane-eval .btn-primary");
   if (btnEval) {
     btnEval.innerText = "⏳ 评测中...";
     btnEval.disabled = true;
@@ -755,15 +953,17 @@ async function startEvaluation() {
 }
 
 // -------------------------------------------------------------
-// Tab 4: Results Visualization Gallery
+// Subpane 3: Results Visualization Gallery
 // -------------------------------------------------------------
-async function loadGallery() {
+async function loadGallery(runName = null) {
   try {
-    const res = await fetch("/api/gallery");
+    const url = runName ? `/api/gallery?run=${encodeURIComponent(runName)}` : "/api/gallery";
+    const res = await fetch(url);
     const data = await res.json();
     allGalleryImages = data.images || [];
 
-    document.getElementById("gallery-count").innerText = `${allGalleryImages.length} 张样本图`;
+    const countEl = document.getElementById("gallery-count");
+    if (countEl) countEl.innerText = `${allGalleryImages.length} 张样本图`;
 
     renderGalleryGrid(allGalleryImages);
   } catch (e) {
@@ -776,6 +976,17 @@ function renderGalleryGrid(images) {
   if (!grid) return;
   grid.innerHTML = "";
 
+  if (images.length === 0) {
+    grid.innerHTML = `
+      <div style="grid-column: 1 / -1; padding: 48px; text-align: center; background: rgba(31, 41, 55, 0.4); border-radius: 8px; border: 1px dashed #374151;">
+        <div style="font-size: 32px; margin-bottom: 12px;">🖼️</div>
+        <div style="color: #9CA3AF; font-size: 14px; margin-bottom: 16px;">当前实验尚未生成匹配样张</div>
+        <button class="btn btn-primary btn-sm" onclick="switchDetailSubTab('eval')">前往【评测基准】一键运行评测并生成样张 ▶</button>
+      </div>
+    `;
+    return;
+  }
+
   images.forEach((img, idx) => {
     const card = document.createElement("div");
     card.className = "gallery-card";
@@ -786,7 +997,7 @@ function renderGalleryGrid(images) {
         <div class="gallery-name" title="${img.name}">${img.name}</div>
         <div class="gallery-meta">
           <span>${img.size_kb} KB</span>
-          <span style="color:#60A5FA;">点击查看高清大图</span>
+          <span style="color:#60A5FA;">点击查看大图</span>
         </div>
       </div>
     `;
@@ -1185,18 +1396,25 @@ function selectArchStage(idx) {
 }
 
 function updateCalculator() {
-  const d_model = parseInt(document.getElementById("calc-dmodel").value) || 128;
-  const num_layers = parseInt(document.getElementById("calc-layers").value) || 2;
-  const nhead = parseInt(document.getElementById("calc-nhead").value) || 4;
-  const patches = parseInt(document.getElementById("calc-patches").value) || 24;
-  const lines = parseInt(document.getElementById("calc-lines").value) || 8;
+  const dmodelEl = document.getElementById("calc-dmodel");
+  if (!dmodelEl) return;
+  const d_model = parseInt(dmodelEl.value) || 128;
+  const num_layers = parseInt(document.getElementById("calc-layers")?.value) || 2;
+  const nhead = parseInt(document.getElementById("calc-nhead")?.value) || 4;
+  const patches = parseInt(document.getElementById("calc-patches")?.value) || 24;
+  const lines = parseInt(document.getElementById("calc-lines")?.value) || 8;
 
   // Update slider value labels
-  document.getElementById("calc-lbl-dmodel").innerText = `${d_model}`;
-  document.getElementById("calc-lbl-layers").innerText = `${num_layers} 层`;
-  document.getElementById("calc-lbl-nhead").innerText = `${nhead} Heads`;
-  document.getElementById("calc-lbl-patches").innerText = `${patches} 个`;
-  document.getElementById("calc-lbl-lines").innerText = `${lines} 根`;
+  const lblDmodel = document.getElementById("calc-lbl-dmodel");
+  if (lblDmodel) lblDmodel.innerText = `${d_model}`;
+  const lblLayers = document.getElementById("calc-lbl-layers");
+  if (lblLayers) lblLayers.innerText = `${num_layers} 层`;
+  const lblNhead = document.getElementById("calc-lbl-nhead");
+  if (lblNhead) lblNhead.innerText = `${nhead} Heads`;
+  const lblPatches = document.getElementById("calc-lbl-patches");
+  if (lblPatches) lblPatches.innerText = `${patches} 个`;
+  const lblLines = document.getElementById("calc-lbl-lines");
+  if (lblLines) lblLines.innerText = `${lines} 根`;
 
   // Theoretical param computation
   // Backbone: ~1.08M (XFeat 5-stage Conv + FPN lateral layers)
@@ -1234,10 +1452,14 @@ function updateCalculator() {
   const latency_ms = 10 + (patches * 0.35) + (num_layers * 1.5) + (d_model * 0.02);
   const est_fps = Math.round(1000.0 / latency_ms);
 
-  document.getElementById("calc-out-params").innerText = `${total_params_m} M`;
-  document.getElementById("calc-out-flops").innerText = `${total_flops} G`;
-  document.getElementById("calc-out-train-vram").innerText = `${train_vram_gb} GB`;
-  document.getElementById("calc-out-fps").innerText = `${est_fps} FPS`;
+  const outParams = document.getElementById("calc-out-params");
+  if (outParams) outParams.innerText = `${total_params_m} M`;
+  const outFlops = document.getElementById("calc-out-flops");
+  if (outFlops) outFlops.innerText = `${total_flops} G`;
+  const outVram = document.getElementById("calc-out-train-vram");
+  if (outVram) outVram.innerText = `${train_vram_gb} GB`;
+  const outFps = document.getElementById("calc-out-fps");
+  if (outFps) outFps.innerText = `${est_fps} FPS`;
 
   const recEl = document.getElementById("calc-out-recommendation");
   if (recEl) {

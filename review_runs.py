@@ -31,6 +31,54 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def format_run_tag(cfg: dict[str, Any], run_dir: Path | str) -> str:
+    """Formats an experiment identifier as: 模型+网络结构可选项或结构超参数+数据集+【时间戳】."""
+    p = Path(run_dir)
+    run_dir_name = p.name
+    if "+" in run_dir_name and "【" in run_dir_name and "】" in run_dir_name:
+        return run_dir_name
+
+    model_cfg = cfg.get("model", {})
+    hp_cfg = cfg.get("hyperparameters", {})
+    cli_args = hp_cfg.get("all_cli_args", {})
+    ds_cfg = cfg.get("dataset", {})
+    exp_cfg = cfg.get("experiment_info", {})
+
+    # 1. Model
+    model = model_cfg.get("model_type") or p.parent.name
+
+    # 2. Network architecture options or structural hyperparameters
+    use_pyr = model_cfg.get("use_pyramid")
+    if use_pyr is None:
+        use_pyr = cli_args.get("use_pyramid", True)
+    d_model = model_cfg.get("d_model") or cli_args.get("d_model", 128)
+
+    arch_parts = []
+    if use_pyr is True:
+        arch_parts.append("pyramid")
+    elif use_pyr is False:
+        arch_parts.append("no_pyramid")
+    if d_model:
+        arch_parts.append(f"d{d_model}")
+    arch_str = "_".join(arch_parts) if arch_parts else "default"
+
+    # 3. Dataset
+    ds_dir = ds_cfg.get("dataset_dir") or cli_args.get("data_dir") or ""
+    ds_name = Path(ds_dir).name if ds_dir else "dataset"
+
+    # 4. Timestamp
+    import re
+    match = re.search(r"(\d{8}_\d{6})", run_dir_name)
+    if match:
+        ts = match.group(1)
+    else:
+        st = exp_cfg.get("start_time", "")
+        clean_st = re.sub(r"[^\d]", "", st)
+        ts = f"{clean_st[:8]}_{clean_st[8:14]}" if len(clean_st) >= 14 else run_dir_name
+
+    return f"{model}+{arch_str}+{ds_name}+【{ts}】"
+
+
 def find_all_runs(ckpt_root: Path | str = "checkpoints") -> list[dict[str, Any]]:
     """Recursively scans checkpoints directory for runs with config.json."""
     p_root = Path(ckpt_root).resolve()
@@ -86,8 +134,11 @@ def find_all_runs(ckpt_root: Path | str = "checkpoints") -> list[dict[str, Any]]
         has_best = (run_dir / "best_model.pth").is_file()
         is_completed = (test_bench is not None) or (exp_info.get("end_time") is not None)
 
+        run_tag = format_run_tag(cfg, run_dir)
+
         runs.append({
             "run_name": exp_info.get("run_name", run_dir.name),
+            "run_tag": run_tag,
             "model_type": model_info.get("model_type", run_dir.parent.name),
             "start_time": exp_info.get("start_time", "N/A"),
             "end_time": exp_info.get("end_time", None),
@@ -115,20 +166,19 @@ def print_dashboard(runs: list[dict[str, Any]]) -> None:
         print("\n[!] No training runs with config.json found in checkpoints directory.")
         return
 
-    print("\n" + "=" * 118)
-    print("                              EXPERIMENT RUNS DASHBOARD & HISTORICAL REVIEW                              ")
-    print("=" * 118)
+    print("\n" + "=" * 148)
+    print("                                      EXPERIMENT RUNS DASHBOARD & HISTORICAL REVIEW                                      ")
+    print("=" * 148)
     header = (
-        f" {'Run Name':<16} | {'Model':<18} | {'Start Time':<16} | {'Epochs':<6} | "
-        f"{'Best Ep':<7} | {'Val F1':<7} | {'Test Raw':<8} | {'Test Sem':<8} | {'Status':<6}"
+        f" {'Experiment Tag (模型+网络结构+数据集+【时间戳】)':<68} | {'Model':<18} | "
+        f"{'Epochs':<6} | {'Best Ep':<7} | {'Val F1':<7} | {'Test Raw':<8} | {'Test Sem':<8} | {'Status':<6}"
     )
     print(header)
-    print("-" * 118)
+    print("-" * 148)
 
     for r in runs:
-        r_name = r["run_name"][:16]
+        tag = r.get("run_tag", r["run_name"])[:68]
         m_type = r["model_type"][:18]
-        s_time = r["start_time"][:16] if r["start_time"] != "N/A" else "N/A"
         eps = str(r["epochs"])[:6]
         b_ep = str(r["best_epoch"])[:7]
         v_f1 = f"{r['best_val_f1']:.1f}%" if r["best_val_f1"] is not None else "-"
@@ -139,12 +189,12 @@ def print_dashboard(runs: list[dict[str, Any]]) -> None:
             status = "Done ★"
 
         print(
-            f" {r_name:<16} | {m_type:<18} | {s_time:<16} | {eps:<6} | "
+            f" {tag:<68} | {m_type:<18} | {eps:<6} | "
             f"{b_ep:<7} | {v_f1:<7} | {t_raw:<8} | {t_sem:<8} | {status:<6}"
         )
 
-    print("=" * 118)
-    print(f"Total Runs Found: {len(runs)} | Use `python review_runs.py --run <run_name>` for deep-dive analysis.\n")
+    print("=" * 148)
+    print(f"Total Runs Found: {len(runs)} | Use `python review_runs.py --run <run_tag>` for deep-dive analysis.\n")
 
 
 def print_run_details(run: dict[str, Any]) -> None:
@@ -348,7 +398,7 @@ def main() -> None:
         target = args.run
         matched = None
         for r in all_runs:
-            if r["run_name"] == target or target in str(r["run_dir"]):
+            if r["run_name"] == target or r.get("run_tag") == target or target in str(r["run_dir"]) or target in r.get("run_tag", ""):
                 matched = r
                 break
         if matched:
@@ -359,7 +409,7 @@ def main() -> None:
         target = args.plot
         matched = None
         for r in all_runs:
-            if r["run_name"] == target or target in str(r["run_dir"]):
+            if r["run_name"] == target or r.get("run_tag") == target or target in str(r["run_dir"]) or target in r.get("run_tag", ""):
                 matched = r
                 break
         if matched:

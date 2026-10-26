@@ -94,6 +94,11 @@ def update_latest_symlink(base_dir: Path, target_dir: Path) -> None:
 TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
 
 
+def worker_init_fn(worker_id: int) -> None:
+    """Disables OpenCV internal multi-threading within worker processes to prevent thread contention."""
+    cv2.setNumThreads(0)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
@@ -108,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=2, help="Number of Transformer layers")
     parser.add_argument("--nhead", type=int, default=4, help="Number of attention heads")
     parser.add_argument("--grad-accum", type=int, default=1, help="Gradient accumulation steps")
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader worker processes (default: 4)")
+    parser.add_argument("--num-workers", type=int, default=2, help="DataLoader worker processes (default: 2)")
     parser.add_argument("--amp", action="store_true", default=True, help="Enable Automatic Mixed Precision (FP16)")
     parser.add_argument("--save-dir", type=Path, default=None, help="Checkpoint directory")
     parser.add_argument("--run-name", type=str, default=None, help="Custom run subfolder name (default: start time YYYYMMDD_HHMMSS)")
@@ -142,7 +147,13 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         save_dir = base_save_dir
         run_name = base_save_dir.name
     else:
-        run_name = args.run_name if args.run_name else start_time_str
+        if args.run_name:
+            run_name = args.run_name
+        else:
+            pyr_tag = "pyramid" if getattr(args, "use_pyramid", True) else "no_pyramid"
+            d_tag = f"d{getattr(args, 'd_model', 128)}"
+            dataset_name = Path(data_dir).name
+            run_name = f"{args.model_type}+{pyr_tag}_{d_tag}+{dataset_name}+【{start_time_str}】"
         save_dir = base_save_dir / run_name
 
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -216,23 +227,22 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         pin_memory=True if torch.cuda.is_available() else False,
         persistent_workers=True if args.num_workers > 0 else False,
         prefetch_factor=2 if args.num_workers > 0 else None,
+        worker_init_fn=worker_init_fn if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=1,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=args.num_workers,
+        num_workers=0,  # Evaluate sequentially in main process to eliminate 5.8GB worker memory leak
         pin_memory=True if torch.cuda.is_available() else False,
-        persistent_workers=True if args.num_workers > 0 else False,
-        prefetch_factor=2 if args.num_workers > 0 else None,
     )
     test_loader = DataLoader(
         test_ds,
         batch_size=1,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=args.num_workers,
+        num_workers=0,
         pin_memory=True if torch.cuda.is_available() else False,
     )
 
@@ -504,6 +514,12 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             if epoch_ckpt_path.name not in config_data["checkpoints"]["historical_checkpoints"]:
                 config_data["checkpoints"]["historical_checkpoints"].append(epoch_ckpt_path.name)
                 save_config_json(config_json_path, config_data)
+
+        # Garbage collection & CUDA cache reclamation at epoch boundaries
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print("=" * 80)
     print(f"[+] Training Complete! Best Val F1: {best_val_f1:.2f}%.")
@@ -783,6 +799,7 @@ def evaluate_object_pipeline(
 # Line Matching Training Pipeline
 # ==============================================================================
 def train_line_pipeline(args: argparse.Namespace) -> None:
+    data_dir = Path(args.data_dir or "data/line_gt_dataset")
     base_save_dir = Path(args.save_dir or "checkpoints/linefeat")
     start_time = datetime.now()
     start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
@@ -790,7 +807,13 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         save_dir = base_save_dir
         run_name = base_save_dir.name
     else:
-        run_name = args.run_name if args.run_name else start_time_str
+        if args.run_name:
+            run_name = args.run_name
+        else:
+            pyr_tag = "pyramid" if getattr(args, "use_pyramid", True) else "no_pyramid"
+            d_tag = f"d{getattr(args, 'd_model', 128)}"
+            dataset_name = Path(data_dir).name
+            run_name = f"{args.model_type}+{pyr_tag}_{d_tag}+{dataset_name}+【{start_time_str}】"
         save_dir = base_save_dir / run_name
 
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -834,8 +857,23 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
         train_dataset = torch.utils.data.Subset(train_dataset, subset_indices)
         print(f"[*] Dataset subset: Randomly sampled {len(train_dataset)}/{orig_line_train_len} ({ratio*100:.1f}%) pairs for training.\n")
 
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=args.num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=True if args.num_workers > 0 else False,
+        prefetch_factor=2 if args.num_workers > 0 else None,
+        worker_init_fn=worker_init_fn if args.num_workers > 0 else None,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True if torch.cuda.is_available() else False,
+    )
 
     model = build_model(
         args.model_type,
@@ -1061,6 +1099,12 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
             if epoch_ckpt_path.name not in config_data["checkpoints"]["historical_checkpoints"]:
                 config_data["checkpoints"]["historical_checkpoints"].append(epoch_ckpt_path.name)
                 save_config_json(config_json_path, config_data)
+
+        # Garbage collection & CUDA cache reclamation at epoch boundaries
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     save_config_json(config_json_path, config_data)

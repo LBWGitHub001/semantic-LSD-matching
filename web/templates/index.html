@@ -30,75 +30,229 @@
 
   <!-- Navigation Tabs -->
   <nav class="nav-tabs">
-    <button class="tab-btn active" data-tab="dashboard">📊 实验复盘看板</button>
-    <button class="tab-btn" data-tab="train">🚀 训练工作台</button>
-    <button class="tab-btn" data-tab="eval">🧪 评测基准</button>
-    <button class="tab-btn" data-tab="gallery">🖼️ 结果可视化画廊</button>
-    <button class="tab-btn" data-tab="dataset">📦 数据集生成</button>
-    <button class="tab-btn" data-tab="models_guide">📖 模型手册与交互文档</button>
+    <button class="tab-btn active" data-tab="history">📈 实验历史数据</button>
+    <button class="tab-btn" data-tab="train">🚀 启动新的训练</button>
+    <button class="tab-btn" data-tab="models_guide">📖 模型手册</button>
   </nav>
 
   <!-- Main Container -->
   <main class="main-container">
 
     <!-- ======================================================== -->
-    <!-- Tab 1: 实验复盘看板 (Dashboard)                          -->
+    <!-- Tab 1: 实验历史数据 (Historical Experiments & Review)     -->
     <!-- ======================================================== -->
-    <div class="tab-pane active" id="tab-dashboard">
-      <!-- Stat Summary Cards -->
-      <div class="grid-4" style="margin-bottom: 24px;">
-        <div class="stat-card">
-          <div class="stat-label">总实验次数</div>
-          <div class="stat-val" id="stat-total-runs">-</div>
-          <div class="stat-sub">历史 Checkpoints 记录</div>
+    <div class="tab-pane active" id="tab-history">
+      
+      <!-- View 1: 实验列表总览 (List Overview) -->
+      <div id="history-list-view">
+        <!-- Stat Summary Cards -->
+        <div class="grid-4" style="margin-bottom: 24px;">
+          <div class="stat-card">
+            <div class="stat-label">总实验次数</div>
+            <div class="stat-val" id="stat-total-runs">-</div>
+            <div class="stat-sub">历史 Checkpoints 记录</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">最佳测试集 Raw F1</div>
+            <div class="stat-val" id="stat-best-raw-f1" style="color: #60A5FA;">-</div>
+            <div class="stat-sub">零先验纯外观几何匹配</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">最佳测试集 Semantic F1</div>
+            <div class="stat-val" id="stat-best-sem-f1" style="color: #34D399;">-</div>
+            <div class="stat-sub">语义类别先验约束增强</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">核心模型架构</div>
+            <div class="stat-val" style="font-size: 20px; color: #A78BFA; margin-top: 10px;">XFeatLineMatcher</div>
+            <div class="stat-sub">FPN金字塔 + 5D几何编码</div>
+          </div>
         </div>
-        <div class="stat-card">
-          <div class="stat-label">最佳测试集 Raw F1</div>
-          <div class="stat-val" id="stat-best-raw-f1" style="color: #60A5FA;">-</div>
-          <div class="stat-sub">零先验纯外观几何匹配</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">最佳测试集 Semantic F1</div>
-          <div class="stat-val" id="stat-best-sem-f1" style="color: #34D399;">-</div>
-          <div class="stat-sub">语义类别先验约束增强</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">模型架构</div>
-          <div class="stat-val" style="font-size: 20px; color: #A78BFA; margin-top: 10px;">XFeatLineMatcher</div>
-          <div class="stat-sub">FPN金字塔 + 5D几何编码</div>
+
+        <!-- Action Toolbar & Runs Table -->
+        <div class="card" style="margin-bottom: 24px;">
+          <div class="card-title">
+            <span>历史实验记录与复盘 (Historical Runs)</span>
+            <button class="btn btn-primary btn-sm" id="btn-compare-runs" disabled onclick="compareSelectedRuns()">
+              请勾选 2 个实验进行对比 (0/2)
+            </button>
+          </div>
+
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width: 40px;">选</th>
+                  <th>实验标记 (模型+网络结构+数据集+【时间戳】)</th>
+                  <th>模型架构</th>
+                  <th>启动时间</th>
+                  <th>轮次</th>
+                  <th>最佳验证集 F1</th>
+                  <th>测试集 Raw F1</th>
+                  <th>测试集 Semantic F1</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="runs-table-body">
+                <tr><td colspan="9" style="text-align:center; color:#9CA3AF;">加载历史实验中...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <!-- Action Toolbar -->
-      <div class="card" style="margin-bottom: 24px;">
-        <div class="card-title">
-          <span>历史实验列表 (Historical Runs)</span>
-          <button class="btn btn-primary btn-sm" id="btn-compare-runs" disabled onclick="compareSelectedRuns()">
-            请勾选 2 个实验进行对比 (0/2)
+      <!-- View 2: 选中实验详情与工作台 (Selected Run Review & Drill-down Workspace) -->
+      <div id="history-detail-view" style="display: none;">
+        <!-- Detail Header & Back Button -->
+        <div class="detail-header-card">
+          <div class="detail-top-bar">
+            <button class="btn btn-secondary btn-sm" onclick="backToHistoryList()">◀ 返回实验历史列表</button>
+            <div style="flex: 1; margin: 0 16px;">
+              <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 3px;">当前选中复盘实验标记：</div>
+              <div class="run-tag-pill" id="detail-run-tag" style="max-width: 100%; font-size: 14px; padding: 6px 12px;">加载中...</div>
+            </div>
+            <div id="detail-status-pill" class="badge badge-success">Done</div>
+          </div>
+          <div id="detail-badges-row" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; align-items: center;">
+            <span class="badge badge-purple" id="detail-badge-model">-</span>
+            <span class="badge badge-blue" id="detail-badge-epochs">- 轮</span>
+            <span class="badge badge-success" id="detail-badge-val">-</span>
+            <span class="badge badge-blue" id="detail-badge-raw">-</span>
+            <span class="badge badge-success" id="detail-badge-sem">-</span>
+            <span class="badge badge-secondary" id="detail-badge-dir" style="font-family: monospace;">-</span>
+          </div>
+        </div>
+
+        <!-- Sub-Navigation Menu for Selected Run -->
+        <div class="sub-nav-tabs">
+          <button class="sub-tab-btn active" data-subtab="report" onclick="switchDetailSubTab('report')">
+            📊 实验复盘报告 (Overview & Report)
+          </button>
+          <button class="sub-tab-btn" data-subtab="eval" onclick="switchDetailSubTab('eval')">
+            🧪 评测基准 (Benchmark)
+          </button>
+          <button class="sub-tab-btn" data-subtab="gallery" onclick="switchDetailSubTab('gallery')">
+            🖼️ 结果可视化画廊 (Gallery)
           </button>
         </div>
 
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 40px;">选</th>
-                <th>实验代号</th>
-                <th>模型架构</th>
-                <th>启动时间</th>
-                <th>轮次</th>
-                <th>最佳验证集 F1</th>
-                <th>测试集 Raw F1</th>
-                <th>测试集 Semantic F1</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="runs-table-body">
-              <tr><td colspan="9" style="text-align:center; color:#9CA3AF;">加载历史实验中...</td></tr>
-            </tbody>
-          </table>
+        <!-- Subpane 1: 实验复盘报告 -->
+        <div class="sub-tab-pane active" id="subpane-report">
+          <div class="grid-2">
+            <div>
+              <!-- Curves Card -->
+              <div class="card" style="margin-bottom: 20px;">
+                <div class="card-title">训练曲线图 (curves.png)</div>
+                <div style="text-align: center;">
+                  <img id="detail-curves-img" style="max-width: 100%; border-radius: 8px; border: 1px solid #374151; display: none; cursor: pointer;" onclick="openCurvesModal()" title="点击放大查看">
+                  <div id="detail-no-curves" style="color: #9CA3AF; padding: 30px 0; display: none;">该实验暂无预渲染的 curves.png 曲线图</div>
+                </div>
+              </div>
+
+              <!-- Checkpoints in this Run -->
+              <div class="card">
+                <div class="card-title">实验 Checkpoints 权重文件</div>
+                <div id="detail-checkpoints-list" style="display: flex; flex-direction: column; gap: 8px;">
+                  <div style="color: #9CA3AF;">加载检查点列表中...</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Report Markdown -->
+            <div class="card">
+              <div class="card-title">实验复盘深度报告 (Post-Mortem Analytics)</div>
+              <div class="markdown-body" id="detail-report-container" style="max-height: 750px; overflow-y: auto; padding-right: 8px;">
+                <p style="color:#9CA3AF;">正在加载报告中...</p>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <!-- Subpane 2: 评测基准 (Benchmark) -->
+        <div class="sub-tab-pane" id="subpane-eval">
+          <div class="grid-2">
+            <!-- Left: Eval Config -->
+            <div class="card">
+              <div class="card-title">当前实验评测配置 (Evaluation Options)</div>
+
+              <div class="form-group">
+                <label class="form-label">模型权重检查点 (Model Checkpoint - 已自动锁定当前实验)</label>
+                <select class="form-control" id="eval-checkpoint">
+                  <option value="">扫描检查点中...</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">评测数据集 (Dataset Directory)</label>
+                <select class="form-control" id="eval-data-dir"></select>
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">数据划分 (Split)</label>
+                  <select class="form-control" id="eval-split">
+                    <option value="test" selected>test (测试集 - 独立未见场景)</option>
+                    <option value="val">val (验证集)</option>
+                    <option value="train">train (训练集)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">输出图样数 (Num Visualizations)</label>
+                  <input type="number" class="form-control" id="eval-num-vis" value="6" min="0" max="100">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">最小共视面积门限 (Min Area Ratio)</label>
+                <input type="number" step="0.05" class="form-control" id="eval-area-ratio" value="0.40">
+              </div>
+
+              <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="startEvaluation()">
+                🧪 针对当前实验运行基准评测 (Run Benchmark)
+              </button>
+            </div>
+
+            <!-- Right: Instructions & Output Info -->
+            <div class="card">
+              <div class="card-title">评测说明与基准标准</div>
+              <p style="color: #9CA3AF; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+                系统将对当前实验检查点在未见场景进行双重严格基准检验：<br>
+                <b>[1] 纯视觉外观匹配 (Zero Class Prior)</b>：完全不提供物体类别标签，仅凭视觉外观与线段几何拓扑进行跨图匹配，考察特征判别力与泛化性。<br>
+                <b>[2] 语义类别约束匹配 (Semantic Prior)</b>：施加语义掩码先验，验证在实际具身导航与建图场景下的最终实用性能。
+              </p>
+              <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 14px; margin-bottom: 16px;">
+                <b style="color: #60A5FA;">💡 实时联动：</b> 评测开始后控制台输出吞吐与匹配统计；生成的新图样将直接同步在相邻的【结果可视化画廊】子标签中展示！
+              </div>
+              <div style="text-align: right;">
+                <button class="btn btn-secondary btn-sm" onclick="switchDetailSubTab('gallery')">前往查看当前画廊 ▶</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Subpane 3: 结果可视化画廊 (Gallery) -->
+        <div class="sub-tab-pane" id="subpane-gallery">
+          <div class="card" style="margin-bottom: 20px;">
+            <div class="card-title">
+              <div>
+                <span>本实验匹配样本可视化画廊</span>
+                <span style="font-size: 13px; color: #9CA3AF; margin-left: 10px;" id="gallery-count">加载中...</span>
+              </div>
+              <div style="display: flex; gap: 10px;">
+                <input type="text" class="form-control" style="width: 260px;" id="gallery-search" placeholder="输入场景名或编号搜索..." oninput="filterGallery()">
+                <button class="btn btn-secondary btn-sm" onclick="reloadCurrentRunGallery()">刷新画廊</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Gallery Grid -->
+          <div class="gallery-grid" id="gallery-grid">
+            <div style="color: #9CA3AF;">正在加载可视化图像...</div>
+          </div>
+        </div>
+
       </div>
+
     </div>
 
     <!-- ======================================================== -->
@@ -179,6 +333,16 @@
           <div style="display: flex; gap: 12px;">
             <button class="btn btn-success" style="flex: 2;" onclick="startTraining()">▶ 开始训练</button>
             <button class="btn btn-danger" style="flex: 1;" onclick="stopTraining()">⏹ 平滑停止</button>
+          </div>
+
+          <!-- 预览模型架构按钮 -->
+          <div style="margin-top: 10px;">
+            <button class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;" type="button" onclick="previewCurrentModel()">
+              <span>📐</span> <span>预览当前模型具体结构 (Preview Architecture)</span>
+            </button>
+          </div>
+          <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; background: rgba(31, 41, 55, 0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid #374151;">
+            💡 <b>标签页生命周期强绑定</b>：点击“开始训练”后将<b>自动在新标签页中启动实时监控工作台</b>；若关闭该训练标签页则自动平滑终止训练。任务进行中亦可随时 <a href="/train_live" target="_blank" style="color: #60A5FA; text-decoration: underline;">在新标签页打开监控 ↗</a>
           </div>
         </div>
 
@@ -289,145 +453,63 @@
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- ======================================================== -->
-    <!-- Tab 3: 评测基准 (Evaluation Benchmark)                   -->
-    <!-- ======================================================== -->
-    <div class="tab-pane" id="tab-eval">
-      <div class="grid-2">
-        <!-- Left: Eval Config -->
-        <div class="card">
-          <div class="card-title">评测配置 (Evaluation Options)</div>
-
-          <div class="form-group">
-            <label class="form-label">模型权重检查点 (Model Checkpoint)</label>
-            <select class="form-control" id="eval-checkpoint">
-              <option value="">扫描检查点中...</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">评测数据集 (Dataset Directory)</label>
-            <select class="form-control" id="eval-data-dir"></select>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">数据划分 (Split)</label>
-              <select class="form-control" id="eval-split">
-                <option value="test" selected>test (测试集 - 独立未见场景)</option>
-                <option value="val">val (验证集)</option>
-                <option value="train">train (训练集)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">输出图样数 (Num Visualizations)</label>
-              <input type="number" class="form-control" id="eval-num-vis" value="6" min="0" max="100">
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">最小共视面积门限 (Min Area Ratio)</label>
-            <input type="number" step="0.05" class="form-control" id="eval-area-ratio" value="0.40">
-          </div>
-
-          <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="startEvaluation()">
-            🧪 运行基准评测 (Run Benchmark)
-          </button>
+      <!-- Collapsible Dataset Preparation Factory -->
+      <div class="card" style="margin-top: 24px;">
+        <div class="card-title" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleDatasetFactory()">
+          <span>📦 数据集准备与 CAD 直线生成工厂 (Dataset Preparation)</span>
+          <button class="btn btn-secondary btn-sm" id="btn-toggle-dataset-factory" type="button">收起 / 展开</button>
         </div>
+        <div id="dataset-factory-body" style="margin-top: 16px;">
+          <div class="grid-2">
+            <div>
+              <div class="form-group">
+                <label class="form-label">生成任务预设 (Task Preset)</label>
+                <select class="form-control" id="gen-task">
+                  <option value="structured3d_lines" selected>structured3d_lines (真实CAD 3D线段投影 + Z-Buffer遮挡剔除)</option>
+                  <option value="object">object (仅区域物体)</option>
+                </select>
+              </div>
 
-        <!-- Right: Instructions & Output Info -->
-        <div class="card">
-          <div class="card-title">评测说明与基准标准</div>
-          <p style="color: #9CA3AF; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
-            系统将对指定检查点在未见场景进行双重严格基准检验：<br>
-            <b>[1] 纯视觉外观匹配 (Zero Class Prior)</b>：完全不提供物体类别标签，仅凭视觉外观与线段几何拓扑进行跨图匹配，考察特征判别力与泛化性。<br>
-            <b>[2] 语义类别约束匹配 (Semantic Prior)</b>：施加语义掩码先验，验证在实际具身导航与建图场景下的最终实用性能。
-          </p>
-          <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 14px;">
-            <b style="color: #60A5FA;">💡 实时查看：</b> 评测开始后，控制台将输出每个 Batch 的吞吐速度与匹配计数；完成后可切换至【结果可视化画廊】查看本次生成的连线图样！
+              <div class="form-group">
+                <label class="form-label">Structured3D 原始数据根目录</label>
+                <input type="text" class="form-control" id="gen-s3d-dir" value="data/Structured3D">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">输出数据集保存目录</label>
+                <input type="text" class="form-control" id="gen-out-dir" value="data/xfeat_line_matcher">
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">最大处理场景数 (留空为全部)</label>
+                  <input type="text" class="form-control" id="gen-max-scenes" placeholder="例如: 10 (测试)">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">并发进程数 (Num Workers)</label>
+                  <input type="number" class="form-control" id="gen-workers" value="4" min="1" max="16">
+                </div>
+              </div>
+
+              <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="startDatasetGeneration()">
+                ⚙️ 开始生成数据集
+              </button>
+            </div>
+
+            <div>
+              <div class="card-title" style="margin-bottom: 12px; font-size: 14px;">已存在的数据集列表 (Local Datasets)</div>
+              <div id="dataset-cards-container">
+                <div style="color: #9CA3AF;">加载数据集列表中...</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
 
     <!-- ======================================================== -->
-    <!-- Tab 4: 结果可视化画廊 (Matching Gallery)                 -->
-    <!-- ======================================================== -->
-    <div class="tab-pane" id="tab-gallery">
-      <div class="card" style="margin-bottom: 20px;">
-        <div class="card-title">
-          <div>
-            <span>评测样本可视化图库</span>
-            <span style="font-size: 13px; color: #9CA3AF; margin-left: 10px;" id="gallery-count">加载中...</span>
-          </div>
-          <div style="display: flex; gap: 10px;">
-            <input type="text" class="form-control" style="width: 260px;" id="gallery-search" placeholder="输入场景名或编号搜索..." oninput="filterGallery()">
-            <button class="btn btn-secondary btn-sm" onclick="loadGallery()">刷新</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Gallery Grid -->
-      <div class="gallery-grid" id="gallery-grid">
-        <div style="color: #9CA3AF;">正在加载可视化图像...</div>
-      </div>
-    </div>
-
-    <!-- ======================================================== -->
-    <!-- Tab 5: 数据集生成 (Dataset Factory)                      -->
-    <!-- ======================================================== -->
-    <div class="tab-pane" id="tab-dataset">
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">Structured3D CAD 直线数据集生成</div>
-
-          <div class="form-group">
-            <label class="form-label">生成任务预设 (Task Preset)</label>
-            <select class="form-control" id="gen-task">
-              <option value="structured3d_lines" selected>structured3d_lines (真实CAD 3D线段投影 + Z-Buffer遮挡剔除)</option>
-              <option value="object">object (仅区域物体)</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">Structured3D 原始数据根目录</label>
-            <input type="text" class="form-control" id="gen-s3d-dir" value="data/Structured3D">
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">输出数据集保存目录</label>
-            <input type="text" class="form-control" id="gen-out-dir" value="data/xfeat_line_matcher">
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">最大处理场景数 (留空为全部)</label>
-              <input type="text" class="form-control" id="gen-max-scenes" placeholder="例如: 10 (测试)">
-            </div>
-            <div class="form-group">
-              <label class="form-label">并发进程数 (Num Workers)</label>
-              <input type="number" class="form-control" id="gen-workers" value="4" min="1" max="16">
-            </div>
-          </div>
-
-          <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="startDatasetGeneration()">
-            ⚙️ 开始生成数据集
-          </button>
-        </div>
-
-        <div>
-          <div class="card-title" style="margin-bottom: 12px;">已存在的数据集列表 (Local Datasets)</div>
-          <div id="dataset-cards-container">
-            <div style="color: #9CA3AF;">加载数据集列表中...</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ======================================================== -->
-    <!-- Tab 6: 模型架构与交互手册 (Models & Interactive Docs)    -->
+    <!-- Tab 3: 模型手册 (Models & Interactive Docs)              -->
     <!-- ======================================================== -->
     <div class="tab-pane" id="tab-models_guide">
 
@@ -759,6 +841,94 @@
       </div>
       <div class="modal-body" style="text-align: center; background: #000; padding: 10px;">
         <img id="gallery-modal-img" style="max-width: 100%; max-height: 75vh; object-fit: contain;">
+      </div>
+    </div>
+  </div>
+
+  <!-- Curves Full High-Res Viewer Modal -->
+  <div class="modal-overlay" id="curves-modal">
+    <div class="modal-content" style="max-width: 1100px;">
+      <div class="modal-header">
+        <div class="modal-title" id="curves-modal-title">训练指标曲线图 (Training Curves)</div>
+        <button class="modal-close" onclick="closeModal('curves-modal')">&times;</button>
+      </div>
+      <div class="modal-body" style="text-align: center; padding: 16px;">
+        <img id="curves-modal-img" style="max-width: 100%; border-radius: 8px;">
+      </div>
+    </div>
+  </div>
+
+  <!-- Model Architecture Preview Modal -->
+  <div class="modal-overlay" id="model-preview-modal" style="display: none;">
+    <div class="modal-content" style="max-width: 960px; max-height: 90vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title" id="preview-model-name">📐 模型结构预览</div>
+          <div style="font-size: 12px; color: #9CA3AF; margin-top: 3px;" id="preview-model-tagline">多模态多尺度直线与目标区域联合对齐网络</div>
+        </div>
+        <button class="modal-close" onclick="closeModal('model-preview-modal')">&times;</button>
+      </div>
+      <div class="modal-body" style="overflow-y: auto; padding: 20px;">
+        <!-- Parameter Stats -->
+        <div class="grid-2" style="margin-bottom: 20px;">
+          <div class="stat-card" style="padding: 14px 18px;">
+            <div class="stat-label">总参数量 (Total Parameters)</div>
+            <div class="stat-val" id="preview-total-params" style="font-size: 22px; color: #60A5FA;">-</div>
+            <div class="stat-sub">模型完整权重张量规模</div>
+          </div>
+          <div class="stat-card" style="padding: 14px 18px;">
+            <div class="stat-label">可训练参数量 (Trainable)</div>
+            <div class="stat-val" id="preview-trainable-params" style="font-size: 22px; color: #34D399;">-</div>
+            <div class="stat-sub">反向传播梯度更新参数量</div>
+          </div>
+        </div>
+
+        <!-- Input Shapes -->
+        <div class="card" style="margin-bottom: 20px; padding: 16px;">
+          <div class="card-title" style="margin-bottom: 10px;">📥 输入张量规格 (Input Tensor Dimensions)</div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>输入模态</th>
+                  <th>张量形状 (Shape)</th>
+                  <th>几何/物理定义说明</th>
+                </tr>
+              </thead>
+              <tbody id="preview-shapes-tbody">
+                <tr><td colspan="3" style="text-align:center; color:#9CA3AF;">加载规格中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Pipeline Stages -->
+        <div class="card" style="margin-bottom: 20px; padding: 16px;">
+          <div class="card-title" style="margin-bottom: 10px;">⚡ 前向传播流水线阶段 (Forward Pipeline Stages)</div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>阶段 (Stage)</th>
+                  <th>输出特征维度</th>
+                  <th>模块实现机制</th>
+                </tr>
+              </thead>
+              <tbody id="preview-stages-tbody">
+                <tr><td colspan="3" style="text-align:center; color:#9CA3AF;">加载流水线阶段中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- PyTorch Module Structure -->
+        <div class="card" style="padding: 16px;">
+          <div class="card-title" style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+            <span>🧠 PyTorch Module 模块拓扑定义 (__repr__)</span>
+            <button class="btn btn-secondary btn-xs" onclick="copyModelPytorchRepr()">📋 复制结构文本</button>
+          </div>
+          <pre id="preview-pytorch-code" style="background: #080C14; border: 1px solid #1F2937; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 12px; color: #E5E7EB; max-height: 280px; overflow-y: auto; white-space: pre; line-height: 1.45;"></pre>
+        </div>
       </div>
     </div>
   </div>

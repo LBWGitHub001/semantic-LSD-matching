@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ 实时训练监控工作台 - Semantic LSD Matching</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+  <!-- Top Header Navigation -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">Semantic LSD Matching</div>
+        <div style="font-size: 11px; color: #9CA3AF;">独立实时训练监控与生命周期守护工作台</div>
+      </div>
+      <span class="brand-tag">Live Task</span>
+    </div>
+
+    <div class="header-status">
+      <div class="status-badge" id="gpu-badge">GPU: 检查中...</div>
+      <div class="status-badge">
+        <span class="dot dot-busy" id="status-dot"></span>
+        <span id="status-text">训练进程运行中</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-container">
+
+    <!-- Lifecycle Warning / Control Banner -->
+    <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 10px; padding: 14px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;" id="lifecycle-banner">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 24px;">⚠️</span>
+        <div>
+          <div style="font-weight: 700; color: #F87171; font-size: 14px;">标签页生命周期强绑定机制生效中</div>
+          <div style="font-size: 12.5px; color: #D1D5DB; margin-top: 2px;">
+            <b>关闭当前标签页将自动平滑终止训练进程</b>；保持此标签页开启，模型将持续训练至指定轮数并自动保存 Checkpoint 权重。
+          </div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-danger" onclick="stopLiveTraining()">⏹ 平滑停止训练</button>
+      </div>
+    </div>
+
+    <!-- Live Monitor Layout -->
+    <div class="grid-train-layout" style="grid-template-columns: 1fr 340px;">
+      <!-- Left: Real-time Curves & Terminal -->
+      <div>
+        <!-- Live Chart Card -->
+        <div class="card" style="margin-bottom: 16px; padding: 14px 20px;">
+          <div class="card-title" style="margin-bottom: 8px;">
+            <span>实时训练轨迹 (Live Curves: Loss & Val F1)</span>
+            <span style="font-size: 11px; color: #9CA3AF;" id="chart-sub-status">随训练 Epoch 实时更新</span>
+          </div>
+          <canvas id="live-chart" width="900" height="200" style="width: 100%; height: 200px;"></canvas>
+        </div>
+
+        <!-- Terminal Logs Window -->
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span>实时控制台输出 (Console Stream)</span>
+              <span class="badge badge-success" id="ws-badge">● WS 已连接</span>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button class="btn btn-secondary btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">滚动: 开</button>
+              <button class="btn btn-secondary btn-sm" onclick="clearTerminal()">清屏</button>
+            </div>
+          </div>
+          <div class="terminal-body" id="terminal-logs" style="height: 380px;">
+[+] 正在建立独立训练监听通道...
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Hardware Monitor -->
+      <div class="card res-monitor-card">
+        <div class="card-title">
+          <span>硬件资源监视 (Hardware)</span>
+          <span class="badge badge-blue">实时 2s</span>
+        </div>
+
+        <!-- CPU Meter -->
+        <div class="res-meter-box">
+          <div class="res-meter-header">
+            <span class="res-meter-title">💻 处理器 (CPU)</span>
+            <span class="res-meter-val" id="res-cpu-pct">0.0%</span>
+          </div>
+          <div class="res-bar-track">
+            <div class="res-bar-fill fill-cpu" id="res-cpu-bar" style="width: 0%;"></div>
+          </div>
+          <div class="res-meter-sub">
+            <span id="res-cpu-cores">- 核</span>
+            <span id="res-cpu-load">负载: -</span>
+          </div>
+        </div>
+
+        <!-- RAM Meter -->
+        <div class="res-meter-box">
+          <div class="res-meter-header">
+            <span class="res-meter-title">💾 运行内存 (RAM)</span>
+            <span class="res-meter-val" id="res-ram-pct">0.0%</span>
+          </div>
+          <div class="res-bar-track">
+            <div class="res-bar-fill fill-ram" id="res-ram-bar" style="width: 0%;"></div>
+          </div>
+          <div class="res-meter-sub">
+            <span id="res-ram-used">已用: - / - GB</span>
+            <span id="res-swap-used">交换区: - GB</span>
+          </div>
+        </div>
+
+        <!-- GPU Core Meter -->
+        <div class="res-meter-box">
+          <div class="res-meter-header">
+            <span class="res-meter-title">🎮 显卡核心 (GPU)</span>
+            <span class="res-meter-val" id="res-gpu-pct">0.0%</span>
+          </div>
+          <div class="res-bar-track">
+            <div class="res-bar-fill fill-gpu" id="res-gpu-bar" style="width: 0%;"></div>
+          </div>
+          <div class="res-meter-sub">
+            <span id="res-gpu-name">GPU 运算负载</span>
+            <span id="res-gpu-temp">温度: -°C</span>
+          </div>
+        </div>
+
+        <!-- GPU VRAM Meter -->
+        <div class="res-meter-box">
+          <div class="res-meter-header">
+            <span class="res-meter-title">⚡ 显存占用 (VRAM)</span>
+            <span class="res-meter-val" id="res-vram-pct">0.0%</span>
+          </div>
+          <div class="res-bar-track">
+            <div class="res-bar-fill fill-vram" id="res-vram-bar" style="width: 0%;"></div>
+          </div>
+          <div class="res-meter-sub">
+            <span id="res-vram-used">已用: - / - MB</span>
+            <span id="res-gpu-power">功耗: - W</span>
+          </div>
+        </div>
+
+        <!-- Pipeline Health / Diagnostic Helper -->
+        <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.5;" id="res-status-helper">
+          <b style="color: #60A5FA;">ℹ️ 流水线诊断：</b>
+          <span id="res-helper-text">训练任务平稳运行中</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    let socket = null;
+    let autoScroll = true;
+    let liveLossHistory = [];
+    let liveF1History = [];
+    let isTrainingActive = true;
+
+    document.addEventListener("DOMContentLoaded", () => {
+      initWebSocket();
+      initStatusPolling();
+      loadActiveLogs();
+
+      // Lifecycle binding: close tab -> stop training
+      window.addEventListener("beforeunload", () => {
+        if (isTrainingActive) {
+          navigator.sendBeacon("/api/train?action=stop");
+        }
+      });
+      window.addEventListener("pagehide", () => {
+        if (isTrainingActive) {
+          navigator.sendBeacon("/api/train?action=stop");
+        }
+      });
+    });
+
+    async function loadActiveLogs() {
+      try {
+        const res = await fetch("/api/logs/active");
+        const data = await res.json();
+        if (data.logs && data.logs.length > 0) {
+          clearTerminal();
+          data.logs.forEach(line => {
+            appendTerminalLine(line);
+            parseMetricsFromLine(line);
+          });
+        }
+      } catch (e) {
+        console.warn("Active logs fetch failed:", e);
+      }
+    }
+
+    function initWebSocket() {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+
+      const wsBadge = document.getElementById("ws-badge");
+      socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        if (wsBadge) {
+          wsBadge.innerText = "● WS 已连接";
+          wsBadge.className = "badge badge-success";
+        }
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "init") {
+            if (data.backlog && data.backlog.length > 0) {
+              clearTerminal();
+              data.backlog.forEach(line => {
+                appendTerminalLine(line);
+                parseMetricsFromLine(line);
+              });
+            }
+          } else if (data.type === "log") {
+            appendTerminalLine(data.line);
+            parseMetricsFromLine(data.line);
+          } else if (data.type === "task_stopped" || data.type === "task_finished") {
+            isTrainingActive = false;
+            onTrainingFinished(data.type);
+          }
+        } catch (e) {
+          console.error("WS Parse error:", e);
+        }
+      };
+
+      socket.onerror = (err) => console.warn("WS error:", err);
+
+      socket.onclose = () => {
+        if (wsBadge) {
+          wsBadge.innerText = "○ WS 重连中...";
+          wsBadge.className = "badge badge-warning";
+        }
+        setTimeout(initWebSocket, 2000);
+      };
+    }
+
+    function onTrainingFinished(eventType) {
+      const banner = document.getElementById("lifecycle-banner");
+      if (banner) {
+        banner.style.background = "rgba(16, 185, 129, 0.12)";
+        banner.style.borderColor = "rgba(16, 185, 129, 0.35)";
+        banner.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 24px;">🎉</span>
+            <div>
+              <div style="font-weight: 700; color: #34D399; font-size: 14px;">训练任务已圆满完成！</div>
+              <div style="font-size: 12.5px; color: #D1D5DB; margin-top: 2px;">
+                权重、指标曲线与复盘报告已全量写入本地。您现在可以安全关闭本标签页，或返回主页查看【实验历史数据】。
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="window.close()">关闭此标签页</button>
+        `;
+      }
+      const dot = document.getElementById("status-dot");
+      const text = document.getElementById("status-text");
+      if (dot) dot.className = "dot dot-idle";
+      if (text) text.innerText = "训练已完成";
+      appendTerminalLine(`\n[✓] ====== 训练已完成 (${eventType}) ======\n`);
+    }
+
+    async function stopLiveTraining() {
+      if (!confirm("确定要平滑停止当前训练吗？模型将保存已训练轮次的 Checkpoint。")) return;
+      isTrainingActive = false;
+      try {
+        const res = await fetch("/api/train?action=stop", { method: "POST" });
+        const result = await res.json();
+        appendTerminalLine(`\n[*] ${result.message}\n`);
+        onTrainingFinished("user_stopped");
+      } catch (e) {
+        alert("停止请求失败: " + e);
+      }
+    }
+
+    function appendTerminalLine(rawText) {
+      const terminal = document.getElementById("terminal-logs");
+      if (!terminal) return;
+
+      const colored = ansiToHtml(rawText);
+      const isProgressBar = rawText.includes("%|") || rawText.includes("pair/s") || rawText.includes("it/s");
+
+      if (isProgressBar && terminal.lastElementChild && terminal.lastElementChild.dataset.isProgress === "true") {
+        terminal.lastElementChild.innerHTML = colored;
+      } else {
+        const div = document.createElement("div");
+        div.innerHTML = colored;
+        if (isProgressBar) div.dataset.isProgress = "true";
+        terminal.appendChild(div);
+      }
+
+      while (terminal.childNodes.length > 1200) {
+        terminal.removeChild(terminal.firstChild);
+      }
+
+      if (autoScroll) {
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+    }
+
+    function toggleAutoScroll() {
+      autoScroll = !autoScroll;
+      const btn = document.getElementById("btn-autoscroll");
+      if (btn) btn.innerText = autoScroll ? "滚动: 开" : "滚动: 关";
+    }
+
+    function clearTerminal() {
+      const terminal = document.getElementById("terminal-logs");
+      if (terminal) terminal.innerHTML = "";
+    }
+
+    function ansiToHtml(str) {
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\033\[([0-9;]+)m/g, (match, p1) => {
+          if (p1 === "0") return '</span>';
+          if (p1.includes("31")) return '<span style="color:#EF4444;">';
+          if (p1.includes("32")) return '<span style="color:#10B981;">';
+          if (p1.includes("33")) return '<span style="color:#F59E0B;">';
+          if (p1.includes("34")) return '<span style="color:#3B82F6;">';
+          if (p1.includes("35")) return '<span style="color:#8B5CF6;">';
+          if (p1.includes("36")) return '<span style="color:#06B6D4;">';
+          return '<span>';
+        });
+    }
+
+    function parseMetricsFromLine(line) {
+      const match = line.match(/Epoch\s+\[(\d+)\/\d+\].*?Loss:\s+([\d\.]+).*?F1:\s+([\d\.]+)%/);
+      if (match) {
+        const ep = parseInt(match[1]);
+        const loss = parseFloat(match[2]);
+        const f1 = parseFloat(match[3]);
+
+        if (!liveLossHistory.some(d => d.epoch === ep)) {
+          liveLossHistory.push({ epoch: ep, val: loss });
+          liveF1History.push({ epoch: ep, val: f1 });
+          renderLiveChart();
+        }
+      }
+    }
+
+    function renderLiveChart() {
+      const canvas = document.getElementById("live-chart");
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0, 0, w, h);
+
+      if (liveLossHistory.length < 2) {
+        ctx.fillStyle = "#6B7280";
+        ctx.font = "12px sans-serif";
+        ctx.fillText("等待训练生成多轮指标曲线...", 20, h / 2);
+        return;
+      }
+
+      ctx.strokeStyle = "rgba(55, 65, 81, 0.4)";
+      ctx.lineWidth = 1;
+      for (let y = 30; y < h - 20; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(30, y);
+        ctx.lineTo(w - 20, y);
+        ctx.stroke();
+      }
+
+      const maxLoss = Math.max(...liveLossHistory.map(d => d.val), 1.6);
+      ctx.strokeStyle = "#EF4444";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      liveLossHistory.forEach((pt, idx) => {
+        const x = 40 + (idx / (liveLossHistory.length - 1)) * (w - 70);
+        const y = (h - 30) - (pt.val / maxLoss) * (h - 60);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      ctx.strokeStyle = "#3B82F6";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      liveF1History.forEach((pt, idx) => {
+        const x = 40 + (idx / (liveF1History.length - 1)) * (w - 70);
+        const y = (h - 30) - (pt.val / 100.0) * (h - 60);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      ctx.fillStyle = "#EF4444";
+      ctx.font = "11px sans-serif";
+      ctx.fillText("— Train Loss", w - 160, 20);
+      ctx.fillStyle = "#3B82F6";
+      ctx.fillText("— Val F1 (%)", w - 80, 20);
+    }
+
+    function initStatusPolling() {
+      fetchStatus();
+      setInterval(fetchStatus, 2000);
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch("/api/status");
+        const status = await res.json();
+        updateHardwareUI(status);
+      } catch (e) {
+        console.warn("Status fetch failed:", e);
+      }
+    }
+
+    function updateHardwareUI(status) {
+      if (!status) return;
+      const res = status.resources || {};
+      const gpu = (res.gpu && res.gpu.available) ? res.gpu : status.gpu;
+
+      const gpuBadge = document.getElementById("gpu-badge");
+      if (gpu && gpu.available) {
+        if (gpuBadge) gpuBadge.innerText = `GPU: ${gpu.memory_used_mb}MB / ${gpu.memory_total_mb}MB (${gpu.memory_pct}%) | ${gpu.temperature_c}°C`;
+      } else {
+        if (gpuBadge) gpuBadge.innerText = "CPU 模式";
+      }
+
+      if (res.cpu) {
+        const cpuPctEl = document.getElementById("res-cpu-pct");
+        const cpuBarEl = document.getElementById("res-cpu-bar");
+        const cpuCoresEl = document.getElementById("res-cpu-cores");
+        const cpuLoadEl = document.getElementById("res-cpu-load");
+
+        if (cpuPctEl) cpuPctEl.innerText = `${res.cpu.pct.toFixed(1)}%`;
+        if (cpuBarEl) cpuBarEl.style.width = `${Math.min(100, Math.max(0, res.cpu.pct))}%`;
+        if (cpuCoresEl) cpuCoresEl.innerText = `${res.cpu.count} 核心 (Threads)`;
+        if (cpuLoadEl) cpuLoadEl.innerText = `负载: ${res.cpu.load_1m} / ${res.cpu.load_5m}`;
+      }
+
+      if (res.ram) {
+        const ramPctEl = document.getElementById("res-ram-pct");
+        const ramBarEl = document.getElementById("res-ram-bar");
+        const ramUsedEl = document.getElementById("res-ram-used");
+        const swapUsedEl = document.getElementById("res-swap-used");
+
+        if (ramPctEl) ramPctEl.innerText = `${res.ram.pct.toFixed(1)}%`;
+        if (ramBarEl) ramBarEl.style.width = `${Math.min(100, Math.max(0, res.ram.pct))}%`;
+        if (ramUsedEl) ramUsedEl.innerText = `已用: ${res.ram.used_gb} / ${res.ram.total_gb} GB`;
+        if (swapUsedEl) swapUsedEl.innerText = `交换区: ${res.ram.swap_used_gb} / ${res.ram.swap_total_gb} GB`;
+      }
+
+      if (gpu && gpu.available) {
+        const gpuPctEl = document.getElementById("res-gpu-pct");
+        const gpuBarEl = document.getElementById("res-gpu-bar");
+        const gpuNameEl = document.getElementById("res-gpu-name");
+        const gpuTempEl = document.getElementById("res-gpu-temp");
+
+        if (gpuPctEl) gpuPctEl.innerText = `${gpu.utilization_pct.toFixed(1)}%`;
+        if (gpuBarEl) gpuBarEl.style.width = `${Math.min(100, Math.max(0, gpu.utilization_pct))}%`;
+        if (gpuNameEl) gpuNameEl.innerText = gpu.name || "NVIDIA RTX GPU";
+        if (gpuTempEl) gpuTempEl.innerText = `温度: ${gpu.temperature_c}°C`;
+
+        const vramPctEl = document.getElementById("res-vram-pct");
+        const vramBarEl = document.getElementById("res-vram-bar");
+        const vramUsedEl = document.getElementById("res-vram-used");
+        const gpuPowerEl = document.getElementById("res-gpu-power");
+
+        if (vramPctEl) vramPctEl.innerText = `${gpu.memory_pct.toFixed(1)}%`;
+        if (vramBarEl) vramBarEl.style.width = `${Math.min(100, Math.max(0, gpu.memory_pct))}%`;
+        if (vramUsedEl) vramUsedEl.innerText = `已用: ${gpu.memory_used_mb} / ${gpu.memory_total_mb} MB`;
+        if (gpuPowerEl) gpuPowerEl.innerText = `功耗: ${gpu.power_w ? gpu.power_w + " W" : "-"}`;
+      }
+    }
+  </script>
+</body>
+</html>

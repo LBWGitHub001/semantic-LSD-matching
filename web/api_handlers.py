@@ -74,6 +74,7 @@ class RunsHandler(BaseApiHandler):
 
             runs_summary.append({
                 "run_name": r.get("run_name"),
+                "run_tag": r.get("run_tag", r.get("run_name")),
                 "model_type": r.get("model_type"),
                 "run_dir": str(r_dir),
                 "rel_dir": str(r_dir.relative_to(ROOT_DIR)) if r_dir else "",
@@ -106,7 +107,13 @@ class RunDetailHandler(BaseApiHandler):
 
         matched = None
         for r in raw_runs:
-            if r["run_name"] == run_name or run_name in str(r["run_dir"]):
+            if (
+                r["run_name"] == run_name
+                or r.get("run_tag") == run_name
+                or run_name in str(r["run_dir"])
+                or r["run_dir"].name == run_name
+                or (r.get("run_tag") and run_name in r["run_tag"])
+            ):
                 matched = r
                 break
 
@@ -132,14 +139,40 @@ class RunDetailHandler(BaseApiHandler):
         if (r_dir / "curves.png").is_file():
             curves_rel = f"/files/{r_dir.relative_to(ROOT_DIR)}/curves.png"
 
+        # Checkpoint files in this run
+        run_ckpts = []
+        for pth in sorted(r_dir.glob("*.pth"), key=lambda p: p.stat().st_mtime, reverse=True):
+            run_ckpts.append({
+                "name": pth.name,
+                "rel_path": str(pth.relative_to(ROOT_DIR)),
+                "size_mb": round(pth.stat().st_size / (1024 * 1024), 2),
+                "is_best": "best_model" in pth.name,
+                "modified": pth.stat().st_mtime,
+            })
+
+        # Visualization images in this run
+        vis_dir = r_dir / "visualizations"
+        vis_images = []
+        if vis_dir.is_dir():
+            for img_p in sorted(vis_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True):
+                vis_images.append({
+                    "name": img_p.name,
+                    "url": f"/files/{img_p.relative_to(ROOT_DIR)}",
+                    "size_kb": round(img_p.stat().st_size / 1024, 1),
+                    "modified": img_p.stat().st_mtime,
+                })
+
         self.write_json({
             "run_name": matched["run_name"],
+            "run_tag": matched.get("run_tag", matched["run_name"]),
             "model_type": matched["model_type"],
             "run_dir": str(r_dir),
             "config": cfg,
             "history": history,
             "report_markdown": report_content,
             "curves_url": curves_rel,
+            "checkpoints": run_ckpts,
+            "visualizations": vis_images,
         })
 
 
@@ -154,8 +187,8 @@ class CompareRunsHandler(BaseApiHandler):
             return
 
         all_runs = find_all_runs(ROOT_DIR / "checkpoints")
-        m1 = next((r for r in all_runs if r["run_name"] == r1 or r1 in str(r["run_dir"])), None)
-        m2 = next((r for r in all_runs if r["run_name"] == r2 or r2 in str(r["run_dir"])), None)
+        m1 = next((r for r in all_runs if r["run_name"] == r1 or r.get("run_tag") == r1 or r1 in str(r["run_dir"]) or (r.get("run_tag") and r1 in r["run_tag"])), None)
+        m2 = next((r for r in all_runs if r["run_name"] == r2 or r.get("run_tag") == r2 or r2 in str(r["run_dir"]) or (r.get("run_tag") and r2 in r["run_tag"])), None)
 
         if not m1 or not m2:
             self.write_error_json("One or both runs could not be found", status=404)
@@ -171,6 +204,7 @@ class CompareRunsHandler(BaseApiHandler):
         tb2 = cfg2.get("test_benchmark") or {}
 
         comparison_table = [
+            {"feature": "Experiment Tag", "run1": m1.get("run_tag", m1["run_name"]), "run2": m2.get("run_tag", m2["run_name"])},
             {"feature": "Model Architecture", "run1": m1["model_type"], "run2": m2["model_type"]},
             {"feature": "Total Epochs", "run1": hp1.get("epochs"), "run2": hp2.get("epochs")},
             {"feature": "Learning Rate", "run1": hp1.get("learning_rate"), "run2": hp2.get("learning_rate")},
@@ -278,26 +312,233 @@ class DatasetsHandler(BaseApiHandler):
 
 
 class GalleryHandler(BaseApiHandler):
-    """GET /api/gallery - Lists visualization images from outputs/ and runs."""
+    """GET /api/gallery - Directly lists all visualization images across the system."""
 
     def get(self) -> None:
-        outputs_dir = ROOT_DIR / "outputs" / "semantic_matching_vis"
         images = []
+        seen = set()
 
+        # 1. Output directory visualizations (eval samples)
+        outputs_dir = ROOT_DIR / "outputs" / "semantic_matching_vis"
         if outputs_dir.is_dir():
-            for img_p in sorted(outputs_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True):
+            for img_p in outputs_dir.glob("*.jpg"):
                 name = img_p.name
                 rel_url = f"/files/outputs/semantic_matching_vis/{name}"
-                size_kb = round(img_p.stat().st_size / 1024, 1)
+                if rel_url not in seen:
+                    seen.add(rel_url)
+                    images.append({
+                        "name": name,
+                        "url": rel_url,
+                        "size_kb": round(img_p.stat().st_size / 1024, 1),
+                        "modified": img_p.stat().st_mtime,
+                        "source": "Benchmark Output",
+                    })
 
-                images.append({
-                    "name": name,
-                    "url": rel_url,
-                    "size_kb": size_kb,
-                    "modified": img_p.stat().st_mtime,
-                })
+        # 2. Checkpoint run visualizations (test samples during training)
+        ckpt_dir = ROOT_DIR / "checkpoints"
+        if ckpt_dir.is_dir():
+            for img_p in ckpt_dir.glob("**/visualizations/*.jpg"):
+                rel_p = img_p.relative_to(ROOT_DIR)
+                rel_url = f"/files/{rel_p}"
+                if rel_url not in seen:
+                    seen.add(rel_url)
+                    run_tag = img_p.parent.parent.name
+                    images.append({
+                        "name": f"{run_tag}_{img_p.name}",
+                        "url": rel_url,
+                        "size_kb": round(img_p.stat().st_size / 1024, 1),
+                        "modified": img_p.stat().st_mtime,
+                        "source": f"Run: {run_tag}",
+                    })
 
-        self.write_json({"images": images, "total": len(images)})
+        # Sort newest first
+        images.sort(key=lambda x: x["modified"], reverse=True)
+
+        # Return up to 160 images for fast frontend rendering
+        self.write_json({"images": images[:160], "total": len(images)})
+
+
+def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: int = 128) -> dict[str, Any]:
+    """Generates detailed architectural breakdown and PyTorch module structure for a given model."""
+    if model_type in ["xfeat_line_matcher", "xfeat_line", "line_matcher"]:
+        pyr_str = "启用多尺度 FPN 特征金字塔 (P1/P2/P3 ➔ 192D)" if use_pyramid else "单尺度特征输出 (64D)"
+        vis_dim = 192 if use_pyramid else 64
+        total_fusion = vis_dim + 64 + 64
+
+        pytorch_repr = f"""XFeatLineMatcher(
+  (visual_backbone): {'XFeatPyramidBackbone' if use_pyramid else 'XFeatBackbone'}(
+    (conv1): Conv2d(3, 32, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+    (bn1): BatchNorm2d(32)
+    (relu): ReLU(inplace=True)
+    (layer1): Sequential(BasicBlock(32, 64, stride=2))   # Stride 4 (P1 fine geometric details)
+    (layer2): Sequential(BasicBlock(64, 64, stride=2))   # Stride 8 (P2 part-level shapes)
+    (layer3): Sequential(BasicBlock(64, 64, stride=2))   # Stride 16 (P3 high-level semantics)
+    {'# Lateral 1x1 convolutions & Top-Down Feature Fusion Pyramid' if use_pyramid else ''}
+    (lateral1): Conv2d(64, 64, kernel_size=(1, 1))
+    (lateral2): Conv2d(64, 64, kernel_size=(1, 1))
+    (smooth1): Conv2d(64, 64, kernel_size=(3, 3), padding=(1, 1))
+    (smooth2): Conv2d(64, 64, kernel_size=(3, 3), padding=(1, 1))
+  )
+  (visual_pool): AdaptiveAvgPool2d(output_size=(1, 1))  # Pool to ({vis_dim}D)
+  (line_encoder): PatchLineGeometryEncoder(
+    # 输入: LSD亚像素直线 5D [xc/W, yc/H, L/max(W,H), sin(2θ), cos(2θ)]
+    (mlp): Sequential(
+      (0): Linear(in_features=5, out_features=64, bias=True)
+      (1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+      (2): ReLU(inplace=True)
+      (3): Linear(in_features=64, out_features=64, bias=True)
+      (4): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+      (5): ReLU(inplace=True)
+    )
+    (pool): MaxPool1d(over K lines ➔ 64D patch line descriptor)
+  )
+  (geo_encoder): ObjectGeometryEncoder(
+    # 输入: 目标区域边界框 4D [cx/W, cy/H, w/W, h/H]
+    (mlp): Sequential(
+      (0): Linear(in_features=4, out_features=64, bias=True)
+      (1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+      (2): ReLU(inplace=True)
+      (3): Linear(in_features=64, out_features=64, bias=True)
+      (4): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+      (5): ReLU(inplace=True)
+    )
+  )
+  (fusion_proj): Sequential(
+    # 模态拼接: [Visual({vis_dim}D) || Line(64D) || BBox(64D)] ➔ {total_fusion}D
+    (0): Linear(in_features={total_fusion}, out_features={d_model}, bias=True)
+    (1): LayerNorm(({d_model},), eps=1e-05, elementwise_affine=True)
+    (2): ReLU(inplace=True)
+  )
+  (transformer): ObjectGraphTransformer(
+    (layers): ModuleList(
+      (0-1): 2 x TransformerCrossLayer(
+        (self_attn): MultiheadAttention(embed_dim={d_model}, num_heads=4, batch_first=True)
+        (cross_attn): MultiheadAttention(embed_dim={d_model}, num_heads=4, batch_first=True)
+        (norm1): LayerNorm(({d_model},), eps=1e-05, elementwise_affine=True)
+        (norm2): LayerNorm(({d_model},), eps=1e-05, elementwise_affine=True)
+        (norm3): LayerNorm(({d_model},), eps=1e-05, elementwise_affine=True)
+        (ffn): Sequential(
+          (0): Linear(in_features={d_model}, out_features={d_model*2}, bias=True)
+          (1): ReLU(inplace=True)
+          (2): Linear(in_features={d_model*2}, out_features={d_model}, bias=True)
+        )
+      )
+    )
+  )
+  (matcher): ObjectSinkhornMatcher(
+    (proj): Linear(in_features={d_model}, out_features={d_model}, bias=True)
+    (dustbin_score): Parameter(shape=torch.Size([1]))  # 扩展垃圾桶维度以吸收无对应物
+    (sinkhorn): LogSinkhornOptimalTransport(iters=20)
+  )
+)"""
+        return {
+            "model_type": "xfeat_line_matcher",
+            "name": "XFeatLineMatcher",
+            "tagline": "多模态多尺度直线与目标区域联合对齐网络 (SOTA 79.2%)",
+            "params_total": "1,722,081 (约 1.72 M 参数)",
+            "trainable_params": "1,722,081",
+            "input_shapes": [
+                {"name": "候选目标切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "RGB三通道切片，经过自适应扩边裁剪插值"},
+                {"name": "关联LSD直线 (Associated Lines)", "shape": "(B, M, K, 5)", "desc": "每切片至多K=8根，5D亚像素归一化几何向量"},
+                {"name": "切片边界框 (Bounding Boxes)", "shape": "(B, M, 4)", "desc": "切片在原图中的[cx/W, cy/H, w/W, h/H]全局几何布局"}
+            ],
+            "pipeline_stages": [
+                {"stage": "1. 视觉特征抽取", "dim": f"{vis_dim}D", "desc": pyr_str},
+                {"stage": "2. 直线几何编码", "dim": "64D", "desc": "5D端点参数 ➔ 两层MLP ➔ K根线最大池化"},
+                {"stage": "3. 空间边界框编码", "dim": "64D", "desc": "4D归一化坐标 ➔ 两层MLP映射"},
+                {"stage": "4. 多模态融合投影", "dim": f"{d_model}D", "desc": f"将拼接后的{total_fusion}D向量投影归一化为{d_model}D Token"},
+                {"stage": "5. 图注意力推理", "dim": f"{d_model}D", "desc": "2层图交叉注意力机制 (Self-Attn + Cross-Attn)"},
+                {"stage": "6. 最优传输匹配", "dim": "(M0+1, M1+1)", "desc": "带扩展垃圾桶维度的Log-Sinkhorn双随机最优传输求解"}
+            ],
+            "pytorch_repr": pytorch_repr,
+        }
+    elif model_type in ["xfeat_object", "xfeat", "object"]:
+        return {
+            "model_type": "xfeat_object",
+            "name": "XFeatObjectMatcher",
+            "tagline": "纯物体区域多尺度视觉外观与空间几何基线网络",
+            "params_total": "1,680,449 (约 1.68 M 参数)",
+            "trainable_params": "1,680,449",
+            "input_shapes": [
+                {"name": "候选目标切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "RGB三通道切片"},
+                {"name": "切片边界框 (Bounding Boxes)", "shape": "(B, M, 4)", "desc": "切片在原图中的空间几何坐标"}
+            ],
+            "pipeline_stages": [
+                {"stage": "1. 视觉特征抽取", "dim": "192D", "desc": "XFeat FPN 特征金字塔三层池化"},
+                {"stage": "2. 空间布局编码", "dim": "64D", "desc": "边界框 4D ➔ MLP(64D)"},
+                {"stage": "3. 融合投影", "dim": f"{d_model}D", "desc": "256D ➔ 128D LayerNorm + ReLU"},
+                {"stage": "4. 图Transformer", "dim": f"{d_model}D", "desc": "2层跨视角交叉注意力"},
+                {"stage": "5. 最优传输", "dim": "(M0+1, M1+1)", "desc": "Log-Sinkhorn 20次迭代双随机对齐"}
+            ],
+            "pytorch_repr": f"""XFeatObjectMatcher(
+  (visual_backbone): XFeatPyramidBackbone(P1, P2, P3 ➔ 192D)
+  (visual_pool): AdaptiveAvgPool2d(output_size=(1, 1))
+  (geo_encoder): ObjectGeometryEncoder(MLP: 4D ➔ 64D)
+  (fusion_proj): Sequential(Linear(256, {d_model}), LayerNorm({d_model}), ReLU())
+  (transformer): ObjectGraphTransformer(2 Layers, 4 Heads, embed_dim={d_model})
+  (matcher): ObjectSinkhornMatcher(LogSinkhorn, iters=20, dustbin=True)
+)""",
+        }
+    elif model_type in ["mask_line"]:
+        return {
+            "model_type": "mask_line",
+            "name": "MaskLineFeatMatchNet",
+            "tagline": "6通道几何场（RGB + EDT距离场 + AFM朝向场）线段网络",
+            "params_total": "3,245,184 (约 3.25 M 参数)",
+            "trainable_params": "3,245,184",
+            "input_shapes": [
+                {"name": "多通道融合图像", "shape": "(B, 6, H, W)", "desc": "3通道RGB + 1通道欧氏距离场(EDT) + 2通道角度朝向场(AFM)"},
+                {"name": "线段几何端点", "shape": "(B, N, 4)", "desc": "直线两端点坐标 [x1, y1, x2, y2]"}
+            ],
+            "pipeline_stages": [
+                {"stage": "1. 几何场输入卷积", "dim": "64D", "desc": "Conv2d 6通道输入 ResNet 浅层骨干"},
+                {"stage": "2. 线段端点编码", "dim": "64D", "desc": "LineEndpointMLP 对两端点提取位置编码"},
+                {"stage": "3. 特征融合与分类", "dim": "128D", "desc": "特征图局部采样融合与相似度判定"},
+                {"stage": "4. 匹配矩阵", "dim": "(N0, N1)", "desc": "DualSoftmax 双向互最近邻门限过滤"}
+            ],
+            "pytorch_repr": """MaskLineFeatMatchNet(
+  (backbone): Conv6chResNet(in_channels=6, base_channels=64)
+  (line_encoder): LineEndpointMLP(in_features=4, out_features=64)
+  (fusion): FeatureMapSampler(channels=64)
+  (matcher): DualSoftmaxLineMatcher(temperature=0.1)
+)""",
+        }
+    else:  # line_transformer
+        return {
+            "model_type": "line_transformer",
+            "name": "LineMatcherNet",
+            "tagline": "端点几何向量与局部特征插值采样 Transformer 基线",
+            "params_total": "1,148,928 (约 1.15 M 参数)",
+            "trainable_params": "1,148,928",
+            "input_shapes": [
+                {"name": "直线端点坐标", "shape": "(B, N, 4)", "desc": "直线两端点坐标向量"},
+                {"name": "局部采样点", "shape": "(B, N, 7, 2)", "desc": "沿直线均匀采样的7个局部坐标"}
+            ],
+            "pipeline_stages": [
+                {"stage": "1. 端点几何编码", "dim": "128D", "desc": "LineGeometryEncoder MLP"},
+                {"stage": "2. 局部视觉采样", "dim": "128D", "desc": "在骨干特征图上沿线段双线性插值采样"},
+                {"stage": "3. Transformer", "dim": "128D", "desc": "TransformerEncoder 2层"},
+                {"stage": "4. 最近邻匹配", "dim": "(N0, N1)", "desc": "距离阈值双向几何过滤"}
+            ],
+            "pytorch_repr": """LineMatcherNet(
+  (line_encoder): LineGeometryEncoder(4 ➔ 128)
+  (sampler): LineFeatureSampler(samples=7)
+  (transformer): TransformerEncoder(d_model=128, nhead=4, num_layers=2)
+  (matcher): MutualNearestNeighborMatcher(dist_thresh=0.2)
+)""",
+        }
+
+
+class ModelPreviewHandler(BaseApiHandler):
+    """GET /api/model/preview - Returns detailed model architecture specification."""
+
+    def get(self) -> None:
+        model_type = self.get_query_argument("model", "xfeat_line_matcher")
+        use_pyramid = self.get_query_argument("pyramid", "true").lower() in ["true", "1", "yes"]
+        d_model = int(self.get_query_argument("d_model", "128"))
+
+        data = get_model_preview_data(model_type, use_pyramid, d_model)
+        self.write_json(data)
 
 
 class TrainHandler(BaseApiHandler):
@@ -323,6 +564,7 @@ class TrainHandler(BaseApiHandler):
         use_pyramid = body.get("pyramid", True)
         use_amp = body.get("amp", True)
         save_interval = body.get("save_interval", 5)
+        num_workers = body.get("num_workers", 2)
         resume = body.get("resume")
 
         cmd = [
@@ -334,6 +576,7 @@ class TrainHandler(BaseApiHandler):
             "--dustbin-weight", str(dustbin_weight),
             "--motion-weight", str(motion_weight),
             "--min-area-ratio", str(min_area_ratio),
+            "--num-workers", str(num_workers),
             "--save-interval", str(save_interval),
         ]
         if data_ratio < 1.0:
