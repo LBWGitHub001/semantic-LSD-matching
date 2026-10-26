@@ -609,13 +609,7 @@ async function loadDatasets() {
 function syncDataRatioFromSlider(val) {
   const fVal = Math.max(0.01, Math.min(1.0, parseFloat(val) || 1.0));
   const input = document.getElementById("train-data-ratio-input");
-  const badge = document.getElementById("train-data-ratio-badge");
   if (input) input.value = fVal.toFixed(2);
-  if (badge) {
-    const pct = Math.round(fVal * 100);
-    badge.textContent = `(${pct}%)`;
-    badge.style.color = fVal >= 1.0 ? "#34D399" : "#60A5FA";
-  }
 }
 
 function syncDataRatioFromInput(val) {
@@ -623,27 +617,7 @@ function syncDataRatioFromInput(val) {
   if (isNaN(fVal)) return;
   fVal = Math.max(0.01, Math.min(1.0, fVal));
   const slider = document.getElementById("train-data-ratio-slider");
-  const badge = document.getElementById("train-data-ratio-badge");
   if (slider) slider.value = fVal;
-  if (badge) {
-    const pct = Math.round(fVal * 100);
-    badge.textContent = `(${pct}%)`;
-    badge.style.color = fVal >= 1.0 ? "#34D399" : "#60A5FA";
-  }
-}
-
-function setDataRatio(val) {
-  const fVal = Math.max(0.01, Math.min(1.0, parseFloat(val)));
-  const slider = document.getElementById("train-data-ratio-slider");
-  const input = document.getElementById("train-data-ratio-input");
-  const badge = document.getElementById("train-data-ratio-badge");
-  if (slider) slider.value = fVal;
-  if (input) input.value = fVal.toFixed(2);
-  if (badge) {
-    const pct = Math.round(fVal * 100);
-    badge.textContent = `(${pct}%)`;
-    badge.style.color = fVal >= 1.0 ? "#34D399" : "#60A5FA";
-  }
 }
 
 async function startTraining() {
