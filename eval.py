@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 import sys
@@ -699,6 +700,42 @@ def evaluate(
 
     metrics["checkpoint"] = str(ckpt_path)
     metrics["model_info"] = model_info
+    metrics["evaluated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Automatically save evaluation results to output directory
+    p_out.mkdir(parents=True, exist_ok=True)
+    eval_json_path = p_out / "eval_results.json"
+    with open(eval_json_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    eval_md_path = p_out / "eval_report.md"
+    with open(eval_md_path, "w", encoding="utf-8") as f:
+        f.write(f"# 评测报告 (Evaluation Report)\n\n")
+        f.write(f"> **评测时间**: `{metrics['evaluated_at']}`  \n")
+        f.write(f"> **模型检查点**: `{ckpt_path}`  \n")
+        f.write(f"> **评测数据集**: `{p_data.name}` (划分: `{split}`)  \n")
+        f.write(f"> **耗时**: `{elapsed:.2f}s` | **测试对数**: `{metrics['total_pairs']}`\n\n")
+        f.write("## 核心指标结果\n")
+        f.write("| 评测指标 | 结果数值 | 说明 |\n")
+        f.write("| :--- | :---: | :--- |\n")
+        f.write(f"| **Match Precision** | **{metrics['precision']:.2f}%** | 匹配准确率 (查准率) |\n")
+        f.write(f"| **Match Recall** | **{metrics['recall']:.2f}%** | 目标召回率 (查全率) |\n")
+        f.write(f"| **Match F1-Score** | **{metrics['f1']:.2f}%** | 核心综合性能指标 |\n")
+        f.write(f"| **Dustbin Accuracy** | **{metrics['dustbin_acc']:.2f}%** | 垃圾桶正确率 |\n")
+        f.write(f"| **True Positives (TP)** | {metrics['tp']} | 正确匹配数 |\n")
+        f.write(f"| **False Positives (FP)** | {metrics['fp']} | 错误匹配数 |\n")
+        f.write(f"| **False Negatives (FN)** | {metrics['fn']} | 漏检未配对数 |\n")
+        if "cross_cat_fp" in metrics:
+            f.write(f"| **Cross-Category FP** | {metrics['cross_cat_fp']} ({metrics['cross_cat_rate']:.1f}%) | 跨类别严重误匹配 |\n")
+        f.write("\n")
+        if num_vis > 0 and "visualizations" in metrics:
+            f.write("## 诊断可视化列表\n")
+            for vp in metrics["visualizations"]:
+                f.write(f"- [{Path(vp).name}](file://{vp})\n")
+            f.write("\n")
+
+    print(f"[✓] Saved evaluation metrics to : {eval_json_path}")
+    print(f"[✓] Saved evaluation report to  : {eval_md_path}")
     return metrics
 
 

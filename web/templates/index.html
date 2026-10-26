@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Semantic LSD Matching - 统一管理系统与开发工作台</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+  <!-- Top Header Navigation -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">Semantic LSD Matching</div>
+        <div style="font-size: 11px; color: #9CA3AF;">线段与区域语义匹配统一管理平台</div>
+      </div>
+      <span class="brand-tag">v2.1</span>
+    </div>
+
+    <div class="header-status">
+      <div class="status-badge" id="gpu-badge">GPU: 检查中...</div>
+      <div class="status-badge">
+        <span class="dot dot-idle" id="status-dot"></span>
+        <span id="status-text">系统就绪 (Ready)</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="nav-tabs">
+    <button class="tab-btn active" data-tab="dashboard">📊 实验复盘看板</button>
+    <button class="tab-btn" data-tab="train">🚀 训练工作台</button>
+    <button class="tab-btn" data-tab="eval">🧪 评测基准</button>
+    <button class="tab-btn" data-tab="gallery">🖼️ 结果可视化画廊</button>
+    <button class="tab-btn" data-tab="dataset">📦 数据集生成</button>
+  </nav>
+
+  <!-- Main Container -->
+  <main class="main-container">
+
+    <!-- ======================================================== -->
+    <!-- Tab 1: 实验复盘看板 (Dashboard)                          -->
+    <!-- ======================================================== -->
+    <div class="tab-pane active" id="tab-dashboard">
+      <!-- Stat Summary Cards -->
+      <div class="grid-4" style="margin-bottom: 24px;">
+        <div class="stat-card">
+          <div class="stat-label">总实验次数</div>
+          <div class="stat-val" id="stat-total-runs">-</div>
+          <div class="stat-sub">历史 Checkpoints 记录</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">最佳测试集 Raw F1</div>
+          <div class="stat-val" id="stat-best-raw-f1" style="color: #60A5FA;">-</div>
+          <div class="stat-sub">零先验纯外观几何匹配</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">最佳测试集 Semantic F1</div>
+          <div class="stat-val" id="stat-best-sem-f1" style="color: #34D399;">-</div>
+          <div class="stat-sub">语义类别先验约束增强</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">模型架构</div>
+          <div class="stat-val" style="font-size: 20px; color: #A78BFA; margin-top: 10px;">XFeatLineMatcher</div>
+          <div class="stat-sub">FPN金字塔 + 5D几何编码</div>
+        </div>
+      </div>
+
+      <!-- Action Toolbar -->
+      <div class="card" style="margin-bottom: 24px;">
+        <div class="card-title">
+          <span>历史实验列表 (Historical Runs)</span>
+          <button class="btn btn-primary btn-sm" id="btn-compare-runs" disabled onclick="compareSelectedRuns()">
+            请勾选 2 个实验进行对比 (0/2)
+          </button>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 40px;">选</th>
+                <th>实验代号</th>
+                <th>模型架构</th>
+                <th>启动时间</th>
+                <th>轮次</th>
+                <th>最佳验证集 F1</th>
+                <th>测试集 Raw F1</th>
+                <th>测试集 Semantic F1</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="runs-table-body">
+              <tr><td colspan="9" style="text-align:center; color:#9CA3AF;">加载历史实验中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- Tab 2: 训练工作台 (Training Studio)                      -->
+    <!-- ======================================================== -->
+    <div class="tab-pane" id="tab-train">
+      <div class="grid-train-layout">
+        <!-- Left: Hyperparameters Form -->
+        <div class="card">
+          <div class="card-title">超参数配置 (Hyperparameters)</div>
+
+          <div class="form-group">
+            <label class="form-label">模型架构 (Model Architecture)</label>
+            <select class="form-control" id="train-model">
+              <option value="xfeat_line_matcher" selected>xfeat_line_matcher (推荐: 线段+多尺度金字塔)</option>
+              <option value="xfeat_object">xfeat_object (纯物体区域基线)</option>
+              <option value="mask_line">mask_line (早期掩码线段网络)</option>
+              <option value="line_transformer">line_transformer (LineMatcherNet)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">训练数据集 (Dataset Directory)</label>
+            <select class="form-control" id="train-data-dir">
+              <option value="data/xfeat_line_matcher">xfeat_line_matcher (默认真实CAD直线)</option>
+              <option value="data/structured3d_semantic_regions">structured3d_semantic_regions</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">总训练轮数 (Epochs)</label>
+              <input type="number" class="form-control" id="train-epochs" value="15" min="1" max="100">
+            </div>
+            <div class="form-group">
+              <label class="form-label">学习率 (Learning Rate)</label>
+              <input type="text" class="form-control" id="train-lr" value="0.0005">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">垃圾桶损失权重 (Dustbin Weight)</label>
+              <input type="number" step="0.05" class="form-control" id="train-dustbin" value="0.1">
+            </div>
+            <div class="form-group">
+              <label class="form-label">位移场损失权重 (Motion Weight)</label>
+              <input type="number" step="0.05" class="form-control" id="train-motion" value="0.4">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">最小共视面积门限 (Min Area Ratio)</label>
+            <input type="number" step="0.05" class="form-control" id="train-area-ratio" value="0.40">
+          </div>
+
+          <div class="form-row" style="margin-bottom: 20px;">
+            <label class="checkbox-label">
+              <input type="checkbox" id="train-pyramid" checked> 多尺度金字塔 (Pyramid FPN)
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="train-amp" checked> 混合精度加速 (AMP FP16)
+            </label>
+          </div>
+
+          <div style="display: flex; gap: 12px;">
+            <button class="btn btn-success" style="flex: 2;" onclick="startTraining()">▶ 开始训练</button>
+            <button class="btn btn-danger" style="flex: 1;" onclick="stopTraining()">⏹ 平滑停止</button>
+          </div>
+        </div>
+
+        <!-- Center: Real-time Terminal & Dynamic Chart -->
+        <div>
+          <!-- Live Chart -->
+          <div class="card" style="margin-bottom: 16px; padding: 14px 20px;">
+            <div class="card-title" style="margin-bottom: 8px;">
+              <span>实时训练轨迹 (Live Curves: Loss & Val F1)</span>
+              <span style="font-size: 11px; color: #9CA3AF;">自动随训练轮次更新</span>
+            </div>
+            <canvas id="live-chart" width="800" height="180" style="width: 100%; height: 180px;"></canvas>
+          </div>
+
+          <!-- Terminal Logs -->
+          <div class="terminal-window">
+            <div class="terminal-header">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span>控制台 (Console)</span>
+                <span class="badge badge-success" id="ws-badge">● WS 已连接</span>
+                <select id="log-source-select" class="form-control" style="width: auto; padding: 2px 8px; font-size: 11px; height: 26px; background: #1F2937;" onchange="switchLogSource()">
+                  <option value="live">实时任务输出 (Live)</option>
+                </select>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn btn-secondary btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">滚动: 开</button>
+                <button class="btn btn-secondary btn-sm" onclick="clearTerminal()">清屏</button>
+              </div>
+            </div>
+            <div class="terminal-body" id="terminal-logs">
+欢迎使用 Semantic LSD Matching 统一管理系统。
+选择左侧参数后点击“开始训练”启动任务，或从上方下拉菜单选择历史运行查看过去的日志。
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Hardware Resource Monitor -->
+        <div class="card res-monitor-card">
+          <div class="card-title">
+            <span>硬件资源监视 (Hardware)</span>
+            <span class="badge badge-blue" id="res-refresh-badge">实时 2s</span>
+          </div>
+
+          <!-- CPU Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">💻 处理器 (CPU)</span>
+              <span class="res-meter-val" id="res-cpu-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-cpu" id="res-cpu-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="res-cpu-cores">- 核</span>
+              <span id="res-cpu-load">负载: -</span>
+            </div>
+          </div>
+
+          <!-- RAM Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">💾 运行内存 (RAM)</span>
+              <span class="res-meter-val" id="res-ram-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-ram" id="res-ram-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="res-ram-used">已用: - / - GB</span>
+              <span id="res-swap-used">交换区: - GB</span>
+            </div>
+          </div>
+
+          <!-- GPU Core Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">🎮 显卡核心 (GPU)</span>
+              <span class="res-meter-val" id="res-gpu-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-gpu" id="res-gpu-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="res-gpu-name">GPU 运算负载</span>
+              <span id="res-gpu-temp">温度: -°C</span>
+            </div>
+          </div>
+
+          <!-- GPU VRAM Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">⚡ 显存占用 (VRAM)</span>
+              <span class="res-meter-val" id="res-vram-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-vram" id="res-vram-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="res-vram-used">已用: - / - MB</span>
+              <span id="res-gpu-power">功耗: - W</span>
+            </div>
+          </div>
+
+          <!-- Pipeline Health / Diagnostic Helper -->
+          <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.5;" id="res-status-helper">
+            <b style="color: #60A5FA;">ℹ️ 流水线诊断：</b>
+            <span id="res-helper-text">系统监控正常运行中</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- Tab 3: 评测基准 (Evaluation Benchmark)                   -->
+    <!-- ======================================================== -->
+    <div class="tab-pane" id="tab-eval">
+      <div class="grid-2">
+        <!-- Left: Eval Config -->
+        <div class="card">
+          <div class="card-title">评测配置 (Evaluation Options)</div>
+
+          <div class="form-group">
+            <label class="form-label">模型权重检查点 (Model Checkpoint)</label>
+            <select class="form-control" id="eval-checkpoint">
+              <option value="">扫描检查点中...</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">评测数据集 (Dataset Directory)</label>
+            <select class="form-control" id="eval-data-dir"></select>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">数据划分 (Split)</label>
+              <select class="form-control" id="eval-split">
+                <option value="test" selected>test (测试集 - 独立未见场景)</option>
+                <option value="val">val (验证集)</option>
+                <option value="train">train (训练集)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">输出图样数 (Num Visualizations)</label>
+              <input type="number" class="form-control" id="eval-num-vis" value="6" min="0" max="100">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">最小共视面积门限 (Min Area Ratio)</label>
+            <input type="number" step="0.05" class="form-control" id="eval-area-ratio" value="0.40">
+          </div>
+
+          <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="startEvaluation()">
+            🧪 运行基准评测 (Run Benchmark)
+          </button>
+        </div>
+
+        <!-- Right: Instructions & Output Info -->
+        <div class="card">
+          <div class="card-title">评测说明与基准标准</div>
+          <p style="color: #9CA3AF; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+            系统将对指定检查点在未见场景进行双重严格基准检验：<br>
+            <b>[1] 纯视觉外观匹配 (Zero Class Prior)</b>：完全不提供物体类别标签，仅凭视觉外观与线段几何拓扑进行跨图匹配，考察特征判别力与泛化性。<br>
+            <b>[2] 语义类别约束匹配 (Semantic Prior)</b>：施加语义掩码先验，验证在实际具身导航与建图场景下的最终实用性能。
+          </p>
+          <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 14px;">
+            <b style="color: #60A5FA;">💡 实时查看：</b> 评测开始后，控制台将输出每个 Batch 的吞吐速度与匹配计数；完成后可切换至【结果可视化画廊】查看本次生成的连线图样！
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- Tab 4: 结果可视化画廊 (Matching Gallery)                 -->
+    <!-- ======================================================== -->
+    <div class="tab-pane" id="tab-gallery">
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-title">
+          <div>
+            <span>评测样本可视化图库</span>
+            <span style="font-size: 13px; color: #9CA3AF; margin-left: 10px;" id="gallery-count">加载中...</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <input type="text" class="form-control" style="width: 260px;" id="gallery-search" placeholder="输入场景名或编号搜索..." oninput="filterGallery()">
+            <button class="btn btn-secondary btn-sm" onclick="loadGallery()">刷新</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gallery Grid -->
+      <div class="gallery-grid" id="gallery-grid">
+        <div style="color: #9CA3AF;">正在加载可视化图像...</div>
+      </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- Tab 5: 数据集生成 (Dataset Factory)                      -->
+    <!-- ======================================================== -->
+    <div class="tab-pane" id="tab-dataset">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Structured3D CAD 直线数据集生成</div>
+
+          <div class="form-group">
+            <label class="form-label">生成任务预设 (Task Preset)</label>
+            <select class="form-control" id="gen-task">
+              <option value="structured3d_lines" selected>structured3d_lines (真实CAD 3D线段投影 + Z-Buffer遮挡剔除)</option>
+              <option value="object">object (仅区域物体)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Structured3D 原始数据根目录</label>
+            <input type="text" class="form-control" id="gen-s3d-dir" value="data/Structured3D">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">输出数据集保存目录</label>
+            <input type="text" class="form-control" id="gen-out-dir" value="data/xfeat_line_matcher">
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">最大处理场景数 (留空为全部)</label>
+              <input type="text" class="form-control" id="gen-max-scenes" placeholder="例如: 10 (测试)">
+            </div>
+            <div class="form-group">
+              <label class="form-label">并发进程数 (Num Workers)</label>
+              <input type="number" class="form-control" id="gen-workers" value="4" min="1" max="16">
+            </div>
+          </div>
+
+          <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="startDatasetGeneration()">
+            ⚙️ 开始生成数据集
+          </button>
+        </div>
+
+        <div>
+          <div class="card-title" style="margin-bottom: 12px;">已存在的数据集列表 (Local Datasets)</div>
+          <div id="dataset-cards-container">
+            <div style="color: #9CA3AF;">加载数据集列表中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ======================================================== -->
+  <!-- Modals (弹出层)                                           -->
+  <!-- ======================================================== -->
+
+  <!-- Run Details & Post-Mortem Report Modal -->
+  <div class="modal-overlay" id="run-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title" id="run-modal-title">实验复盘详情</div>
+        <button class="modal-close" onclick="closeModal('run-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img id="run-curves-img" style="max-width: 100%; border-radius: 8px; border: 1px solid #374151; display: none;">
+        </div>
+        <div class="markdown-body" id="run-report-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Comparison Modal -->
+  <div class="modal-overlay" id="compare-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title" id="compare-modal-title">实验横向对比</div>
+        <button class="modal-close" onclick="closeModal('compare-modal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="table-container" style="margin-bottom: 20px;">
+          <table>
+            <thead>
+              <tr>
+                <th>超参数 / 性能维度</th>
+                <th>实验 A</th>
+                <th>实验 B</th>
+              </tr>
+            </thead>
+            <tbody id="compare-table-body"></tbody>
+          </table>
+        </div>
+        <div style="text-align: center;">
+          <img id="compare-curve-img" style="max-width: 100%; border-radius: 8px; border: 1px solid #374151; display: none;">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gallery Image High-Res Viewer Modal -->
+  <div class="modal-overlay" id="gallery-modal">
+    <div class="modal-content" style="max-width: 1200px;">
+      <div class="modal-header">
+        <div class="modal-title" id="gallery-modal-title">查看匹配样本</div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary btn-sm" onclick="galleryNavigate(-1)">◀ 上一张</button>
+          <button class="btn btn-secondary btn-sm" onclick="galleryNavigate(1)">下一张 ▶</button>
+          <button class="modal-close" onclick="closeModal('gallery-modal')">&times;</button>
+        </div>
+      </div>
+      <div class="modal-body" style="text-align: center; background: #000; padding: 10px;">
+        <img id="gallery-modal-img" style="max-width: 100%; max-height: 75vh; object-fit: contain;">
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -50,6 +50,7 @@ from datasets import (
     visualize_semantic_region_matches,
     LineFeatPairDataset,
 )
+from tools.experiment_tracker import ExperimentLogger
 
 
 def safe_load_checkpoint(path: Path | str, map_location: Any = "cpu") -> dict:
@@ -329,6 +330,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         "test_benchmark": None,
     }
     save_config_json(config_json_path, config_data)
+    logger = ExperimentLogger(save_dir=save_dir, config_data=config_data, enable_stdout_tee=True)
 
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
@@ -432,6 +434,17 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                   f"| F1: {val_f1:5.1f}% | Dustbin: P={val_metrics['dustbin_prec']:4.1f}%/R={val_metrics['dustbin_rec']:4.1f}%{star}")
         else:
             print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({epoch_sec:.1f}s) | Loss: {train_loss:.4f}")
+
+        # Log epoch metrics to CSV, memory history, and update training curves
+        cur_lr = optimizer.param_groups[0]["lr"] if optimizer.param_groups else lr
+        logger.log_epoch(
+            epoch=epoch,
+            train_loss=train_loss,
+            val_metrics=val_metrics,
+            is_best=is_best,
+            epoch_sec=epoch_sec,
+            lr=cur_lr,
+        )
 
         # Checkpoint Management
         serializable_args = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
@@ -614,6 +627,10 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         },
     }
     save_config_json(config_json_path, config_data)
+    logger.finish(
+        raw_test_metrics=raw_test_metrics,
+        cat_test_metrics=cat_test_metrics,
+    )
     print(f"\n[+] Saved run configuration and benchmark summary to: {config_json_path}")
 
 
