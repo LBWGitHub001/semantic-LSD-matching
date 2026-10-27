@@ -102,8 +102,10 @@ def worker_init_fn(worker_id: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
-                        choices=["xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "mask_line", "mask", "line_transformer", "linefeat"],
-                        help="Model architecture: 'xfeat_object' (XFeatObjectMatcher), 'xfeat_line_matcher' (XFeatLineMatcher), 'mask_line' (MaskLineFeatMatchNet), 'line_transformer' (LineMatcherNet)")
+                        choices=["xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "line_object",
+                                 "semantic_line_matcher", "semantic_line",
+                                 "mask_line", "mask", "line_transformer", "linefeat"],
+                        help="Model architecture: 'xfeat_object', 'xfeat_line_matcher', 'semantic_line_matcher', 'mask_line', 'line_transformer'")
     parser.add_argument("--data-dir", type=str, default=None, help="Dataset directory or index path")
     parser.add_argument("--epochs", type=int, default=12, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=None, help="Learning rate (default: 5e-4 for xfeat_object, 1e-4 for line models)")
@@ -117,6 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", action="store_true", default=True, help="Enable Automatic Mixed Precision (FP16)")
     parser.add_argument("--save-dir", type=Path, default=None, help="Checkpoint directory")
     parser.add_argument("--run-name", type=str, default=None, help="Custom run subfolder name (default: start time YYYYMMDD_HHMMSS)")
+    parser.add_argument("--label", type=str, default=None, help="Optional user-defined custom tag/label to annotate this training experiment")
     parser.add_argument("--no-timestamp", action="store_true", default=False, help="Save checkpoints directly in save-dir without timestamp subfolder")
     parser.add_argument("--val-interval", type=int, default=1, help="Validation interval in epochs")
     parser.add_argument("--save-interval", type=int, default=5, help="Save historical checkpoint every N epochs (e.g. epoch_005.pth, default: 5)")
@@ -125,6 +128,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dustbin-weight", type=float, default=0.3, help="Dustbin rejection loss weight for ObjectMatchingLoss (default: 0.3)")
     parser.add_argument("--motion-weight", type=float, default=0.2, help="Transformation consistency loss weight (方案一: 位移场共识损失, default: 0.2)")
     parser.add_argument("--motion-margin", type=float, default=0.15, help="Parallax tolerance margin in [-1, 1] normalized coordinates (default: 0.15)")
+    parser.add_argument("--region-weight", type=float, default=1.0, help="semantic_line_matcher: region KL weight")
+    parser.add_argument("--line-weight", type=float, default=1.0, help="semantic_line_matcher: line KL weight")
+    parser.add_argument("--sem-weight", type=float, default=0.1, help="semantic_line_matcher: line→semantic JSD weight")
+    parser.add_argument("--geo-weight", type=float, default=0.2, help="semantic_line_matcher: adjacency geo weight")
+    parser.add_argument("--adj-sigma", type=float, default=0.3, help="semantic_line_matcher: soft adjacency temperature")
+    parser.add_argument("--line-sample-points", type=int, default=8, help="semantic_line_matcher: along-line sample count")
     parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
     parser.add_argument("--data-ratio", "--data-fraction", dest="data_ratio", type=float, default=1.0, help="Fraction of training dataset to randomly sample (0.0 to 1.0, default: 1.0)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
@@ -153,7 +162,8 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             pyr_tag = "pyramid" if getattr(args, "use_pyramid", True) else "no_pyramid"
             d_tag = f"d{getattr(args, 'd_model', 128)}"
             dataset_name = Path(data_dir).name
-            run_name = f"{args.model_type}+{pyr_tag}_{d_tag}+{dataset_name}+【{start_time_str}】"
+            label_tag = f"+【{args.label}】" if getattr(args, "label", None) else ""
+            run_name = f"{args.model_type}+{pyr_tag}_{d_tag}+{dataset_name}{label_tag}+【{start_time_str}】"
         save_dir = base_save_dir / run_name
 
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -196,7 +206,15 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             if splits_data and (p_data / splits_data[0] / "correspondence.json").exists():
                 use_region_ds = True
 
-    needs_lines = args.model_type in ["xfeat_line_matcher", "xfeat_line", "line_object"]
+    is_semantic_line = args.model_type in ["semantic_line_matcher", "semantic_line"]
+    if is_semantic_line:
+        # Dual line+region matcher: disable legacy global motion by default
+        if args.motion_weight == 0.2:
+            args.motion_weight = 0.0
+    needs_lines = args.model_type in [
+        "xfeat_line_matcher", "xfeat_line", "line_object",
+        "semantic_line_matcher", "semantic_line",
+    ]
     if use_region_ds:
         from datasets.semantic_region_dataset import SemanticRegionDataset, collate_region_pairs
         train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train", min_area_ratio=args.min_area_ratio, load_lines=needs_lines)
@@ -246,22 +264,41 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
         pin_memory=True if torch.cuda.is_available() else False,
     )
 
-    model = build_model(
-        args.model_type,
+    model_kwargs = dict(
         feat_dim=64,
         d_model=args.d_model,
         num_layers=args.num_layers,
         nhead=args.nhead,
         sinkhorn_iters=20,
         use_pyramid=getattr(args, "use_pyramid", True),
-    ).to(device)
+    )
+    if is_semantic_line:
+        model_kwargs.update(
+            with_geometry=True,
+            line_sample_points=getattr(args, "line_sample_points", 8),
+            enable_line_head=True,
+            line_dim=64,
+        )
+    model = build_model(args.model_type, **model_kwargs).to(device)
 
-    loss_fn = build_loss(
-        args.model_type,
-        dustbin_weight=args.dustbin_weight,
-        motion_weight=args.motion_weight,
-        motion_margin=args.motion_margin,
-    ).to(device)
+    if is_semantic_line:
+        loss_fn = build_loss(
+            args.model_type,
+            dustbin_weight=args.dustbin_weight,
+            region_weight=args.region_weight,
+            line_weight=args.line_weight,
+            sem_weight=args.sem_weight,
+            geo_weight=args.geo_weight,
+            adj_sigma=args.adj_sigma,
+            motion_weight=0.0,
+        ).to(device)
+    else:
+        loss_fn = build_loss(
+            args.model_type,
+            dustbin_weight=args.dustbin_weight,
+            motion_weight=args.motion_weight,
+            motion_margin=args.motion_margin,
+        ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp, init_scale=2048.0)
 
@@ -301,6 +338,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
     config_data = {
         "experiment_info": {
             "run_name": run_name,
+            "label": getattr(args, "label", None),
             "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": None,
             "git_commit": get_git_commit(),
@@ -397,14 +435,35 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
 
             with torch.amp.autocast("cuda", enabled=args.amp):
                 out = model(patches0, patches1, **model_kwargs)
-                loss = loss_fn(
-                    out["log_P"].float(),
-                    batch["gt_matches"],
-                    batch["unmatched_0"],
-                    batch["unmatched_1"],
-                    centroids0=c0,
-                    centroids1=c1,
-                )
+                if is_semantic_line:
+                    log_line = out.get("log_P_line")
+                    if torch.is_tensor(log_line):
+                        log_line = log_line.float()
+                    loss_out = loss_fn(
+                        log_P_region=out["log_P"].float(),
+                        log_P_line=log_line,
+                        gt_matches=batch["gt_matches"],
+                        unmatched_0=batch["unmatched_0"],
+                        unmatched_1=batch["unmatched_1"],
+                        gt_line_pairs_flat=batch.get("gt_line_pairs_flat", [[]]),
+                        unmatched_lines_flat_0=batch.get("unmatched_lines_flat_0", [[]]),
+                        unmatched_lines_flat_1=batch.get("unmatched_lines_flat_1", [[]]),
+                        line_parents0=out.get("line_parents0"),
+                        line_parents1=out.get("line_parents1"),
+                        centroids0=c0,
+                        centroids1=c1,
+                        has_line_ids=bool(batch.get("has_line_ids", False)),
+                    )
+                    loss = loss_out[0] if isinstance(loss_out, tuple) else loss_out
+                else:
+                    loss = loss_fn(
+                        out["log_P"].float(),
+                        batch["gt_matches"],
+                        batch["unmatched_0"],
+                        batch["unmatched_1"],
+                        centroids0=c0,
+                        centroids1=c1,
+                    )
                 loss_scaled = loss.float() / args.grad_accum
 
             scaler.scale(loss_scaled).backward()
@@ -813,7 +872,8 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
             pyr_tag = "pyramid" if getattr(args, "use_pyramid", True) else "no_pyramid"
             d_tag = f"d{getattr(args, 'd_model', 128)}"
             dataset_name = Path(data_dir).name
-            run_name = f"{args.model_type}+{pyr_tag}_{d_tag}+{dataset_name}+【{start_time_str}】"
+            label_tag = f"+【{args.label}】" if getattr(args, "label", None) else ""
+            run_name = f"{args.model_type}+{pyr_tag}_{d_tag}+{dataset_name}{label_tag}+【{start_time_str}】"
         save_dir = base_save_dir / run_name
 
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -921,6 +981,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
     config_data = {
         "experiment_info": {
             "run_name": run_name,
+            "label": getattr(args, "label", None),
             "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": None,
             "git_commit": get_git_commit(),
@@ -1113,7 +1174,10 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.model_type in ["xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "line_object"]:
+    if args.model_type in [
+        "xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "line_object",
+        "semantic_line_matcher", "semantic_line",
+    ]:
         train_object_pipeline(args)
     else:
         train_line_pipeline(args)
