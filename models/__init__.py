@@ -33,6 +33,12 @@ from models.line_transformer import (
     LineMatchPipeline,
 )
 
+# 4. Semantic region-conditioned dual line matcher
+from models.semantic_line_matcher import (
+    SemanticLineMatcher,
+    SemanticLineMatchingLoss,
+)
+
 MODEL_REGISTRY = {
     # Model 1: Object Bipartite Matchers ("连连看")
     "xfeat_object": XFeatObjectMatcher,
@@ -42,6 +48,9 @@ MODEL_REGISTRY = {
     "xfeat_line_matcher": XFeatLineMatcher,
     "xfeat_line": XFeatLineMatcher,
     "line_object": XFeatLineMatcher,
+    # Model 1.6: Dual region + texture-line matcher
+    "semantic_line_matcher": SemanticLineMatcher,
+    "semantic_line": SemanticLineMatcher,
     # Model 2: 6-Channel Continuous Geometry Field Line Matcher
     "mask_line": MaskLineFeatMatchNet,
     "mask": MaskLineFeatMatchNet,
@@ -57,6 +66,8 @@ LOSS_REGISTRY = {
     "xfeat_line_matcher": ObjectMatchingLoss,
     "xfeat_line": ObjectMatchingLoss,
     "line_object": ObjectMatchingLoss,
+    "semantic_line_matcher": SemanticLineMatchingLoss,
+    "semantic_line": SemanticLineMatchingLoss,
     "mask_line": LineMatchingLoss,
     "mask": LineMatchingLoss,
     "line_transformer": LineMatchingLoss,
@@ -105,4 +116,6 @@ __all__ = [
     "MaskedMatrixLoss",
     "LineMatcher",
     "LineMatchPipeline",
+    "SemanticLineMatcher",
+    "SemanticLineMatchingLoss",
 ]
