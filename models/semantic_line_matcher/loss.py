@@ -123,10 +123,104 @@ class SemanticLineMatchingLoss(nn.Module):
             return torch.tensor(0.0, device=mats[0].device, requires_grad=True) * 0.0
         return total / float(n)
 
-    def semantic_jsd_loss(self, *args, **kwargs) -> torch.Tensor:
-        """Implemented in step08."""
-        device = kwargs.get("device", torch.device("cpu"))
-        return torch.tensor(0.0, device=device)
+    @staticmethod
+    def _line_to_semantic_matrix(
+        P_line: torch.Tensor,
+        parents_other: torch.Tensor,
+        num_regions_other: int,
+    ) -> torch.Tensor:
+        """
+        Marginalize line↔line probs into line→semantic (+ dustbin).
+
+        P_line: (N_self+1, N_other+1), parents_other: (N_other,)
+        Returns M: (N_self, num_regions_other+1)
+        """
+        N_self = P_line.shape[0] - 1
+        N_other = P_line.shape[1] - 1
+        device = P_line.device
+        dtype = P_line.dtype
+        M = torch.zeros((N_self, num_regions_other + 1), device=device, dtype=dtype)
+        if N_self == 0:
+            return M
+        # dustbin column
+        M[:, -1] = P_line[:N_self, N_other]
+        if N_other == 0 or parents_other.numel() == 0:
+            return M
+        for j in range(N_other):
+            s = int(parents_other[j].item())
+            if 0 <= s < num_regions_other:
+                M[:, s] = M[:, s] + P_line[:N_self, j]
+        # renormalize rows
+        M = M / M.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        return M
+
+    @staticmethod
+    def _generalized_jsd(rows: torch.Tensor) -> torch.Tensor:
+        """
+        rows: (K, C) probability rows for lines in the same region.
+        JSD = sum_k w_k KL(p_k || m), w=1/K, m=mean(p).
+        """
+        K = rows.shape[0]
+        if K <= 1:
+            return rows.new_zeros(())
+        w = 1.0 / float(K)
+        m = rows.mean(dim=0).clamp(min=1e-8)
+        m = m / m.sum()
+        # KL(p||m) = sum p (log p - log m)
+        p = rows.clamp(min=1e-8)
+        p = p / p.sum(dim=-1, keepdim=True)
+        kl = (p * (torch.log(p) - torch.log(m.unsqueeze(0)))).sum(dim=-1)
+        return (w * kl).sum()
+
+    def semantic_jsd_loss(
+        self,
+        log_P_line: Union[torch.Tensor, List[torch.Tensor], None] = None,
+        line_parents0: Optional[List[torch.Tensor]] = None,
+        line_parents1: Optional[List[torch.Tensor]] = None,
+        num_regions0: int = 0,
+        num_regions1: int = 0,
+        device: Optional[torch.device] = None,
+        enabled: bool = True,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        """
+        Bidirectional line→semantic generalized JSD within each parent region.
+        Encourages lines of the same semantic to agree on the opposite semantic.
+        """
+        if not enabled or log_P_line is None or line_parents0 is None or line_parents1 is None:
+            return torch.tensor(0.0, device=device or torch.device("cpu"))
+
+        if isinstance(log_P_line, torch.Tensor):
+            mats = [log_P_line]
+        else:
+            mats = list(log_P_line)
+
+        total = torch.tensor(0.0, device=mats[0].device)
+        n_groups = 0
+        for b, log_mat in enumerate(mats):
+            P = torch.exp(torch.clamp(log_mat, min=-100.0, max=0.0))
+            p0 = line_parents0[b] if b < len(line_parents0) else torch.zeros(0, dtype=torch.long, device=P.device)
+            p1 = line_parents1[b] if b < len(line_parents1) else torch.zeros(0, dtype=torch.long, device=P.device)
+
+            M_ab = self._line_to_semantic_matrix(P, p1, num_regions1)
+            M_ba = self._line_to_semantic_matrix(P.transpose(0, 1), p0, num_regions0)
+
+            for r in range(num_regions0):
+                idx = (p0 == r).nonzero(as_tuple=False).view(-1)
+                if idx.numel() <= 1:
+                    continue
+                total = total + self._generalized_jsd(M_ab[idx])
+                n_groups += 1
+            for r in range(num_regions1):
+                idx = (p1 == r).nonzero(as_tuple=False).view(-1)
+                if idx.numel() <= 1:
+                    continue
+                total = total + self._generalized_jsd(M_ba[idx])
+                n_groups += 1
+
+        if n_groups == 0:
+            return torch.tensor(0.0, device=mats[0].device)
+        return total / float(n_groups)
 
     def adjacency_geo_loss(self, *args, **kwargs) -> torch.Tensor:
         """Implemented in step09."""
