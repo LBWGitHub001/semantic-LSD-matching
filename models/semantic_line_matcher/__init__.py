@@ -7,10 +7,12 @@ Outputs region Sinkhorn (P_R) and line Sinkhorn (P_L) in one forward pass.
 
 from __future__ import annotations
 
+from models.semantic_line_matcher.line_encoder import AlongLineTextureEncoder
 from models.semantic_line_matcher.loss import SemanticLineMatchingLoss
 from models.semantic_line_matcher.model import SemanticLineMatcher
 
 __all__ = [
+    "AlongLineTextureEncoder",
     "SemanticLineMatcher",
     "SemanticLineMatchingLoss",
 ]
