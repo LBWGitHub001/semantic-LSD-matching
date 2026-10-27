@@ -49,7 +49,24 @@ class TestSemanticLineKL(unittest.TestCase):
         self.assertIsNotNone(log_P_line.grad)
 
 
+class TestSemanticLineGeo(unittest.TestCase):
+    def test_adjacency_geo_identity_small(self) -> None:
+        loss_fn = SemanticLineMatchingLoss(geo_weight=1.0, adj_sigma=0.3)
+        # Identity matching on same layout → geo near 0
+        c = torch.tensor([[[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]]])
+        log_P = torch.full((1, 4, 4), -20.0)
+        for i in range(3):
+            log_P[0, i, i] = 0.0
+        log_P[0, 3, 3] = 0.0
+        log_P = log_P.clone().requires_grad_(True)
+        geo = loss_fn.adjacency_geo_loss(log_P_region=log_P, centroids0=c, centroids1=c, enabled=True)
+        self.assertLess(float(geo.detach()), 1e-3)
+        geo.sum().backward()
+        self.assertIsNotNone(log_P.grad)
+
+
 class TestSemanticLineJSD(unittest.TestCase):
+
     def test_jsd_concentrated_smaller_than_dispersed(self) -> None:
         loss_fn = SemanticLineMatchingLoss(sem_weight=1.0, geo_weight=0.0, region_weight=0.0, line_weight=0.0)
         # 2 lines in region 0, 2 lines in region 1 on the other side + dustbin

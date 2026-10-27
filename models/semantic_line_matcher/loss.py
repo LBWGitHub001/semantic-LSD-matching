@@ -222,10 +222,65 @@ class SemanticLineMatchingLoss(nn.Module):
             return torch.tensor(0.0, device=mats[0].device)
         return total / float(n_groups)
 
-    def adjacency_geo_loss(self, *args, **kwargs) -> torch.Tensor:
-        """Implemented in step09."""
-        device = kwargs.get("device", torch.device("cpu"))
-        return torch.tensor(0.0, device=device)
+    def _soft_adjacency(self, centroids: torch.Tensor) -> torch.Tensor:
+        """
+        Soft adjacency A[i,k]=exp(-||ci-ck||/σ), diagonal zero.
+        centroids: (M, 2)
+        """
+        M = centroids.shape[0]
+        if M == 0:
+            return centroids.new_zeros((0, 0))
+        diff = centroids.unsqueeze(0) - centroids.unsqueeze(1)  # (M,M,2)
+        dist = torch.linalg.norm(diff, dim=-1)
+        A = torch.exp(-dist / max(self.adj_sigma, 1e-6))
+        A = A - torch.diag(torch.diag(A))
+        return A
+
+    @staticmethod
+    def _row_l1_normalize(A: torch.Tensor) -> torch.Tensor:
+        if A.numel() == 0:
+            return A
+        return A / A.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+
+    def adjacency_geo_loss(
+        self,
+        log_P_region: Optional[torch.Tensor] = None,
+        centroids0: Optional[torch.Tensor] = None,
+        centroids1: Optional[torch.Tensor] = None,
+        device: Optional[torch.device] = None,
+        enabled: bool = True,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        """
+        Adjacency preservation: neighbors stay neighbors across views.
+        A0 ≈ P A1 P^T with soft centroid adjacency and soft matching P.
+        """
+        if not enabled or log_P_region is None or centroids0 is None or centroids1 is None:
+            return torch.tensor(0.0, device=device or torch.device("cpu"))
+
+        B = log_P_region.shape[0]
+        total = torch.tensor(0.0, device=log_P_region.device)
+        n = 0
+        for b in range(B):
+            log_P = log_P_region[b]
+            M0 = log_P.shape[0] - 1
+            M1 = log_P.shape[1] - 1
+            if M0 < 2 or M1 < 2:
+                continue
+            c0 = centroids0[b] if centroids0.ndim == 3 else centroids0
+            c1 = centroids1[b] if centroids1.ndim == 3 else centroids1
+            if c0.shape[0] < 2 or c1.shape[0] < 2:
+                continue
+            P = torch.exp(torch.clamp(log_P[:M0, :M1], min=-100.0, max=0.0))
+            A0 = self._soft_adjacency(c0[:M0])
+            A1 = self._soft_adjacency(c1[:M1])
+            A0_hat = P @ A1 @ P.transpose(0, 1)
+            diff = self._row_l1_normalize(A0) - self._row_l1_normalize(A0_hat)
+            total = total + (diff ** 2).sum()
+            n += 1
+        if n == 0:
+            return torch.tensor(0.0, device=log_P_region.device)
+        return total / float(n)
 
     def forward(
         self,
