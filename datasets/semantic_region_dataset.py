@@ -526,6 +526,74 @@ class SemanticRegionDataset(Dataset):
         }
 
 
+def build_line_id_to_flat_index(
+    line_ids: torch.Tensor | None,
+    line_mask: torch.Tensor | None,
+) -> dict[int, int]:
+    """
+    Map CAD line_id -> flattened valid-slot index for one view.
+
+    Flattening order is row-major over (region m, slot k) among mask==True slots.
+    If the same line_id appears in multiple regions, the first valid slot wins.
+    """
+    mapping: dict[int, int] = {}
+    if line_ids is None or line_mask is None:
+        return mapping
+    ids_np = line_ids.detach().cpu().numpy()
+    mask_np = line_mask.detach().cpu().numpy().astype(bool)
+    if ids_np.ndim != 2 or mask_np.shape != ids_np.shape:
+        return mapping
+    flat = 0
+    M, K = ids_np.shape
+    for m in range(M):
+        for k in range(K):
+            if not mask_np[m, k]:
+                continue
+            lid = int(ids_np[m, k])
+            if lid >= 0 and lid not in mapping:
+                mapping[lid] = flat
+            flat += 1
+    return mapping
+
+
+def map_line_matches_to_flat(
+    line_matches: list[dict[str, Any]] | list[Any],
+    unmatched_0: list[int],
+    unmatched_1: list[int],
+    map0: dict[int, int],
+    map1: dict[int, int],
+) -> tuple[list[tuple[int, int]], list[int], list[int], bool]:
+    """
+    Convert correspondence line GT (by CAD line_id) into flattened slot indices.
+
+    Returns (gt_pairs_flat, unmatched_flat_0, unmatched_flat_1, has_ids).
+    has_ids is False when either view lacks CAD ids (caller should skip line losses).
+    """
+    if not map0 or not map1:
+        return [], [], [], False
+
+    pairs: list[tuple[int, int]] = []
+    for rec in line_matches:
+        if isinstance(rec, dict):
+            lid = int(rec.get("line_id", -1))
+        elif isinstance(rec, (list, tuple)) and len(rec) >= 3:
+            lid = int(rec[2])
+        else:
+            continue
+        if lid in map0 and lid in map1:
+            pairs.append((map0[lid], map1[lid]))
+
+    # Unmatched global indices in correspondence refer to lines_*.json enumerate order,
+    # not CAD ids — keep only those CAD ids we can resolve via maps built from ids.
+    # correspondence unmatched_lines_* store global enumerate indices; without lines_*.json
+    # we cannot map them. Prefer deriving unmatched as flat slots not in matched set.
+    matched0 = {i for i, _ in pairs}
+    matched1 = {j for _, j in pairs}
+    un0 = [i for i in sorted(map0.values()) if i not in matched0]
+    un1 = [j for j in sorted(map1.values()) if j not in matched1]
+    return pairs, un0, un1, True
+
+
 def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """Collates a single pair into batched tensors."""
     item = batch[0]
@@ -588,6 +656,38 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "unmatched_lines_1": [item.get("unmatched_lines_1", [])],
         "line_ids0": item["line_ids0"].unsqueeze(0) if item.get("line_ids0") is not None else None,
         "line_ids1": item["line_ids1"].unsqueeze(0) if item.get("line_ids1") is not None else None,
+        **_collate_flat_line_gt(item),
+    }
+
+
+def _collate_flat_line_gt(item: dict[str, Any]) -> dict[str, Any]:
+    """Build flattened line GT indices for semantic_line_matcher training."""
+    ids0 = item.get("line_ids0")
+    ids1 = item.get("line_ids1")
+    mask0 = item.get("line_mask0")
+    mask1 = item.get("line_mask1")
+    map0 = build_line_id_to_flat_index(ids0, mask0)
+    map1 = build_line_id_to_flat_index(ids1, mask1)
+    pairs, un0, un1, has_ids = map_line_matches_to_flat(
+        item.get("line_matches", []),
+        item.get("unmatched_lines_0", []),
+        item.get("unmatched_lines_1", []),
+        map0,
+        map1,
+    )
+    if not has_ids and item.get("line_matches"):
+        import warnings
+
+        warnings.warn(
+            f"pair {item.get('pair_id')}: patch_lines lack CAD ids0/ids1; "
+            "skipping flattened line GT (line/sem losses should be disabled).",
+            stacklevel=2,
+        )
+    return {
+        "gt_line_pairs_flat": [pairs],
+        "unmatched_lines_flat_0": [un0],
+        "unmatched_lines_flat_1": [un1],
+        "has_line_ids": has_ids,
     }
 
 
