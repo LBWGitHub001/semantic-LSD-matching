@@ -42,7 +42,7 @@ class SemanticLineMatcher(nn.Module):
         use_pyramid: bool = True,
         with_geometry: bool = True,
         line_sample_points: int = 8,
-        enable_line_head: bool = False,
+        enable_line_head: bool = True,
     ) -> None:
         super().__init__()
         self.feat_dim = feat_dim
@@ -169,6 +169,72 @@ class SemanticLineMatcher(nn.Module):
             "fmap1": fmap1,
         }
 
+    def _line_descriptors_for_view(
+        self,
+        fmap: torch.Tensor,
+        f_r: torch.Tensor,
+        patch_lines: Optional[torch.Tensor],
+        line_mask: Optional[torch.Tensor],
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """
+        fmap: (B*M, C, H, W), f_r: (B, M, Cv)
+        Returns lists length B of (N_b, d_model) descriptors and (N_b,) parent region ids.
+        """
+        B, M, Cv = f_r.shape
+        device = f_r.device
+        dtype = f_r.dtype
+        desc_list: List[torch.Tensor] = []
+        parent_list: List[torch.Tensor] = []
+
+        if M == 0 or patch_lines is None or patch_lines.numel() == 0:
+            for _ in range(B):
+                desc_list.append(torch.zeros((0, self.d_model), device=device, dtype=dtype))
+                parent_list.append(torch.zeros((0,), device=device, dtype=torch.long))
+            return desc_list, parent_list
+
+        K = patch_lines.shape[2]
+        if line_mask is None:
+            line_mask = torch.ones((B, M, K), device=device, dtype=torch.bool)
+        # Along-line encode per region instance
+        lines_flat = patch_lines.view(B * M, K, -1)
+        mask_flat = line_mask.view(B * M, K)
+        f_line_all = self.line_encoder(fmap, lines_flat, valid_mask=mask_flat)  # (B*M, K, line_dim)
+        f_line_all = f_line_all.view(B, M, K, self.line_dim)
+        f_r_exp = f_r.unsqueeze(2).expand(-1, -1, K, -1)
+        fused = torch.cat([f_line_all, f_r_exp], dim=-1)
+        d_all = self.line_desc_proj(fused)  # (B, M, K, d_model)
+
+        for b in range(B):
+            descs = []
+            parents = []
+            for m in range(M):
+                for k in range(K):
+                    if not bool(line_mask[b, m, k].item()):
+                        continue
+                    descs.append(d_all[b, m, k])
+                    parents.append(m)
+            if descs:
+                desc_list.append(torch.stack(descs, dim=0))
+                parent_list.append(torch.tensor(parents, device=device, dtype=torch.long))
+            else:
+                desc_list.append(torch.zeros((0, self.d_model), device=device, dtype=dtype))
+                parent_list.append(torch.zeros((0,), device=device, dtype=torch.long))
+        return desc_list, parent_list
+
+    def _match_lines_batch(
+        self,
+        desc0_list: List[torch.Tensor],
+        desc1_list: List[torch.Tensor],
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        log_list: List[torch.Tensor] = []
+        p_list: List[torch.Tensor] = []
+        for d0, d1 in zip(desc0_list, desc1_list):
+            # ObjectSinkhornMatcher expects (B, M, D)
+            log_P, P = self.line_matcher(d0.unsqueeze(0), d1.unsqueeze(0))
+            log_list.append(log_P[0])
+            p_list.append(P[0])
+        return log_list, p_list
+
     def forward(
         self,
         patches0: torch.Tensor,
@@ -189,12 +255,31 @@ class SemanticLineMatcher(nn.Module):
             bboxes1=bboxes1,
             image_size=image_size,
         )
-        # Line head filled in step06
+        B = patches0.shape[0]
+        device = patches0.device
+
         if not self.enable_line_head:
-            B = patches0.shape[0]
-            device = patches0.device
             out["log_P_line"] = None
             out["P_line"] = None
             out["line_parents0"] = [torch.zeros(0, dtype=torch.long, device=device) for _ in range(B)]
             out["line_parents1"] = [torch.zeros(0, dtype=torch.long, device=device) for _ in range(B)]
+            return out
+
+        desc0, parents0 = self._line_descriptors_for_view(
+            out["fmap0"], out["f_r0"], patch_lines0, line_mask0
+        )
+        desc1, parents1 = self._line_descriptors_for_view(
+            out["fmap1"], out["f_r1"], patch_lines1, line_mask1
+        )
+        log_line, p_line = self._match_lines_batch(desc0, desc1)
+        # For B==1 (training collate), also expose tensor forms
+        out["log_P_line"] = log_line[0] if B == 1 else log_line
+        out["P_line"] = p_line[0] if B == 1 else p_line
+        out["log_P_line_list"] = log_line
+        out["P_line_list"] = p_line
+        out["line_parents0"] = parents0
+        out["line_parents1"] = parents1
+        out["line_desc0"] = desc0
+        out["line_desc1"] = desc1
         return out
+
