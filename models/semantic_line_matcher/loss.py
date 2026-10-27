@@ -1,13 +1,58 @@
-"""SemanticLineMatchingLoss scaffold (four-term loss; filled in steps 07–09)."""
+"""
+SemanticLineMatchingLoss: region KL + line KL + semantic JSD + adjacency geo.
+
+Hard-label KL(Y||P) is equivalent to SuperGlue-style assignment NLL with dustbin.
+"""
 
 from __future__ import annotations
 
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+
+def _assignment_kl(
+    log_P: torch.Tensor,
+    matches: Sequence[Tuple[int, int]],
+    unmatched_0: Sequence[int],
+    unmatched_1: Sequence[int],
+    dustbin_weight: float,
+) -> torch.Tensor:
+    """KL(Y||P) / NLL for one assignment matrix (N0+1, N1+1) or (1, N0+1, N1+1)."""
+    if log_P.ndim == 3:
+        log_P = log_P[0]
+    log_P = torch.clamp(log_P, min=-100.0, max=0.0)
+    N0 = log_P.shape[0] - 1
+    N1 = log_P.shape[1] - 1
+    device = log_P.device
+
+    loss_pos = torch.tensor(0.0, device=device)
+    n_pos = 0
+    for i, j in matches:
+        if 0 <= i < N0 and 0 <= j < N1:
+            loss_pos = loss_pos - log_P[i, j]
+            n_pos += 1
+
+    loss_neg = torch.tensor(0.0, device=device)
+    n_neg = 0
+    for i in unmatched_0:
+        if 0 <= i < N0:
+            loss_neg = loss_neg - log_P[i, N1]
+            n_neg += 1
+    for j in unmatched_1:
+        if 0 <= j < N1:
+            loss_neg = loss_neg - log_P[N0, j]
+            n_neg += 1
+
+    mean_pos = loss_pos / float(n_pos) if n_pos > 0 else torch.tensor(0.0, device=device)
+    mean_neg = loss_neg / float(n_neg) if n_neg > 0 else torch.tensor(0.0, device=device)
+    return mean_pos + dustbin_weight * mean_neg
 
 
 class SemanticLineMatchingLoss(nn.Module):
-    """Region KL + line KL + semantic JSD + adjacency geo."""
+    """Four-term loss; JSD / geo filled in later steps (weights default applied)."""
 
     def __init__(
         self,
@@ -17,7 +62,8 @@ class SemanticLineMatchingLoss(nn.Module):
         sem_weight: float = 0.1,
         geo_weight: float = 0.2,
         adj_sigma: float = 0.3,
-        **kwargs,
+        motion_weight: float = 0.0,
+        **kwargs: Any,
     ) -> None:
         super().__init__()
         self.dustbin_weight = float(dustbin_weight)
@@ -26,6 +72,129 @@ class SemanticLineMatchingLoss(nn.Module):
         self.sem_weight = float(sem_weight)
         self.geo_weight = float(geo_weight)
         self.adj_sigma = float(adj_sigma)
+        # Accept but ignore legacy motion
+        self.motion_weight = float(motion_weight)
 
-    def forward(self, *args, **kwargs):  # pragma: no cover - filled in steps 07–09
-        raise NotImplementedError("SemanticLineMatchingLoss.forward is implemented in later steps")
+    def _region_kl(
+        self,
+        log_P: torch.Tensor,
+        gt_matches: List[List[Tuple[int, int]]],
+        unmatched_0: List[List[int]],
+        unmatched_1: List[List[int]],
+    ) -> torch.Tensor:
+        B = log_P.shape[0]
+        total = torch.tensor(0.0, device=log_P.device)
+        for b in range(B):
+            total = total + _assignment_kl(
+                log_P[b],
+                gt_matches[b] if b < len(gt_matches) else [],
+                unmatched_0[b] if b < len(unmatched_0) else [],
+                unmatched_1[b] if b < len(unmatched_1) else [],
+                self.dustbin_weight,
+            )
+        return total / float(max(B, 1))
+
+    def _line_kl(
+        self,
+        log_P_line: Union[torch.Tensor, List[torch.Tensor], None],
+        gt_line_pairs: List[List[Tuple[int, int]]],
+        unmatched_flat_0: List[List[int]],
+        unmatched_flat_1: List[List[int]],
+    ) -> torch.Tensor:
+        if log_P_line is None:
+            return torch.tensor(0.0)
+
+        if isinstance(log_P_line, torch.Tensor):
+            mats = [log_P_line]
+        else:
+            mats = list(log_P_line)
+
+        total = torch.tensor(0.0, device=mats[0].device)
+        n = 0
+        for b, mat in enumerate(mats):
+            pairs = gt_line_pairs[b] if b < len(gt_line_pairs) else []
+            un0 = unmatched_flat_0[b] if b < len(unmatched_flat_0) else []
+            un1 = unmatched_flat_1[b] if b < len(unmatched_flat_1) else []
+            if not pairs and not un0 and not un1:
+                continue
+            total = total + _assignment_kl(mat, pairs, un0, un1, self.dustbin_weight)
+            n += 1
+        if n == 0:
+            return torch.tensor(0.0, device=mats[0].device, requires_grad=True) * 0.0
+        return total / float(n)
+
+    def semantic_jsd_loss(self, *args, **kwargs) -> torch.Tensor:
+        """Implemented in step08."""
+        device = kwargs.get("device", torch.device("cpu"))
+        return torch.tensor(0.0, device=device)
+
+    def adjacency_geo_loss(self, *args, **kwargs) -> torch.Tensor:
+        """Implemented in step09."""
+        device = kwargs.get("device", torch.device("cpu"))
+        return torch.tensor(0.0, device=device)
+
+    def forward(
+        self,
+        log_P_region: torch.Tensor,
+        log_P_line: Union[torch.Tensor, List[torch.Tensor], None] = None,
+        gt_matches: Optional[List[List[Tuple[int, int]]]] = None,
+        unmatched_0: Optional[List[List[int]]] = None,
+        unmatched_1: Optional[List[List[int]]] = None,
+        gt_line_pairs_flat: Optional[List[List[Tuple[int, int]]]] = None,
+        unmatched_lines_flat_0: Optional[List[List[int]]] = None,
+        unmatched_lines_flat_1: Optional[List[List[int]]] = None,
+        line_parents0: Optional[List[torch.Tensor]] = None,
+        line_parents1: Optional[List[torch.Tensor]] = None,
+        centroids0: Optional[torch.Tensor] = None,
+        centroids1: Optional[torch.Tensor] = None,
+        has_line_ids: bool = True,
+        **kwargs: Any,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        gt_matches = gt_matches or [[]]
+        unmatched_0 = unmatched_0 or [[]]
+        unmatched_1 = unmatched_1 or [[]]
+        gt_line_pairs_flat = gt_line_pairs_flat or [[]]
+        unmatched_lines_flat_0 = unmatched_lines_flat_0 or [[]]
+        unmatched_lines_flat_1 = unmatched_lines_flat_1 or [[]]
+
+        loss_r = self._region_kl(log_P_region, gt_matches, unmatched_0, unmatched_1)
+        if has_line_ids:
+            loss_l = self._line_kl(
+                log_P_line, gt_line_pairs_flat, unmatched_lines_flat_0, unmatched_lines_flat_1
+            )
+        else:
+            loss_l = torch.tensor(0.0, device=log_P_region.device)
+
+        loss_s = self.semantic_jsd_loss(
+            log_P_line=log_P_line,
+            line_parents0=line_parents0,
+            line_parents1=line_parents1,
+            num_regions0=log_P_region.shape[1] - 1,
+            num_regions1=log_P_region.shape[2] - 1,
+            device=log_P_region.device,
+            enabled=has_line_ids and self.sem_weight > 0,
+        )
+        loss_g = self.adjacency_geo_loss(
+            log_P_region=log_P_region,
+            centroids0=centroids0,
+            centroids1=centroids1,
+            device=log_P_region.device,
+            enabled=self.geo_weight > 0,
+        )
+
+        total = (
+            self.region_weight * loss_r
+            + self.line_weight * loss_l
+            + self.sem_weight * loss_s
+            + self.geo_weight * loss_g
+        )
+        metrics = {
+            "loss": float(total.detach().item()) if total.numel() else 0.0,
+            "loss_region": float(loss_r.detach().item()) if torch.is_tensor(loss_r) else 0.0,
+            "loss_line": float(loss_l.detach().item()) if torch.is_tensor(loss_l) else 0.0,
+            "loss_sem": float(loss_s.detach().item()) if torch.is_tensor(loss_s) else 0.0,
+            "loss_geo": float(loss_g.detach().item()) if torch.is_tensor(loss_g) else 0.0,
+        }
+        if torch.isnan(total) or torch.isinf(total):
+            total = torch.tensor(0.0, device=log_P_region.device, requires_grad=True)
+        return total, metrics
