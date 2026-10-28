@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Semantic LSD Matching - 统一管理系统与开发工作台</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=20261027c">
 </head>
 <body>
 
@@ -32,6 +32,7 @@
   <nav class="nav-tabs">
     <button class="tab-btn active" data-tab="history">📈 实验历史数据</button>
     <button class="tab-btn" data-tab="train">🚀 启动新的训练</button>
+    <button class="tab-btn" data-tab="queue">📋 当前训练任务列表 <span class="badge badge-blue" id="queue-badge-count" style="margin-left: 6px; padding: 2px 6px; font-size: 11px;">0</span></button>
     <button class="tab-btn" data-tab="models_guide">📖 模型手册</button>
   </nav>
 
@@ -266,7 +267,8 @@
 
           <div class="form-group">
             <label class="form-label">模型架构 (Model Architecture)</label>
-            <select class="form-control" id="train-model">
+            <select class="form-control" id="train-model" onchange="onTrainModelChange()">
+              <option value="semantic_line_matcher">semantic_line_matcher (新: 纹理直线+区域双输出)</option>
               <option value="xfeat_line_matcher" selected>xfeat_line_matcher (推荐: 线段+多尺度金字塔)</option>
               <option value="xfeat_object">xfeat_object (纯物体区域基线)</option>
               <option value="mask_line">mask_line (早期掩码线段网络)</option>
@@ -298,9 +300,32 @@
               <label class="form-label">垃圾桶损失权重 (Dustbin Weight)</label>
               <input type="number" step="0.05" class="form-control" id="train-dustbin" value="0.1">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="train-motion-group">
               <label class="form-label">位移场损失权重 (Motion Weight)</label>
               <input type="number" step="0.05" class="form-control" id="train-motion" value="0.4">
+            </div>
+          </div>
+
+          <div id="train-semantic-weights" style="display: none;">
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">区域 KL 权重 (Region Weight)</label>
+                <input type="number" step="0.05" class="form-control" id="train-region-weight" value="1.0">
+              </div>
+              <div class="form-group">
+                <label class="form-label">直线 KL 权重 (Line Weight)</label>
+                <input type="number" step="0.05" class="form-control" id="train-line-weight" value="1.0">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">语义集中 JSD 权重 (Sem Weight)</label>
+                <input type="number" step="0.05" class="form-control" id="train-sem-weight" value="0.1">
+              </div>
+              <div class="form-group">
+                <label class="form-label">邻接保持权重 (Geo Weight)</label>
+                <input type="number" step="0.05" class="form-control" id="train-geo-weight" value="0.2">
+              </div>
             </div>
           </div>
 
@@ -321,6 +346,15 @@
             </div>
           </div>
 
+          <!-- 自定义训练标签 / 实验备注 -->
+          <div class="form-group">
+            <label class="form-label">自定义训练标签 / 实验备注 (Optional Label)</label>
+            <input type="text" class="form-control" id="train-label" placeholder="例如: lr0005_ablation, baseline_cad, loss_v2 (选填)">
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+              💡 选填。自定义语义备注将写入复盘标识与 Checkpoint 元数据中（如 模型+网络结构+数据集+【标签】+【时间戳】）
+            </div>
+          </div>
+
           <div class="form-row" style="margin-bottom: 20px;">
             <label class="checkbox-label">
               <input type="checkbox" id="train-pyramid" checked> 多尺度金字塔 (Pyramid FPN)
@@ -330,9 +364,16 @@
             </label>
           </div>
 
-          <div style="display: flex; gap: 12px;">
-            <button class="btn btn-success" style="flex: 2;" onclick="startTraining()">▶ 开始训练</button>
-            <button class="btn btn-danger" style="flex: 1;" onclick="stopTraining()">⏹ 平滑停止</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-primary" style="flex: 1.3; display: flex; align-items: center; justify-content: center; gap: 6px;" type="button" onclick="addToTrainingQueue()">
+              <span>➕</span> <span>添加到训练列表</span>
+            </button>
+            <button class="btn btn-success" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;" onclick="startTraining()">
+              <span>▶</span> <span>开始训练</span>
+            </button>
+            <button class="btn btn-danger" style="flex: 0.8; display: flex; align-items: center; justify-content: center; gap: 6px;" onclick="stopTraining()">
+              <span>⏹</span> <span>平滑停止</span>
+            </button>
           </div>
 
           <!-- 预览模型架构按钮 -->
@@ -342,7 +383,7 @@
             </button>
           </div>
           <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; background: rgba(31, 41, 55, 0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid #374151;">
-            💡 <b>标签页生命周期强绑定</b>：点击“开始训练”后将<b>自动在新标签页中启动实时监控工作台</b>；若关闭该训练标签页则自动平滑终止训练。任务进行中亦可随时 <a href="/train_live" target="_blank" style="color: #60A5FA; text-decoration: underline;">在新标签页打开监控 ↗</a>
+            💡 <b>工作台生命周期直接管理</b>：任务生命周期由当前管理平台直接启停控制；您可在右侧终端或在“当前训练任务列表”中实时监控任务输出。如需全屏大图，可随时 <a href="/train_live" target="_blank" style="color: #60A5FA; text-decoration: underline;">在新标签页打开独立监控 ↗</a>
           </div>
         </div>
 
@@ -509,7 +550,175 @@
     </div>
 
     <!-- ======================================================== -->
-    <!-- Tab 3: 模型手册 (Models & Interactive Docs)              -->
+    <!-- Tab 3: 当前训练任务列表 (Training Queue Management)        -->
+    <!-- ======================================================== -->
+    <div class="tab-pane" id="tab-queue">
+      <!-- Queue Stat Overview Cards -->
+      <div class="grid-4" style="margin-bottom: 20px;">
+        <div class="stat-card">
+          <div class="stat-label">正在执行任务</div>
+          <div class="stat-val" id="queue-stat-active" style="color: #34D399; font-size: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">无 (Idle)</div>
+          <div class="stat-sub" id="queue-stat-active-sub">当前训练进程空闲</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">排队等待中 (Pending)</div>
+          <div class="stat-val" id="queue-stat-pending" style="color: #60A5FA;">0</div>
+          <div class="stat-sub">待自动或手动触发执行</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">自动轮询调度 (Auto-Dispatch)</div>
+          <div class="stat-val" id="queue-stat-autorun" style="color: #A78BFA; font-size: 20px;">开启 (ON)</div>
+          <div class="stat-sub">任务完成后自动按顺序执行下一项</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">历史队列任务数</div>
+          <div class="stat-val" id="queue-stat-completed">0 / 0</div>
+          <div class="stat-sub">已完成 / 任务总数</div>
+        </div>
+      </div>
+
+      <!-- Queue Controls & Actions Toolbar -->
+      <div class="card" style="margin-bottom: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <div class="card-title" style="margin-bottom: 0;">📋 任务排队与调度监控 (Pipeline Schedule)</div>
+            <button class="btn btn-secondary btn-sm" onclick="loadTrainingQueue()">🔄 刷新列表</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <button class="btn btn-outline btn-sm" id="btn-toggle-autorun" onclick="toggleQueueAutoRun()">
+              ⚡ 自动轮询: 开启
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="clearPendingQueue()">
+              🗑️ 清空等待中任务
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="switchTab('train')">
+              ➕ 添加新训练任务
+            </button>
+          </div>
+        </div>
+
+        <!-- Queue Table -->
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 45px; text-align: center;">#</th>
+                <th style="width: 140px;">状态 / 阶段</th>
+                <th>自定义标签 / 备注</th>
+                <th>模型架构</th>
+                <th>数据集 & 比例</th>
+                <th>超参数配置摘要</th>
+                <th>创建时间</th>
+                <th style="width: 240px; text-align: center;">调度操作</th>
+              </tr>
+            </thead>
+            <tbody id="queue-table-body">
+              <tr><td colspan="8" style="text-align:center; color:#9CA3AF; padding: 28px;">加载训练任务队列中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 简易实时 Log 控制台窗口 (Active Task Live Console) -->
+      <div class="card" id="queue-log-card" style="margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="card-title" style="margin-bottom: 0;">🖥️ 正在执行任务日志 (Active Task Console)</div>
+            <span class="badge badge-secondary" id="queue-log-status-badge">○ 空闲</span>
+            <span style="font-size: 12px; color: var(--text-muted); font-family: monospace;" id="queue-log-task-info">当前任务: 无</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button class="btn btn-secondary btn-sm" id="btn-queue-autoscroll" onclick="toggleQueueLogAutoScroll()">滚动: 开</button>
+            <button class="btn btn-secondary btn-sm" onclick="clearQueueLog()">清屏</button>
+            <button class="btn btn-danger btn-sm" id="btn-queue-stop-task" style="display: none;" onclick="stopTraining()">⏹ 停止当前任务</button>
+          </div>
+        </div>
+        <!-- Simple Terminal Log Area -->
+        <div class="terminal-body" id="queue-terminal-logs" style="height: 280px; font-size: 12px; border-radius: 6px; border: 1px solid var(--border); background: #0A0F1D; padding: 12px 14px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; line-height: 1.5; color: #E5E7EB;">
+          <div style="color: #9CA3AF; text-align: center; padding: 40px 0;" id="queue-terminal-placeholder">当前暂无正在执行的训练任务。从上方队列点击“⚡ 立即运行”或配置任务加入队列即可开始训练。</div>
+        </div>
+      </div>
+
+      <!-- 系统硬件与资源监视窗口 (Queue System Hardware Monitor) -->
+      <div class="card" id="queue-res-monitor-card" style="margin-bottom: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div class="card-title" style="margin-bottom: 0;">📊 系统硬件与资源监视 (System Resource Monitor)</div>
+            <span class="badge badge-blue">实时刷新 2s</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--text-muted);">
+            <span id="qres-helper-badge" class="badge badge-blue">● 硬件就绪</span>
+            <span id="qres-helper-text">系统监控正常运行中</span>
+          </div>
+        </div>
+
+        <!-- 4-Column Resource Meter Grid -->
+        <div class="grid-4">
+          <!-- CPU Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">💻 处理器 (CPU)</span>
+              <span class="res-meter-val" id="qres-cpu-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-cpu" id="qres-cpu-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="qres-cpu-cores">- 核</span>
+              <span id="qres-cpu-load">负载: -</span>
+            </div>
+          </div>
+
+          <!-- RAM Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">💾 运行内存 (RAM)</span>
+              <span class="res-meter-val" id="qres-ram-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-ram" id="qres-ram-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="qres-ram-used">已用: - / - GB</span>
+              <span id="qres-swap-used">交换区: - GB</span>
+            </div>
+          </div>
+
+          <!-- GPU Core Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">🎮 显卡核心 (GPU)</span>
+              <span class="res-meter-val" id="qres-gpu-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-gpu" id="qres-gpu-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="qres-gpu-name">GPU 运算负载</span>
+              <span id="qres-gpu-temp">温度: -°C</span>
+            </div>
+          </div>
+
+          <!-- GPU VRAM Meter -->
+          <div class="res-meter-box">
+            <div class="res-meter-header">
+              <span class="res-meter-title">⚡ 显存占用 (VRAM)</span>
+              <span class="res-meter-val" id="qres-vram-pct">0.0%</span>
+            </div>
+            <div class="res-bar-track">
+              <div class="res-bar-fill fill-vram" id="qres-vram-bar" style="width: 0%;"></div>
+            </div>
+            <div class="res-meter-sub">
+              <span id="qres-vram-used">已用: - / - MB</span>
+              <span id="qres-gpu-power">功耗: - W</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- Tab 4: 模型手册 (Models & Interactive Docs)              -->
     <!-- ======================================================== -->
     <div class="tab-pane" id="tab-models_guide">
 
@@ -860,7 +1069,7 @@
 
   <!-- Model Architecture Preview Modal -->
   <div class="modal-overlay" id="model-preview-modal" style="display: none;">
-    <div class="modal-content" style="max-width: 1050px; max-height: 92vh; display: flex; flex-direction: column;">
+    <div class="modal-content" style="max-width: 1240px; max-height: 94vh; display: flex; flex-direction: column;">
       <div class="modal-header">
         <div>
           <div class="modal-title" id="preview-model-name">📐 模型结构与张量流向图</div>
@@ -870,20 +1079,16 @@
       </div>
       <div class="modal-body" style="overflow-y: auto; padding: 20px;">
 
-        <!-- 🖼️ 核心：高清晰度网络详细架构拓扑与张量流向图 -->
         <div class="card" style="margin-bottom: 20px; padding: 16px; background: #0D1322; border: 1px solid #1E293B;">
           <div class="card-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 16px;">🖼️</span>
-              <span style="font-weight: 700; color: #F3F4F6;">网络全层详细结构与各模块张量流向图 (Data Flow & Tensor Shapes)</span>
+              <span style="font-size: 16px;">🧩</span>
+              <span style="font-weight: 700; color: #F3F4F6;">逐层计算图 · 鼠标悬停查看该层在匹配里的作用</span>
             </div>
-            <button class="btn btn-secondary btn-xs" type="button" onclick="openDiagramZoomModal()">🔍 全屏高清放大</button>
+            <button class="btn btn-secondary btn-xs" type="button" onclick="toggleLayerGraphFullscreen()">⛶ 放大画布</button>
           </div>
-          <div style="text-align: center; background: #080C14; border-radius: 8px; padding: 8px; border: 1px solid #1F2937;">
-            <img id="preview-model-diagram" src="/static/img/xfeat_line_matcher_architecture.png" style="width: 100%; max-height: 480px; object-fit: contain; border-radius: 6px; cursor: zoom-in;" onclick="openDiagramZoomModal()" title="点击全屏高清放大查看">
-            <div style="color: #9CA3AF; font-size: 11px; margin-top: 8px;">
-              💡 <b>直观图解提示</b>：图中已逐级标注各阶段的输入/输出张量形状（如 <code>(B, M, 3, 112, 112)</code>、<code>(B, M, 8, 5)</code>、<code>(B, M, 192)</code>、<code>(B, M, 128)</code> 及 <code>(B, M0+1, M1+1)</code>），点击图片可全屏高清放大。
-            </div>
+          <div id="layer-graph-host">
+            <div style="color:#9CA3AF; font-size:13px; padding:28px; text-align:center;">正在展开网络层…</div>
           </div>
         </div>
 
@@ -968,6 +1173,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261027c"></script>
 </body>
 </html>

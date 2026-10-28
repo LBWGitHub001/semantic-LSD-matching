@@ -14,7 +14,8 @@ import tornado.web
 import tornado.websocket
 
 from review_runs import find_all_runs
-from web.process_manager import TASK_MANAGER, ROOT_DIR
+from visualization.layer_graph import build_layer_graph
+from web.process_manager import TASK_MANAGER, TASK_QUEUE_MANAGER, ROOT_DIR
 
 
 class BaseApiHandler(tornado.web.RequestHandler):
@@ -360,6 +361,45 @@ class GalleryHandler(BaseApiHandler):
 
 def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: int = 128) -> dict[str, Any]:
     """Generates detailed architectural breakdown and PyTorch module structure for a given model."""
+    if model_type in ["semantic_line_matcher", "semantic_line"]:
+        pyr_str = "启用多尺度 FPN；沿线采样优先用 P2" if use_pyramid else "单尺度骨干；沿线采样用 stride-8 特征图"
+        vis_dim = 192 if use_pyramid else 64
+        return {
+            "model_type": "semantic_line_matcher",
+            "name": "SemanticLineMatcher",
+            "tagline": "纹理沿线描述子 ‖ 区域特征 → 直线 Sinkhorn；并行区域 Sinkhorn 双输出",
+            "params_total": "约 1.8 M 参数（随金字塔/几何头变化）",
+            "trainable_params": "trainable",
+            "diagram_url": "/static/img/xfeat_line_matcher_architecture.png",
+            "input_shapes": [
+                {"name": "区域切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "语义区域 RGB patch"},
+                {"name": "区域内直线 (Patch Lines)", "shape": "(B, M, K, 5)", "desc": "5D: 中心、长度、sin2θ/cos2θ（patch 归一化）"},
+                {"name": "直线有效掩码", "shape": "(B, M, K)", "desc": "无效槽不进直线 Sinkhorn"},
+                {"name": "边界框 / 中心", "shape": "(B, M, 4) / (B, M, 2)", "desc": "区域几何；邻接 geo 损失用 centroids"},
+            ],
+            "pipeline_stages": [
+                {"stage": "1. 共享视觉骨干", "dim": f"{vis_dim}D", "desc": pyr_str},
+                {"stage": "2. 区域向量 f_r", "dim": f"{vis_dim}D", "desc": "特征图 GAP（+ 可选 bbox 几何）→ 区域 token"},
+                {"stage": "3. 沿线纹理 f_ℓ", "dim": "64D", "desc": "特征图沿线采样 T 点 + Conv1d 聚合"},
+                {"stage": "4. 直线描述子", "dim": f"{d_model}D", "desc": "Proj([f_ℓ ‖ f_r]) 后展平有效线"},
+                {"stage": "5. 区域匹配", "dim": "(M0+1, M1+1)", "desc": "Graph Transformer + Log-Sinkhorn（dustbin）"},
+                {"stage": "6. 直线匹配", "dim": "(N0+1, N1+1)", "desc": "直线 Log-Sinkhorn（dustbin）；损失含 KL/JSD/邻接 geo"},
+            ],
+            "pytorch_repr": f"""SemanticLineMatcher(
+  (visual_backbone): {'XFeatPyramidBackbone' if use_pyramid else 'XFeatBackbone'}
+  (visual_pool): AdaptiveAvgPool2d(1)  # f_r → {vis_dim}D
+  (geo_encoder): ObjectGeometryEncoder(optional)
+  (region_fusion): Linear({vis_dim}+geo → {d_model}) + LN + ReLU
+  (transformer): ObjectGraphTransformer(2 layers)
+  (region_matcher): ObjectSinkhornMatcher(dustbin=True)
+  (line_encoder): AlongLineTextureEncoder(samples=8, out=64)
+  (line_desc_proj): Linear(64+{vis_dim} → {d_model})  # [f_line || f_r]
+  (line_matcher): ObjectSinkhornMatcher(dustbin=True)
+)
+# Loss: region KL + line KL + line→semantic JSD + adjacency geo
+""",
+            "layer_graph": build_layer_graph("semantic_line_matcher", use_pyramid=use_pyramid, d_model=d_model),
+        }
     if model_type in ["xfeat_line_matcher", "xfeat_line", "line_matcher"]:
         pyr_str = "启用多尺度 FPN 特征金字塔 (P1/P2/P3 ➔ 192D)" if use_pyramid else "单尺度特征输出 (64D)"
         vis_dim = 192 if use_pyramid else 64
@@ -440,8 +480,8 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
             "diagram_url": "/static/img/xfeat_line_matcher_architecture.png",
             "input_shapes": [
                 {"name": "候选目标切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "RGB三通道切片，经过自适应扩边裁剪插值"},
-                {"name": "关联LSD直线 (Associated Lines)", "shape": "(B, M, K, 5)", "desc": "每切片至多K=8根，5D亚像素归一化几何向量"},
-                {"name": "切片边界框 (Bounding Boxes)", "shape": "(B, M, 4)", "desc": "切片在原图中的[cx/W, cy/H, w/W, h/H]全局几何布局"}
+                {"name": "关联LSD直线 (Associated Lines)", "shape": "(B, M, K, 4) 或 (B, M, K, 5)", "desc": "4 维是切片内端点；编码器换成 [中心, 长度, sin2θ, cos2θ]，端点对调不变"},
+                {"name": "切片边界框 (Bounding Boxes)", "shape": "(B, M, 4)", "desc": "原图像素框 [x1, y1, x2, y2]，再展开为 9 维归一化布局（角点、中心、宽高、面积）"}
             ],
             "pipeline_stages": [
                 {"stage": "1. 视觉特征抽取", "dim": f"{vis_dim}D", "desc": pyr_str},
@@ -452,6 +492,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
                 {"stage": "6. 最优传输匹配", "dim": "(M0+1, M1+1)", "desc": "带扩展垃圾桶维度的Log-Sinkhorn双随机最优传输求解"}
             ],
             "pytorch_repr": pytorch_repr,
+            "layer_graph": build_layer_graph("xfeat_line_matcher", use_pyramid=use_pyramid, d_model=d_model),
         }
     elif model_type in ["xfeat_object", "xfeat", "object"]:
         return {
@@ -460,9 +501,10 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
             "tagline": "纯物体区域多尺度视觉外观与空间几何基线网络",
             "params_total": "1,680,449 (约 1.68 M 参数)",
             "trainable_params": "1,680,449",
+            "diagram_url": "/static/img/xfeat_object_architecture.png",
             "input_shapes": [
                 {"name": "候选目标切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "RGB三通道切片"},
-                {"name": "切片边界框 (Bounding Boxes)", "shape": "(B, M, 4)", "desc": "切片在原图中的空间几何坐标"}
+                {"name": "切片边界框 (Bounding Boxes)", "shape": "(B, M, 4)", "desc": "默认 with_geometry=False，边界框不进入网络；打开后才编码为 9 维布局"}
             ],
             "pipeline_stages": [
                 {"stage": "1. 视觉特征抽取", "dim": "192D", "desc": "XFeat FPN 特征金字塔三层池化"},
@@ -479,6 +521,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
   (transformer): ObjectGraphTransformer(2 Layers, 4 Heads, embed_dim={d_model})
   (matcher): ObjectSinkhornMatcher(LogSinkhorn, iters=20, dustbin=True)
 )""",
+            "layer_graph": build_layer_graph("xfeat_object", use_pyramid=use_pyramid, d_model=d_model),
         }
     elif model_type in ["mask_line"]:
         return {
@@ -487,6 +530,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
             "tagline": "6通道几何场（RGB + EDT距离场 + AFM朝向场）线段网络",
             "params_total": "3,245,184 (约 3.25 M 参数)",
             "trainable_params": "3,245,184",
+            "diagram_url": "/static/img/mask_line_architecture.png",
             "input_shapes": [
                 {"name": "多通道融合图像", "shape": "(B, 6, H, W)", "desc": "3通道RGB + 1通道欧氏距离场(EDT) + 2通道角度朝向场(AFM)"},
                 {"name": "线段几何端点", "shape": "(B, N, 4)", "desc": "直线两端点坐标 [x1, y1, x2, y2]"}
@@ -503,6 +547,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
   (fusion): FeatureMapSampler(channels=64)
   (matcher): DualSoftmaxLineMatcher(temperature=0.1)
 )""",
+            "layer_graph": build_layer_graph("mask_line", use_pyramid=use_pyramid, d_model=d_model),
         }
     else:  # line_transformer
         return {
@@ -511,6 +556,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
             "tagline": "端点几何向量与局部特征插值采样 Transformer 基线",
             "params_total": "1,148,928 (约 1.15 M 参数)",
             "trainable_params": "1,148,928",
+            "diagram_url": "/static/img/line_transformer_architecture.png",
             "input_shapes": [
                 {"name": "直线端点坐标", "shape": "(B, N, 4)", "desc": "直线两端点坐标向量"},
                 {"name": "局部采样点", "shape": "(B, N, 7, 2)", "desc": "沿直线均匀采样的7个局部坐标"}
@@ -527,6 +573,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
   (transformer): TransformerEncoder(d_model=128, nhead=4, num_layers=2)
   (matcher): MutualNearestNeighborMatcher(dist_thresh=0.2)
 )""",
+            "layer_graph": build_layer_graph("line_transformer", use_pyramid=use_pyramid, d_model=d_model),
         }
 
 
@@ -560,6 +607,10 @@ class TrainHandler(BaseApiHandler):
         lr = body.get("lr", 5e-4)
         dustbin_weight = body.get("dustbin_weight", 0.1)
         motion_weight = body.get("motion_weight", 0.4)
+        region_weight = body.get("region_weight", 1.0)
+        line_weight = body.get("line_weight", 1.0)
+        sem_weight = body.get("sem_weight", 0.1)
+        geo_weight = body.get("geo_weight", 0.2)
         min_area_ratio = body.get("min_area_ratio", 0.40)
         data_ratio = float(body.get("data_ratio", 1.0))
         use_pyramid = body.get("pyramid", True)
@@ -567,6 +618,8 @@ class TrainHandler(BaseApiHandler):
         save_interval = body.get("save_interval", 5)
         num_workers = body.get("num_workers", 4)
         resume = body.get("resume")
+        label = str(body.get("label", "")).strip()
+        is_semantic = str(model_type) in ("semantic_line_matcher", "semantic_line")
 
         cmd = [
             "train.py",
@@ -575,11 +628,18 @@ class TrainHandler(BaseApiHandler):
             "--epochs", str(epochs),
             "--lr", str(lr),
             "--dustbin-weight", str(dustbin_weight),
-            "--motion-weight", str(motion_weight),
+            "--motion-weight", str(0.0 if is_semantic else motion_weight),
             "--min-area-ratio", str(min_area_ratio),
             "--num-workers", str(num_workers),
             "--save-interval", str(save_interval),
         ]
+        if is_semantic:
+            cmd.extend([
+                "--region-weight", str(region_weight),
+                "--line-weight", str(line_weight),
+                "--sem-weight", str(sem_weight),
+                "--geo-weight", str(geo_weight),
+            ])
         if data_ratio < 1.0:
             cmd.extend(["--data-ratio", str(data_ratio)])
         if use_pyramid:
@@ -590,12 +650,97 @@ class TrainHandler(BaseApiHandler):
             cmd.append("--amp")
         if resume:
             cmd.extend(["--resume", str(resume)])
+        if label:
+            cmd.extend(["--label", str(label)])
 
         success, msg, task_info = TASK_MANAGER.start_task("train", cmd)
         if success:
             self.write_json({"success": True, "message": msg, "task": task_info})
         else:
             self.write_error_json(msg, status=409)
+
+
+class QueueHandler(BaseApiHandler):
+    """GET /api/queue, POST /api/queue - Training Task Queue Manager."""
+
+    def get(self) -> None:
+        self.write_json(TASK_QUEUE_MANAGER.get_queue_data())
+
+    def post(self) -> None:
+        action = self.get_argument("action", "add")
+        body = self.get_json_body()
+
+        if action == "add":
+            label = str(body.get("label", "")).strip()
+            config = {
+                "model": body.get("model", "xfeat_line_matcher"),
+                "data_dir": body.get("data_dir", "data/synthetic_cad"),
+                "epochs": int(body.get("epochs", 15)),
+                "lr": float(body.get("lr", 5e-4)),
+                "dustbin_weight": float(body.get("dustbin_weight", 0.1)),
+                "motion_weight": float(body.get("motion_weight", 0.4)),
+                "region_weight": float(body.get("region_weight", 1.0)),
+                "line_weight": float(body.get("line_weight", 1.0)),
+                "sem_weight": float(body.get("sem_weight", 0.1)),
+                "geo_weight": float(body.get("geo_weight", 0.2)),
+                "min_area_ratio": float(body.get("min_area_ratio", 0.40)),
+                "data_ratio": float(body.get("data_ratio", 1.0)),
+                "pyramid": bool(body.get("pyramid", True)),
+                "amp": bool(body.get("amp", True)),
+                "label": label,
+            }
+            task = TASK_QUEUE_MANAGER.add_task(label=label, config=config)
+            self.write_json({
+                "success": True,
+                "message": f"任务已成功添加到训练队列 (ID: {task.task_id})",
+                "task": task.to_dict(),
+                "queue_data": TASK_QUEUE_MANAGER.get_queue_data(),
+            })
+        elif action == "delete":
+            task_id = body.get("task_id") or self.get_argument("task_id", "")
+            ok = TASK_QUEUE_MANAGER.delete_task(task_id)
+            self.write_json({
+                "success": ok,
+                "message": "任务已从训练队列中移除" if ok else "未找到指定任务 ID",
+                "queue_data": TASK_QUEUE_MANAGER.get_queue_data(),
+            })
+        elif action == "reorder":
+            task_id = body.get("task_id") or self.get_argument("task_id", "")
+            direction = body.get("direction", "up")
+            ok = TASK_QUEUE_MANAGER.reorder_task(task_id, direction)
+            self.write_json({
+                "success": ok,
+                "message": "队列排队顺序已调整" if ok else "无法调整该任务位置",
+                "queue_data": TASK_QUEUE_MANAGER.get_queue_data(),
+            })
+        elif action == "run_now":
+            task_id = body.get("task_id") or self.get_argument("task_id", "")
+            ok, msg, task_info = TASK_QUEUE_MANAGER.run_now(task_id)
+            if ok:
+                self.write_json({"success": True, "message": msg, "task": task_info})
+            else:
+                self.write_error_json(msg, status=409)
+        elif action == "toggle_auto":
+            enabled = body.get("enabled")
+            if enabled is None:
+                enabled = not TASK_QUEUE_MANAGER.auto_run
+            val = TASK_QUEUE_MANAGER.set_auto_run(bool(enabled))
+            self.write_json({
+                "success": True,
+                "auto_run": val,
+                "message": f"队列自动轮询已{'开启' if val else '暂停'}",
+                "queue_data": TASK_QUEUE_MANAGER.get_queue_data(),
+            })
+        elif action == "clear_pending":
+            cleared = TASK_QUEUE_MANAGER.clear_pending()
+            self.write_json({
+                "success": True,
+                "cleared_count": cleared,
+                "message": f"已清空 {cleared} 个等待中的任务",
+                "queue_data": TASK_QUEUE_MANAGER.get_queue_data(),
+            })
+        else:
+            self.write_error_json(f"未知队列操作指令: '{action}'", status=400)
 
 
 class EvalHandler(BaseApiHandler):

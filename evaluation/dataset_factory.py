@@ -39,7 +39,10 @@ class DatasetFactory:
 
         if model_info["family"] == "object":
             if use_region_ds:
-                needs_lines = model_info.get("model_type") in ["xfeat_line_matcher", "xfeat_line", "line_object"]
+                needs_lines = model_info.get("model_type") in [
+                    "xfeat_line_matcher", "xfeat_line", "line_object",
+                    "semantic_line_matcher", "semantic_line",
+                ]
                 dataset = SemanticRegionDataset(
                     dataset_dir=p_data,
                     split=split,

@@ -110,7 +110,7 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertEqual(response.code, 200)
         html = response.body.decode("utf-8")
         self.assertIn("实时训练监控", html)
-        self.assertIn("sendBeacon", html)
+        self.assertIn("stopLiveTraining", html)
 
     def test_review_html_serving(self) -> None:
         response = self.fetch("/review?run=20261026_145058")
@@ -128,8 +128,35 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("params_total", data)
         self.assertIn("input_shapes", data)
         self.assertIn("pipeline_stages", data)
+        self.assertIn("diagram_url", data)
         self.assertIn("pytorch_repr", data)
         self.assertIn("XFeatLineMatcher", data["pytorch_repr"])
+        self.assertIn("layer_graph", data)
+        graph = data["layer_graph"]
+        self.assertGreater(len(graph["nodes"]), 40)
+        conv = next(node for node in graph["nodes"] if node["id"] == "s1_conv")
+        self.assertEqual(conv["shape_out"], "(N, 32, 56×56)")
+        self.assertIn("下采样", conv["meaning"])
+
+    def test_semantic_line_preview_and_index_option(self) -> None:
+        response = self.fetch("/api/model/preview?model=semantic_line_matcher&pyramid=true&d_model=128")
+        self.assertEqual(response.code, 200)
+        data = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(data["model_type"], "semantic_line_matcher")
+        self.assertIn("SemanticLineMatcher", data["pytorch_repr"])
+        self.assertIn("layer_graph", data)
+        self.assertGreater(len(data["layer_graph"]["nodes"]), 20)
+
+        html = self.fetch("/").body.decode("utf-8")
+        self.assertIn('value="semantic_line_matcher"', html)
+        self.assertIn("train-semantic-weights", html)
+        self.assertEqual(graph["param_count"], 1722081)
+
+
+    def test_favicon_serving(self) -> None:
+        response = self.fetch("/favicon.ico")
+        self.assertEqual(response.code, 200)
+        self.assertIn("image", response.headers.get("Content-Type", "").lower())
 
 
 if __name__ == "__main__":

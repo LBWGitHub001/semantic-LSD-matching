@@ -24,6 +24,8 @@ document.addEventListener("DOMContentLoaded", () => {
   loadDatasets();
   loadCheckpoints();
   initModelDocs();
+  loadTrainingQueue();
+  onTrainModelChange();
 });
 
 // -------------------------------------------------------------
@@ -53,9 +55,17 @@ function initTabs() {
         loadDashboard();
       } else if (target === "train") {
         loadDatasets();
+      } else if (target === "queue") {
+        loadTrainingQueue();
+        loadActiveQueueLogs();
       }
     });
   });
+}
+
+function switchTab(target) {
+  const tabBtn = document.querySelector(`.tab-btn[data-tab="${target}"]`);
+  if (tabBtn) tabBtn.click();
 }
 
 // -------------------------------------------------------------
@@ -104,6 +114,15 @@ function initWebSocket() {
   };
 }
 
+let isTrainingBusy = false;
+
+window.addEventListener("beforeunload", (e) => {
+  if (isTrainingBusy) {
+    e.preventDefault();
+    e.returnValue = "训练或评测任务正在进行中，关闭或刷新页面将离开当前控制台，确定要离开吗？";
+  }
+});
+
 function handleSocketMessage(data) {
   if (data.type === "init") {
     if (data.backlog && data.backlog.length > 0) {
@@ -111,19 +130,37 @@ function handleSocketMessage(data) {
       data.backlog.forEach(line => appendTerminalLine(line));
     }
     updateStatusUI(data.status);
+    if (data.status && data.status.is_busy) {
+      isTrainingBusy = true;
+      updateQueueLogHeader(true, data.status.active_task);
+    } else {
+      isTrainingBusy = false;
+      updateQueueLogHeader(false, null);
+    }
   } else if (data.type === "log") {
     appendTerminalLine(data.line);
+    appendQueueLogLine(data.line);
     parseMetricsFromLine(data.line);
+  } else if (data.type === "queue_updated") {
+    renderQueueUI(data.queue_data);
   } else if (data.type === "task_started") {
+    isTrainingBusy = true;
     updateStatusUI({ is_busy: true, active_task: data.task });
     appendTerminalLine(`\n[+] ====== Task Started: ${data.task.task_type} (${data.task.task_id}) ======\n`);
+    appendQueueLogLine(`\n[+] ====== Task Started: ${data.task.task_type} (${data.task.task_id}) ======\n`);
+    updateQueueLogHeader(true, data.task);
     const select = document.getElementById("log-source-select");
     if (select) select.value = "live";
+    loadTrainingQueue();
   } else if (data.type === "task_stopped" || data.type === "task_finished") {
+    isTrainingBusy = false;
     updateStatusUI({ is_busy: false, active_task: null });
     appendTerminalLine(`\n[*] ====== Task Finished (${data.type}) ======\n`);
+    appendQueueLogLine(`\n[*] ====== Task Finished (${data.type}) ======\n`);
+    updateQueueLogHeader(false, null);
     loadDashboard();
     loadGallery();
+    loadTrainingQueue();
   }
 }
 
@@ -341,68 +378,79 @@ function updateStatusUI(status) {
     if (gpuBadge) gpuBadge.innerText = "CPU 模式";
   }
 
-  // Update Right-side Hardware Resource Monitor
-  if (res.cpu) {
-    const cpuPctEl = document.getElementById("res-cpu-pct");
-    const cpuBarEl = document.getElementById("res-cpu-bar");
-    const cpuCoresEl = document.getElementById("res-cpu-cores");
-    const cpuLoadEl = document.getElementById("res-cpu-load");
+  // Update Hardware Resource Monitors (both Train tab and Queue tab)
+  ["res", "qres"].forEach(pfx => {
+    if (res.cpu) {
+      const cpuPctEl = document.getElementById(`${pfx}-cpu-pct`);
+      const cpuBarEl = document.getElementById(`${pfx}-cpu-bar`);
+      const cpuCoresEl = document.getElementById(`${pfx}-cpu-cores`);
+      const cpuLoadEl = document.getElementById(`${pfx}-cpu-load`);
 
-    if (cpuPctEl) cpuPctEl.innerText = `${res.cpu.pct.toFixed(1)}%`;
-    if (cpuBarEl) cpuBarEl.style.width = `${Math.min(100, Math.max(0, res.cpu.pct))}%`;
-    if (cpuCoresEl) cpuCoresEl.innerText = `${res.cpu.count} 核心 (Threads)`;
-    if (cpuLoadEl) cpuLoadEl.innerText = `负载: ${res.cpu.load_1m} / ${res.cpu.load_5m}`;
-  }
-
-  if (res.ram) {
-    const ramPctEl = document.getElementById("res-ram-pct");
-    const ramBarEl = document.getElementById("res-ram-bar");
-    const ramUsedEl = document.getElementById("res-ram-used");
-    const swapUsedEl = document.getElementById("res-swap-used");
-
-    if (ramPctEl) ramPctEl.innerText = `${res.ram.pct.toFixed(1)}%`;
-    if (ramBarEl) ramBarEl.style.width = `${Math.min(100, Math.max(0, res.ram.pct))}%`;
-    if (ramUsedEl) ramUsedEl.innerText = `已用: ${res.ram.used_gb} / ${res.ram.total_gb} GB`;
-    if (swapUsedEl) swapUsedEl.innerText = `交换区: ${res.ram.swap_used_gb} / ${res.ram.swap_total_gb} GB`;
-  }
-
-  if (gpu && gpu.available) {
-    const gpuPctEl = document.getElementById("res-gpu-pct");
-    const gpuBarEl = document.getElementById("res-gpu-bar");
-    const gpuNameEl = document.getElementById("res-gpu-name");
-    const gpuTempEl = document.getElementById("res-gpu-temp");
-
-    if (gpuPctEl) gpuPctEl.innerText = `${gpu.utilization_pct.toFixed(1)}%`;
-    if (gpuBarEl) gpuBarEl.style.width = `${Math.min(100, Math.max(0, gpu.utilization_pct))}%`;
-    if (gpuNameEl) gpuNameEl.innerText = gpu.name || "NVIDIA RTX GPU";
-    if (gpuTempEl) gpuTempEl.innerText = `温度: ${gpu.temperature_c}°C`;
-
-    const vramPctEl = document.getElementById("res-vram-pct");
-    const vramBarEl = document.getElementById("res-vram-bar");
-    const vramUsedEl = document.getElementById("res-vram-used");
-    const gpuPowerEl = document.getElementById("res-gpu-power");
-
-    if (vramPctEl) vramPctEl.innerText = `${gpu.memory_pct.toFixed(1)}%`;
-    if (vramBarEl) vramBarEl.style.width = `${Math.min(100, Math.max(0, gpu.memory_pct))}%`;
-    if (vramUsedEl) vramUsedEl.innerText = `已用: ${gpu.memory_used_mb} / ${gpu.memory_total_mb} MB`;
-    if (gpuPowerEl) gpuPowerEl.innerText = `功耗: ${gpu.power_w ? gpu.power_w + " W" : "-"}`;
-  }
-
-  // Diagnostic helper text
-  const helperEl = document.getElementById("res-helper-text");
-  if (helperEl) {
-    if (status.is_busy) {
-      if (gpu && gpu.utilization_pct >= 60) {
-        helperEl.innerText = "🟢 GPU满载计算中，数据流水线畅通！";
-      } else if (gpu && gpu.utilization_pct < 15) {
-        helperEl.innerText = "🟡 GPU占用较低，可能受限于CPU数据加载";
-      } else {
-        helperEl.innerText = "🔵 模型训练 / 评测正在进行中";
-      }
-    } else {
-      helperEl.innerText = "⚪ 系统空闲，硬件就绪，随时可启动训练";
+      if (cpuPctEl) cpuPctEl.innerText = `${res.cpu.pct.toFixed(1)}%`;
+      if (cpuBarEl) cpuBarEl.style.width = `${Math.min(100, Math.max(0, res.cpu.pct))}%`;
+      if (cpuCoresEl) cpuCoresEl.innerText = `${res.cpu.count} 核心 (Threads)`;
+      if (cpuLoadEl) cpuLoadEl.innerText = `负载: ${res.cpu.load_1m} / ${res.cpu.load_5m}`;
     }
-  }
+
+    if (res.ram) {
+      const ramPctEl = document.getElementById(`${pfx}-ram-pct`);
+      const ramBarEl = document.getElementById(`${pfx}-ram-bar`);
+      const ramUsedEl = document.getElementById(`${pfx}-ram-used`);
+      const swapUsedEl = document.getElementById(`${pfx}-swap-used`);
+
+      if (ramPctEl) ramPctEl.innerText = `${res.ram.pct.toFixed(1)}%`;
+      if (ramBarEl) ramBarEl.style.width = `${Math.min(100, Math.max(0, res.ram.pct))}%`;
+      if (ramUsedEl) ramUsedEl.innerText = `已用: ${res.ram.used_gb} / ${res.ram.total_gb} GB`;
+      if (swapUsedEl) swapUsedEl.innerText = `交换区: ${res.ram.swap_used_gb} / ${res.ram.swap_total_gb} GB`;
+    }
+
+    if (gpu && gpu.available) {
+      const gpuPctEl = document.getElementById(`${pfx}-gpu-pct`);
+      const gpuBarEl = document.getElementById(`${pfx}-gpu-bar`);
+      const gpuNameEl = document.getElementById(`${pfx}-gpu-name`);
+      const gpuTempEl = document.getElementById(`${pfx}-gpu-temp`);
+
+      if (gpuPctEl) gpuPctEl.innerText = `${gpu.utilization_pct.toFixed(1)}%`;
+      if (gpuBarEl) gpuBarEl.style.width = `${Math.min(100, Math.max(0, gpu.utilization_pct))}%`;
+      if (gpuNameEl) gpuNameEl.innerText = gpu.name || "NVIDIA RTX GPU";
+      if (gpuTempEl) gpuTempEl.innerText = `温度: ${gpu.temperature_c}°C`;
+
+      const vramPctEl = document.getElementById(`${pfx}-vram-pct`);
+      const vramBarEl = document.getElementById(`${pfx}-vram-bar`);
+      const vramUsedEl = document.getElementById(`${pfx}-vram-used`);
+      const gpuPowerEl = document.getElementById(`${pfx}-gpu-power`);
+
+      if (vramPctEl) vramPctEl.innerText = `${gpu.memory_pct.toFixed(1)}%`;
+      if (vramBarEl) vramBarEl.style.width = `${Math.min(100, Math.max(0, gpu.memory_pct))}%`;
+      if (vramUsedEl) vramUsedEl.innerText = `已用: ${gpu.memory_used_mb} / ${gpu.memory_total_mb} MB`;
+      if (gpuPowerEl) gpuPowerEl.innerText = `功耗: ${gpu.power_w ? gpu.power_w + " W" : "-"}`;
+    }
+
+    // Diagnostic helper text and badge
+    const helperEl = document.getElementById(`${pfx}-helper-text`);
+    const helperBadge = document.getElementById(`${pfx}-helper-badge`);
+    if (helperEl) {
+      if (status.is_busy) {
+        if (gpu && gpu.utilization_pct >= 60) {
+          helperEl.innerText = "🟢 GPU满载计算中，数据流水线畅通！";
+        } else if (gpu && gpu.utilization_pct < 15) {
+          helperEl.innerText = "🟡 GPU占用较低，可能受限于CPU数据加载";
+        } else {
+          helperEl.innerText = "🔵 模型训练 / 评测正在进行中";
+        }
+        if (helperBadge) {
+          helperBadge.className = "badge badge-success";
+          helperBadge.innerText = "● 任务运行中";
+        }
+      } else {
+        helperEl.innerText = "⚪ 系统空闲，硬件就绪，随时可启动训练";
+        if (helperBadge) {
+          helperBadge.className = "badge badge-blue";
+          helperBadge.innerText = "● 硬件就绪";
+        }
+      }
+    }
+  });
 }
 
 // -------------------------------------------------------------
@@ -741,11 +789,303 @@ function simpleMarkdownRender(md) {
 
 function closeModal(id) {
   document.getElementById(id).style.display = "none";
+  const shell = document.getElementById("layer-graph-shell");
+  if (shell) shell.classList.remove("is-full");
+  layerGraphPinned = false;
 }
 
 function openReviewTab(runName) {
   const url = "/review?run=" + encodeURIComponent(runName);
   window.open(url, "_blank");
+}
+
+function escHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+const LG = { nodeW: 172, nodeH: 54, colGap: 56, rowGap: 28 };
+let layerGraphScale = 1;
+let layerGraphPinned = false;
+let layerGraphPanning = false;
+let layerGraphSize = { w: 0, h: 0 };
+
+function layerEdgePath(a, b, kind) {
+  const ax = a._x + LG.nodeW / 2;
+  const ay = a._y + LG.nodeH;
+  const bx = b._x + LG.nodeW / 2;
+  const by = b._y;
+  const sameCol = a.col === b.col;
+  const adjacent = sameCol && b.row === a.row + 1 && kind !== "skip";
+  if (adjacent) return `M ${ax} ${ay} L ${bx} ${by}`;
+  if (sameCol || kind === "skip") {
+    const y1 = a._y + LG.nodeH / 2;
+    const y2 = b._y + LG.nodeH / 2;
+    const gutter = Math.min(a._x, b._x) - 16;
+    return `M ${a._x} ${y1} L ${gutter} ${y1} L ${gutter} ${y2} L ${b._x} ${y2}`;
+  }
+  if (b._y >= ay) {
+    const midY = ay + 12;
+    return `M ${ax} ${ay} L ${ax} ${midY} L ${bx} ${midY} L ${bx} ${by}`;
+  }
+  const y1 = a._y + LG.nodeH / 2;
+  const y2 = b._y + LG.nodeH / 2;
+  const fromRight = a.col < b.col;
+  const x1 = fromRight ? a._x + LG.nodeW : a._x;
+  const x2 = fromRight ? b._x : b._x + LG.nodeW;
+  const midX = (x1 + x2) / 2;
+  return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
+}
+
+function showLayerDetail(node, el, fromHover) {
+  if (layerGraphPanning) return;
+  if (layerGraphPinned && fromHover) return;
+  const canvas = document.getElementById("layer-graph-canvas");
+  if (canvas) {
+    canvas.querySelectorAll(".lg-node.is-hot").forEach((n) => n.classList.remove("is-hot"));
+    canvas.querySelectorAll(".lg-edge.is-hot").forEach((n) => n.classList.remove("is-hot"));
+  }
+  if (el) el.classList.add("is-hot");
+  if (canvas) {
+    canvas.querySelectorAll(".lg-edge").forEach((edge) => {
+      if (edge.dataset.from === node.id || edge.dataset.to === node.id) edge.classList.add("is-hot");
+    });
+  }
+  const inspector = document.getElementById("layer-graph-inspector");
+  if (inspector) {
+    inspector.innerHTML = `
+      <div class="lg-ins-kicker">${layerGraphPinned ? "已固定 · 再点一层可切换" : "悬停中"}</div>
+      <div class="lg-ins-title">${escHtml(node.op)}</div>
+      <div class="lg-ins-mod">${escHtml(node.module || "")}</div>
+      <p class="lg-ins-meaning">${escHtml(node.meaning || "")}</p>
+      <div class="lg-ins-row"><b>输入</b><code>${escHtml(node.shape_in || "")}</code></div>
+      <div class="lg-ins-row"><b>输出</b><code>${escHtml(node.shape_out || "")}</code></div>
+      <div class="lg-ins-row"><b>权重</b>${escHtml(node.weight || "无参数")}</div>
+      <div class="lg-ins-row"><b>公式</b>${escHtml(node.formula || "")}</div>
+      <div class="lg-ins-row"><b>参数量</b>${Number(node.params || 0).toLocaleString()}${node.frozen ? " · 冻结" : ""}</div>
+      <div class="lg-ins-row"><b>代码</b>${escHtml(node.source || "")}</div>
+    `;
+  }
+}
+
+function applyLayerGraphScale() {
+  const canvas = document.getElementById("layer-graph-canvas");
+  const spacer = document.getElementById("layer-graph-spacer");
+  const label = document.getElementById("lg-zoom-reset");
+  if (!canvas || !spacer) return;
+  canvas.style.transform = `scale(${layerGraphScale})`;
+  canvas.style.transformOrigin = "0 0";
+  spacer.style.width = (layerGraphSize.w * layerGraphScale) + "px";
+  spacer.style.height = (layerGraphSize.h * layerGraphScale) + "px";
+  if (label) label.textContent = Math.round(layerGraphScale * 100) + "%";
+}
+
+function setLayerGraphScale(next, clientX, clientY) {
+  const scroll = document.getElementById("layer-graph-scroll");
+  const prev = layerGraphScale || 1;
+  next = Math.min(2.8, Math.max(0.2, next));
+  if (!scroll) {
+    layerGraphScale = next;
+    applyLayerGraphScale();
+    return;
+  }
+  const rect = scroll.getBoundingClientRect();
+  const focusX = clientX == null ? rect.width / 2 : clientX - rect.left;
+  const focusY = clientY == null ? rect.height / 2 : clientY - rect.top;
+  const contentX = scroll.scrollLeft + focusX;
+  const contentY = scroll.scrollTop + focusY;
+  const ratio = next / prev;
+  layerGraphScale = next;
+  applyLayerGraphScale();
+  scroll.scrollLeft = contentX * ratio - focusX;
+  scroll.scrollTop = contentY * ratio - focusY;
+}
+
+function bindLayerGraphNavigation(scroll) {
+  let drag = null;
+  let suppressClick = false;
+  scroll.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest("button")) return;
+    drag = {
+      x: event.clientX,
+      y: event.clientY,
+      left: scroll.scrollLeft,
+      top: scroll.scrollTop,
+      moved: false,
+      pointerId: event.pointerId,
+    };
+    scroll.setPointerCapture(event.pointerId);
+  });
+  scroll.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    drag.moved = true;
+    layerGraphPanning = true;
+    scroll.classList.add("is-panning");
+    scroll.scrollLeft = drag.left - dx;
+    scroll.scrollTop = drag.top - dy;
+  });
+  function endDrag(event) {
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    suppressClick = drag.moved;
+    drag = null;
+    layerGraphPanning = false;
+    scroll.classList.remove("is-panning");
+  }
+  scroll.addEventListener("pointerup", endDrag);
+  scroll.addEventListener("pointercancel", endDrag);
+  scroll.addEventListener("click", (event) => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  scroll.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : 1);
+    const factor = Math.exp(-delta * 0.0016);
+    setLayerGraphScale(layerGraphScale * factor, event.clientX, event.clientY);
+  }, { passive: false });
+}
+
+function toggleLayerGraphFullscreen() {
+  const shell = document.getElementById("layer-graph-shell");
+  if (!shell) return;
+  shell.classList.toggle("is-full");
+}
+
+function renderLayerGraph(graph) {
+  const host = document.getElementById("layer-graph-host");
+  if (!host) return;
+  layerGraphPinned = false;
+  if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+    host.innerHTML = "<div style='color:#9CA3AF;padding:24px;text-align:center;'>这个模型还没有逐层计算图。</div>";
+    return;
+  }
+  const strideX = LG.nodeW + LG.colGap;
+  const strideY = LG.nodeH + LG.rowGap;
+  const pad = 28;
+  let maxC = 0;
+  let maxR = 0;
+  const byId = {};
+  graph.nodes.forEach((node) => {
+    node._x = pad + node.col * strideX;
+    node._y = pad + node.row * strideY;
+    maxC = Math.max(maxC, node.col);
+    maxR = Math.max(maxR, node.row);
+    byId[node.id] = node;
+  });
+  layerGraphSize = {
+    w: pad * 2 + maxC * strideX + LG.nodeW,
+    h: pad * 2 + maxR * strideY + LG.nodeH,
+  };
+  const jumps = (graph.jumps || []).map((jump) => (
+    `<button type="button" class="lg-jump" data-node="${escHtml(jump.node)}">${escHtml(jump.label)}</button>`
+  )).join("");
+  host.innerHTML = `
+    <div class="lg-shell" id="layer-graph-shell">
+      <div class="lg-toolbar">
+        <div class="lg-jumps">${jumps}</div>
+        <div class="lg-zoom">
+          <button type="button" id="lg-zoom-out" title="缩小">−</button>
+          <button type="button" id="lg-zoom-reset" title="重置缩放">100%</button>
+          <button type="button" id="lg-zoom-in" title="放大">+</button>
+          <button type="button" id="lg-fit">适配宽度</button>
+        </div>
+      </div>
+      <div class="lg-note">${escHtml(graph.assumption || "")} 按住拖动画面，滚轮缩放。悬停一层时，右侧显示它在匹配里的作用；点击可固定。</div>
+      <div class="lg-body">
+        <div class="lg-scroll" id="layer-graph-scroll">
+          <div class="lg-spacer" id="layer-graph-spacer">
+            <div class="lg-canvas" id="layer-graph-canvas"></div>
+          </div>
+        </div>
+        <aside class="lg-inspector" id="layer-graph-inspector">
+          <div class="lg-ins-kicker">悬停查看这一层</div>
+          <div class="lg-ins-title">把鼠标放在某一层上</div>
+          <p class="lg-ins-meaning">方框是代码里的真实算子：卷积、归一化、残差相加、注意力、Sinkhorn。悬停后这里解释这一层在匹配里解决什么问题。</p>
+        </aside>
+      </div>
+    </div>
+  `;
+  const canvas = document.getElementById("layer-graph-canvas");
+  canvas.style.width = layerGraphSize.w + "px";
+  canvas.style.height = layerGraphSize.h + "px";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "lg-svg");
+  svg.setAttribute("width", String(layerGraphSize.w));
+  svg.setAttribute("height", String(layerGraphSize.h));
+  canvas.appendChild(svg);
+  (graph.edges || []).forEach((edge) => {
+    const src = byId[edge.from];
+    const dst = byId[edge.to];
+    if (!src || !dst) return;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", layerEdgePath(src, dst, edge.kind));
+    path.setAttribute("class", "lg-edge lg-edge-" + (edge.kind || "data"));
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
+    svg.appendChild(path);
+  });
+  graph.nodes.forEach((node) => {
+    const el = document.createElement("div");
+    el.className = "lg-node kind-" + (node.kind || "op") + (node.frozen ? " is-frozen" : "");
+    el.style.left = node._x + "px";
+    el.style.top = node._y + "px";
+    el.dataset.id = node.id;
+    el.innerHTML = `
+      <div class="lg-op">${escHtml(node.op)}${node.frozen ? "<span class='lg-lock'>冻结</span>" : ""}</div>
+      <div class="lg-spec">${escHtml(node.spec || "")}</div>
+      <div class="lg-shape">${escHtml(node.shape_out || "")}</div>
+    `;
+    el.addEventListener("mouseenter", () => showLayerDetail(node, el, true));
+    el.addEventListener("click", (event) => {
+      event.stopPropagation();
+      layerGraphPinned = true;
+      showLayerDetail(node, el, false);
+    });
+    canvas.appendChild(el);
+  });
+  host.querySelectorAll(".lg-jump").forEach((button) => {
+    button.addEventListener("click", () => {
+      const node = byId[button.dataset.node];
+      const scroll = document.getElementById("layer-graph-scroll");
+      const target = canvas.querySelector(`[data-id="${button.dataset.node}"]`);
+      if (node && scroll) {
+        scroll.scrollTo({
+          left: Math.max(0, node._x * layerGraphScale - scroll.clientWidth / 2),
+          top: Math.max(0, node._y * layerGraphScale - 40),
+          behavior: "smooth",
+        });
+      }
+      if (node && target) showLayerDetail(node, target, false);
+    });
+  });
+  const scroll = document.getElementById("layer-graph-scroll");
+  bindLayerGraphNavigation(scroll);
+  document.getElementById("lg-zoom-in").addEventListener("click", () => {
+    setLayerGraphScale(layerGraphScale * 1.15);
+  });
+  document.getElementById("lg-zoom-out").addEventListener("click", () => {
+    setLayerGraphScale(layerGraphScale / 1.15);
+  });
+  document.getElementById("lg-zoom-reset").addEventListener("click", () => {
+    setLayerGraphScale(1);
+  });
+  document.getElementById("lg-fit").addEventListener("click", () => {
+    setLayerGraphScale(Math.min(1, (scroll.clientWidth - 12) / layerGraphSize.w));
+  });
+  canvas.addEventListener("click", () => {
+    layerGraphPinned = false;
+    const kicker = document.querySelector("#layer-graph-inspector .lg-ins-kicker");
+    if (kicker) kicker.textContent = "悬停中";
+  });
+  layerGraphScale = 1;
+  applyLayerGraphScale();
 }
 
 async function previewCurrentModel() {
@@ -775,6 +1115,15 @@ async function previewCurrentModel() {
 
     const trainableParamsEl = document.getElementById("preview-trainable-params");
     if (trainableParamsEl) trainableParamsEl.innerText = data.trainable_params || "-";
+
+    try {
+      renderLayerGraph(data.layer_graph);
+    } catch (graphError) {
+      const host = document.getElementById("layer-graph-host");
+      if (host) {
+        host.innerHTML = `<div style="color:#FCA5A5;padding:24px;text-align:center;">逐层计算图渲染失败：${escHtml(graphError)}</div>`;
+      }
+    }
 
     // Shapes
     const shapesTbody = document.getElementById("preview-shapes-tbody");
@@ -824,6 +1173,10 @@ function copyModelPytorchRepr() {
   }).catch(() => {
     alert("复制失败，请手动选取复制。");
   });
+}
+
+function openDiagramZoomModal() {
+  toggleLayerGraphFullscreen();
 }
 
 // -------------------------------------------------------------
@@ -890,17 +1243,8 @@ function syncDataRatioFromInput(val) {
 }
 
 async function startTraining() {
-  const model = document.getElementById("train-model").value;
-  const data_dir = document.getElementById("train-data-dir").value;
-  const epochs = parseInt(document.getElementById("train-epochs").value);
-  const lr = parseFloat(document.getElementById("train-lr").value);
-  const dustbin_weight = parseFloat(document.getElementById("train-dustbin").value);
-  const motion_weight = parseFloat(document.getElementById("train-motion").value);
-  const min_area_ratio = parseFloat(document.getElementById("train-area-ratio").value);
-  const data_ratio_el = document.getElementById("train-data-ratio-input");
-  const data_ratio = data_ratio_el ? Math.max(0.01, Math.min(1.0, parseFloat(data_ratio_el.value) || 1.0)) : 1.0;
-  const pyramid = document.getElementById("train-pyramid").checked;
-  const amp = document.getElementById("train-amp").checked;
+  const params = getTrainingFormData();
+  const { model, data_dir, epochs, lr, label, data_ratio } = params;
 
   const btnStart = document.querySelector("#tab-train .btn-success");
   if (btnStart) {
@@ -913,7 +1257,8 @@ async function startTraining() {
 
   clearTerminal();
   const ratioLabel = data_ratio < 1.0 ? `, ratio=${Math.round(data_ratio * 100)}%` : "";
-  appendTerminalLine(`[+] 正在请求启动训练: model=${model}, data=${data_dir}${ratioLabel}, epochs=${epochs}, lr=${lr}...`);
+  const labelTag = label ? `, label=【${label}】` : "";
+  appendTerminalLine(`[+] 正在请求启动训练: model=${model}${labelTag}, data=${data_dir}${ratioLabel}, epochs=${epochs}, lr=${lr}...`);
 
   liveLossHistory = [];
   liveF1History = [];
@@ -923,18 +1268,15 @@ async function startTraining() {
     const res = await fetch("/api/train", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model, data_dir, epochs, lr, dustbin_weight, motion_weight, min_area_ratio, data_ratio, pyramid, amp
-      }),
+      body: JSON.stringify(params),
     });
     const result = await res.json();
     if (result.error) {
       alert(`启动失败: ${result.message}`);
       appendTerminalLine(`\n[!] 启动失败: ${result.message}\n`);
     } else {
-      appendTerminalLine(`\n[✓] 训练子进程成功启动! PID: ${result.task.pid}\n[*] 实时输出监听中...\n[*] 正在为您在新标签页中打开实时监控工作台...\n`);
-      // Open standalone live training monitor in a new browser tab
-      window.open("/train_live", "_blank");
+      appendTerminalLine(`\n[✓] 训练子进程成功启动! PID: ${result.task.pid}\n[*] 实时输出监听中...\n`);
+      loadTrainingQueue();
     }
   } catch (e) {
     alert(`网络请求异常: ${e}`);
@@ -1605,4 +1947,502 @@ function copyCurrentCodeSnippet() {
   }).catch(err => {
     alert(`复制失败: ${err}`);
   });
+}
+
+// =============================================================
+// Toast Notification Utility
+// =============================================================
+function showToast(message, type = "info") {
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast-msg toast-${type}`;
+  const icon = type === "success" ? "✓" : (type === "error" ? "✕" : "ℹ");
+  toast.innerHTML = `<span style="font-weight: bold; font-size: 15px;">${icon}</span><span style="flex: 1;">${message}</span>`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(12px)";
+    setTimeout(() => toast.remove(), 300);
+  }, 3500);
+}
+
+// =============================================================
+// Training Queue Management (📋 当前训练任务列表)
+// =============================================================
+function isSemanticLineModel(model) {
+  return model === "semantic_line_matcher" || model === "semantic_line";
+}
+
+function onTrainModelChange() {
+  const modelEl = document.getElementById("train-model");
+  const model = modelEl ? modelEl.value : "";
+  const semanticBox = document.getElementById("train-semantic-weights");
+  const motionGroup = document.getElementById("train-motion-group");
+  const showSemantic = isSemanticLineModel(model);
+  if (semanticBox) semanticBox.style.display = showSemantic ? "block" : "none";
+  if (motionGroup) motionGroup.style.display = showSemantic ? "none" : "block";
+}
+
+function getTrainingFormData() {
+  const model = document.getElementById("train-model").value;
+  const data_dir = document.getElementById("train-data-dir").value;
+  const epochs = parseInt(document.getElementById("train-epochs").value);
+  const lr = parseFloat(document.getElementById("train-lr").value);
+  const dustbin_weight = parseFloat(document.getElementById("train-dustbin").value);
+  const motion_weight = parseFloat(document.getElementById("train-motion").value);
+  const region_weight = parseFloat((document.getElementById("train-region-weight") || {}).value ?? 1.0);
+  const line_weight = parseFloat((document.getElementById("train-line-weight") || {}).value ?? 1.0);
+  const sem_weight = parseFloat((document.getElementById("train-sem-weight") || {}).value ?? 0.1);
+  const geo_weight = parseFloat((document.getElementById("train-geo-weight") || {}).value ?? 0.2);
+  const min_area_ratio = parseFloat(document.getElementById("train-area-ratio").value);
+  const data_ratio_el = document.getElementById("train-data-ratio-input");
+  const data_ratio = data_ratio_el ? Math.max(0.01, Math.min(1.0, parseFloat(data_ratio_el.value) || 1.0)) : 1.0;
+  const pyramid = document.getElementById("train-pyramid").checked;
+  const amp = document.getElementById("train-amp").checked;
+  const label_el = document.getElementById("train-label");
+  const label = label_el ? label_el.value.trim() : "";
+
+  return {
+    model,
+    data_dir,
+    epochs,
+    lr,
+    dustbin_weight,
+    motion_weight: isSemanticLineModel(model) ? 0.0 : motion_weight,
+    region_weight,
+    line_weight,
+    sem_weight,
+    geo_weight,
+    min_area_ratio,
+    data_ratio,
+    pyramid,
+    amp,
+    label
+  };
+}
+
+async function addToTrainingQueue() {
+  const params = getTrainingFormData();
+  try {
+    const res = await fetch("/api/queue?action=add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params)
+    });
+    const result = await res.json();
+    if (result.error) {
+      showToast(`加入队列失败: ${result.message}`, "error");
+    } else {
+      const labelText = params.label ? `【${params.label}】` : "";
+      showToast(`已成功将 ${params.model}${labelText} 加入训练队列！`, "success");
+      if (result.queue_data) {
+        renderQueueUI(result.queue_data);
+      } else {
+        loadTrainingQueue();
+      }
+    }
+  } catch (e) {
+    showToast(`加入队列异常: ${e}`, "error");
+  }
+}
+
+async function loadTrainingQueue() {
+  try {
+    const res = await fetch("/api/queue");
+    const data = await res.json();
+    renderQueueUI(data);
+  } catch (e) {
+    console.error("[Queue] Failed to load queue:", e);
+  }
+}
+
+function renderQueueUI(queueData) {
+  if (!queueData) return;
+
+  // 1. Update Navigation tab badge count
+  const badgeCount = document.getElementById("queue-badge-count");
+  const pendingCount = queueData.pending_count || 0;
+  if (badgeCount) {
+    badgeCount.innerText = pendingCount;
+    if (pendingCount > 0) {
+      badgeCount.className = "badge badge-blue";
+    } else {
+      badgeCount.className = "badge badge-secondary";
+    }
+  }
+
+  // 2. Update Stat Cards
+  const statActive = document.getElementById("queue-stat-active");
+  const statActiveSub = document.getElementById("queue-stat-active-sub");
+  if (statActive && statActiveSub) {
+    if (queueData.current_task) {
+      const ct = queueData.current_task;
+      const labelStr = ct.label ? `【${ct.label}】` : "";
+      const isEval = ct.current_stage === "EVAL";
+      const stageText = isEval ? "自动评测与可视化中" : "模型训练中";
+      const stageColor = isEval ? "#A78BFA" : "#34D399";
+      const icon = isEval ? "🧪" : "⚡";
+      statActive.innerHTML = `<span style="color: ${stageColor};">${icon} ${ct.config.model}${labelStr}</span>`;
+      statActiveSub.innerText = `任务ID: ${ct.task_id} (${stageText})`;
+      updateQueueLogHeader(true, { task_type: ct.config.model, task_id: ct.task_id, stage: ct.current_stage });
+    } else {
+      statActive.innerText = "无 (Idle)";
+      statActive.style.color = "#9CA3AF";
+      statActiveSub.innerText = "当前训练进程空闲";
+      updateQueueLogHeader(false, null);
+    }
+  }
+
+  const statPending = document.getElementById("queue-stat-pending");
+  if (statPending) statPending.innerText = pendingCount;
+
+  const statAuto = document.getElementById("queue-stat-autorun");
+  const btnToggleAuto = document.getElementById("btn-toggle-autorun");
+  if (statAuto) {
+    statAuto.innerText = queueData.auto_run ? "开启 (ON)" : "已暂停 (OFF)";
+    statAuto.style.color = queueData.auto_run ? "#34D399" : "#F87171";
+  }
+  if (btnToggleAuto) {
+    btnToggleAuto.innerText = queueData.auto_run ? "⚡ 自动轮询: 开启" : "⏸ 自动轮询: 已暂停";
+    btnToggleAuto.className = queueData.auto_run ? "btn btn-outline btn-sm" : "btn btn-secondary btn-sm";
+  }
+
+  const statCompleted = document.getElementById("queue-stat-completed");
+  if (statCompleted) {
+    statCompleted.innerText = `${queueData.completed_count || 0} / ${queueData.total_count || 0}`;
+  }
+
+  // 3. Render Table
+  const tbody = document.getElementById("queue-table-body");
+  if (!tbody) return;
+
+  const tasks = queueData.tasks || [];
+  if (tasks.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="8" style="text-align: center; padding: 36px 0; color: #9CA3AF;">
+          <div style="font-size: 28px; margin-bottom: 8px;">📭</div>
+          <div style="font-size: 14px; margin-bottom: 6px;">当前训练任务列表为空</div>
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">在“启动新的训练”配置超参数后点击“➕ 添加到训练列表”即可自动排队</div>
+          <button class="btn btn-primary btn-sm" onclick="switchTab('train')">去配置并添加新任务 ↗</button>
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  let html = "";
+  tasks.forEach((task, idx) => {
+    // Status Badge & Stage
+    let statusBadge = "";
+    if (task.status === "PENDING") {
+      statusBadge = '<span class="badge badge-warning">⏳ 排队等待</span>';
+    } else if (task.status === "RUNNING") {
+      if (task.current_stage === "EVAL") {
+        statusBadge = '<span class="badge badge-purple">🧪 自动评测与可视化中</span>';
+      } else {
+        statusBadge = '<span class="badge badge-blue">⚡ 正在执行训练</span>';
+      }
+    } else if (task.status === "COMPLETED") {
+      statusBadge = '<span class="badge badge-success">✓ 训练与评测完成</span>';
+    } else if (task.status === "FAILED") {
+      statusBadge = '<span class="badge badge-danger">✗ 执行失败</span>';
+    } else if (task.status === "CANCELLED") {
+      statusBadge = '<span class="badge badge-secondary">⏹ 已终止</span>';
+    } else {
+      statusBadge = `<span class="badge badge-secondary">${task.status}</span>`;
+    }
+
+    // Label pill
+    const labelHtml = task.label
+      ? `<span class="queue-label-pill" title="${task.label}">${task.label}</span>`
+      : `<span style="color: #6B7280; font-size: 12px;">-</span>`;
+
+    // Model
+    const modelBadge = `<span class="badge badge-purple" style="font-family: monospace;">${task.config.model || "-"}</span>`;
+
+    // Dataset & ratio
+    const dsName = (task.config.data_dir || "").split("/").pop() || "default";
+    const dataRatio = task.config.data_ratio !== undefined ? task.config.data_ratio : 1.0;
+    const ratioStr = dataRatio < 1.0 ? `<span style="color: #60A5FA; font-size: 11px;"> (${Math.round(dataRatio * 100)}%)</span>` : "";
+    const datasetHtml = `<span style="font-size: 12px;">${dsName}</span>${ratioStr}`;
+
+    // Hyperparams summary
+    const hpSummary = `
+      <div style="font-size: 11px; color: #D1D5DB; line-height: 1.4;">
+        <span>轮数: <b>${task.config.epochs || 15}</b></span> |
+        <span>LR: <b>${task.config.lr || "5e-4"}</b></span><br>
+        <span>FPN: ${task.config.pyramid ? "✓" : "✗"}</span> |
+        <span>AMP: ${task.config.amp ? "✓" : "✗"}</span> |
+        <span>Dustbin: ${task.config.dustbin_weight ?? 0.1}</span>
+      </div>
+    `;
+
+    // Created At
+    const timeHtml = `<div style="font-size: 11px; color: #9CA3AF;">${task.created_at || "-"}</div>`;
+
+    // Action buttons
+    let actionButtons = "";
+    if (task.status === "PENDING") {
+      actionButtons = `
+        <div class="queue-action-group">
+          <button class="btn-queue-action btn-queue-run" title="插队并立即启动执行" onclick="runQueueTaskNow('${task.task_id}')">⚡ 立即运行</button>
+          <button class="btn-queue-action" title="排队顺序上移" onclick="moveQueueTask('${task.task_id}', 'up')" ${idx === 0 ? "disabled" : ""}>⬆</button>
+          <button class="btn-queue-action" title="排队顺序下移" onclick="moveQueueTask('${task.task_id}', 'down')" ${idx === tasks.length - 1 ? "disabled" : ""}>⬇</button>
+          <button class="btn-queue-action btn-queue-del" title="从队列中删除此任务" onclick="deleteQueueTask('${task.task_id}')">✕</button>
+        </div>
+      `;
+    } else if (task.status === "RUNNING") {
+      actionButtons = `
+        <div class="queue-action-group">
+          <a class="btn-queue-action btn-queue-run" href="/train_live" target="_blank" title="打开实时训练监控标签页">↗ 监控面板</a>
+          <button class="btn-queue-action btn-queue-del" title="平滑终止当前训练" onclick="stopTraining()">⏹ 停止</button>
+        </div>
+      `;
+    } else {
+      actionButtons = `
+        <div class="queue-action-group">
+          <button class="btn-queue-action" title="以相同参数重新排队执行" onclick="requeueTask('${task.task_id}')">🔁 重新排队</button>
+          <button class="btn-queue-action btn-queue-del" title="从列表移除此条记录" onclick="deleteQueueTask('${task.task_id}')">✕ 移除</button>
+        </div>
+      `;
+    }
+
+    html += `
+      <tr style="${task.status === 'RUNNING' ? 'background: rgba(59, 130, 246, 0.08);' : ''}">
+        <td style="text-align: center; color: #9CA3AF; font-size: 12px;">${idx + 1}</td>
+        <td>${statusBadge}</td>
+        <td>${labelHtml}</td>
+        <td>${modelBadge}</td>
+        <td>${datasetHtml}</td>
+        <td>${hpSummary}</td>
+        <td>${timeHtml}</td>
+        <td style="text-align: center;">${actionButtons}</td>
+      </tr>
+    `;
+  });
+
+  tbody.innerHTML = html;
+}
+
+async function toggleQueueAutoRun() {
+  try {
+    const res = await fetch("/api/queue?action=toggle_auto", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    const result = await res.json();
+    if (result.success) {
+      showToast(result.message, "info");
+      renderQueueUI(result.queue_data);
+    }
+  } catch (e) {
+    showToast(`切换自动轮询状态失败: ${e}`, "error");
+  }
+}
+
+async function clearPendingQueue() {
+  if (!confirm("确定要清空队列中所有处于“排队等待”状态的任务吗？")) return;
+  try {
+    const res = await fetch("/api/queue?action=clear_pending", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    const result = await res.json();
+    if (result.success) {
+      showToast(result.message, "info");
+      renderQueueUI(result.queue_data);
+    }
+  } catch (e) {
+    showToast(`清空等待中任务失败: ${e}`, "error");
+  }
+}
+
+async function deleteQueueTask(taskId) {
+  if (!confirm("确定要从队列中删除此任务吗？")) return;
+  try {
+    const res = await fetch("/api/queue?action=delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId })
+    });
+    const result = await res.json();
+    if (result.success) {
+      showToast("任务已成功移除", "info");
+      renderQueueUI(result.queue_data);
+    }
+  } catch (e) {
+    showToast(`删除任务失败: ${e}`, "error");
+  }
+}
+
+async function moveQueueTask(taskId, direction) {
+  try {
+    const res = await fetch("/api/queue?action=reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId, direction: direction })
+    });
+    const result = await res.json();
+    if (result.success) {
+      renderQueueUI(result.queue_data);
+    }
+  } catch (e) {
+    showToast(`调整任务顺序失败: ${e}`, "error");
+  }
+}
+
+async function runQueueTaskNow(taskId) {
+  try {
+    const res = await fetch("/api/queue?action=run_now", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId })
+    });
+    const result = await res.json();
+    if (result.error) {
+      showToast(`立即执行失败: ${result.message}`, "error");
+    } else {
+      showToast("任务已立即启动执行！", "success");
+      loadTrainingQueue();
+      loadActiveQueueLogs();
+    }
+  } catch (e) {
+    showToast(`立即执行异常: ${e}`, "error");
+  }
+}
+
+async function requeueTask(taskId) {
+  try {
+    const res = await fetch("/api/queue");
+    const data = await res.json();
+    const task = (data.tasks || []).find(t => t.task_id === taskId);
+    if (!task) {
+      showToast("未找到原任务配置", "error");
+      return;
+    }
+    const addRes = await fetch("/api/queue?action=add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(task.config)
+    });
+    const addResult = await addRes.json();
+    if (addResult.success) {
+      showToast(`任务已重新入队排队！`, "success");
+      renderQueueUI(addResult.queue_data);
+    }
+  } catch (e) {
+    showToast(`重新入队异常: ${e}`, "error");
+  }
+}
+
+// -------------------------------------------------------------
+// Simple Queue Task Console Log Management
+// -------------------------------------------------------------
+let queueAutoScroll = true;
+
+function toggleQueueLogAutoScroll() {
+  queueAutoScroll = !queueAutoScroll;
+  const btn = document.getElementById("btn-queue-autoscroll");
+  if (btn) {
+    btn.innerText = queueAutoScroll ? "滚动: 开" : "滚动: 关";
+  }
+}
+
+function clearQueueLog() {
+  const terminal = document.getElementById("queue-terminal-logs");
+  if (terminal) {
+    terminal.innerHTML = "";
+  }
+}
+
+function updateQueueLogHeader(isRunning, taskInfo) {
+  const badge = document.getElementById("queue-log-status-badge");
+  const info = document.getElementById("queue-log-task-info");
+  const btnStop = document.getElementById("btn-queue-stop-task");
+
+  if (badge) {
+    if (isRunning) {
+      const isEval = taskInfo && (taskInfo.stage === "EVAL" || taskInfo.task_type === "eval");
+      badge.innerText = isEval ? "● 评测与可视化中" : "● 训练运行中";
+      badge.className = isEval ? "badge badge-purple" : "badge badge-success";
+    } else {
+      badge.innerText = "○ 空闲";
+      badge.className = "badge badge-secondary";
+    }
+  }
+
+  if (info) {
+    if (isRunning && taskInfo) {
+      const name = taskInfo.task_type || taskInfo.task_id || "训练任务";
+      info.innerText = `当前任务: ${name}`;
+    } else {
+      info.innerText = "当前任务: 无";
+    }
+  }
+
+  if (btnStop) {
+    btnStop.style.display = isRunning ? "inline-flex" : "none";
+  }
+}
+
+function appendQueueLogLine(line) {
+  const terminal = document.getElementById("queue-terminal-logs");
+  if (!terminal) return;
+
+  const placeholder = document.getElementById("queue-terminal-placeholder");
+  if (placeholder) {
+    placeholder.remove();
+  }
+
+  const p = document.createElement("div");
+  p.style.lineHeight = "1.4";
+  p.style.marginBottom = "2px";
+
+  if (line.includes("ERROR") || line.includes("Exception") || line.includes("Failed") || line.includes("[!]")) {
+    p.style.color = "#F87171";
+  } else if (line.includes("[✓]") || line.includes("BEST") || line.includes("SUCCESS")) {
+    p.style.color = "#34D399";
+  } else if (line.includes("Epoch [") || line.includes("Evaluating:") || line.includes("Visualizing:")) {
+    p.style.color = "#60A5FA";
+  } else if (line.startsWith("[*]") || line.startsWith("[+]")) {
+    p.style.color = "#A78BFA";
+  }
+
+  p.textContent = line;
+  terminal.appendChild(p);
+
+  // Keep terminal lines within reasonable buffer
+  while (terminal.childElementCount > 1000) {
+    terminal.removeChild(terminal.firstChild);
+  }
+
+  if (queueAutoScroll) {
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+}
+
+async function loadActiveQueueLogs() {
+  try {
+    const res = await fetch("/api/logs/active");
+    const data = await res.json();
+    if (data.logs && data.logs.length > 0) {
+      const placeholder = document.getElementById("queue-terminal-placeholder");
+      if (placeholder) placeholder.remove();
+      const terminal = document.getElementById("queue-terminal-logs");
+      if (terminal) {
+        terminal.innerHTML = "";
+        data.logs.forEach(line => appendQueueLogLine(line));
+      }
+    }
+  } catch (e) {
+    console.warn("[Queue Log] Failed to load active logs:", e);
+  }
 }

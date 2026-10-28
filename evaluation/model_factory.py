@@ -46,7 +46,32 @@ class ModelFactory:
             info["model_type"] = "line_transformer"
             return info
 
-        # 1.5. Multi-Modal Object + Straight Line Hybrid Matcher
+        # 1.5 Dual region + texture-line matcher (SemanticLineMatcher)
+        if any(k.startswith("line_desc_proj.") or k.startswith("region_matcher.") for k in state_dict):
+            info["family"] = "object"
+            info["model_type"] = "semantic_line_matcher"
+            info["use_pyramid"] = any("visual_backbone.lat3" in k or "visual_backbone.smooth2" in k for k in state_dict)
+            info["with_geometry"] = any("geo_encoder" in k for k in state_dict)
+            if "region_fusion.0.weight" in state_dict:
+                info["d_model"] = int(state_dict["region_fusion.0.weight"].shape[0])
+            layer_indices = set()
+            for k in state_dict:
+                if "transformer.layers." in k:
+                    try:
+                        idx = int(k.split("transformer.layers.")[1].split(".")[0])
+                        layer_indices.add(idx)
+                    except ValueError:
+                        pass
+            if layer_indices:
+                info["num_layers"] = max(layer_indices) + 1
+            if config and "model" in config:
+                m_cfg = config["model"]
+                for key in ("d_model", "num_layers", "nhead", "line_dim"):
+                    if key in m_cfg:
+                        info[key] = m_cfg[key]
+            return info
+
+        # 1.6 Multi-Modal Object + Straight Line Hybrid Matcher (XFeatLineMatcher)
         if any("line_encoder" in k for k in state_dict):
             info["family"] = "object"
             info["model_type"] = "xfeat_line_matcher"
@@ -170,6 +195,19 @@ class ModelFactory:
                 sinkhorn_iters=info["sinkhorn_iters"],
                 use_pyramid=info["use_pyramid"],
                 with_geometry=info["with_geometry"],
+            )
+        elif info["model_type"] in ["semantic_line_matcher", "semantic_line"]:
+            from models.semantic_line_matcher import SemanticLineMatcher
+            model = SemanticLineMatcher(
+                feat_dim=info.get("feat_dim", 64),
+                line_dim=info.get("line_dim", 64),
+                d_model=info["d_model"],
+                num_layers=info["num_layers"],
+                nhead=info["nhead"],
+                sinkhorn_iters=info["sinkhorn_iters"],
+                use_pyramid=info["use_pyramid"],
+                with_geometry=info["with_geometry"],
+                enable_line_head=True,
             )
         else:
             model = build_model(
