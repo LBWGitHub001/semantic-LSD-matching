@@ -16,6 +16,7 @@ from datasets import (
     SemanticRegionDataset,
     collate_region_pairs,
 )
+from models import uses_patch_lines
 
 
 class DatasetFactory:
@@ -39,10 +40,8 @@ class DatasetFactory:
 
         if model_info["family"] == "object":
             if use_region_ds:
-                needs_lines = model_info.get("model_type") in [
-                    "xfeat_line_matcher", "xfeat_line", "line_object",
-                    "semantic_line_matcher", "semantic_line",
-                ]
+                model_type = model_info.get("model_type", "xfeat_object")
+                needs_lines = uses_patch_lines(model_type) if model_type else False
                 dataset = SemanticRegionDataset(
                     dataset_dir=p_data,
                     split=split,

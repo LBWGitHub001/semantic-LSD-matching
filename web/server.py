@@ -21,6 +21,7 @@ from web.api_handlers import (
     CheckpointsHandler,
     CompareRunsHandler,
     DatasetGenHandler,
+    DatasetPreviewHandler,
     DatasetsHandler,
     EvalHandler,
     GalleryHandler,
@@ -98,6 +99,7 @@ def make_app() -> tornado.web.Application:
     settings: dict[str, Any] = {
         "template_path": str(WEB_DIR / "templates"),
         "static_path": str(WEB_DIR / "static"),
+        "static_handler_class": NoCacheStaticHandler,
         "debug": False,
         "autoreload": False,
     }
@@ -116,6 +118,7 @@ def make_app() -> tornado.web.Application:
         (r"/api/runs/(?P<run_name>[^/]+)", RunDetailHandler),
         (r"/api/checkpoints", CheckpointsHandler),
         (r"/api/datasets", DatasetsHandler),
+        (r"/api/dataset/preview", DatasetPreviewHandler),
         (r"/api/gallery", GalleryHandler),
         (r"/api/model/preview", ModelPreviewHandler),
         (r"/api/queue", QueueHandler),
@@ -129,8 +132,6 @@ def make_app() -> tornado.web.Application:
         # WebSocket Live Terminal
         (r"/ws/logs", LogsWebSocketHandler),
 
-        # Static assets. No long-lived cache: the UI script is updated in place.
-        (r"/static/(.*)", NoCacheStaticHandler, {"path": str(WEB_DIR / "static")}),
         # Files (checkpoints, outputs, dataset samples)
         (r"/files/(.*)", tornado.web.StaticFileHandler, {"path": str(ROOT_DIR)}),
     ]

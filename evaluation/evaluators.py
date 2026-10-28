@@ -11,17 +11,12 @@ from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import cv2
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from datasets import (
-    predict_bipartite_matches,
-    visualize_object_matches,
-    visualize_semantic_region_matches,
-)
+from datasets import predict_bipartite_matches
+from visualization.matching_visualizer import save_pair_visualization
 from evaluation.checkpoint import resolve_checkpoint_path
 from evaluation.model_factory import ModelFactory
 from evaluation.dataset_factory import DatasetFactory
@@ -33,6 +28,16 @@ except ImportError:
         return iterable
 
 TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+
+
+def build_object_forward_kwargs(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+    """Move optional line and bbox inputs in a region/object batch to device."""
+    kwargs: Dict[str, Any] = {}
+    for key0, key1 in (("patch_lines0", "patch_lines1"), ("line_mask0", "line_mask1"), ("bboxes0", "bboxes1")):
+        if batch.get(key0) is not None and batch.get(key1) is not None:
+            kwargs[key0] = batch[key0].to(device)
+            kwargs[key1] = batch[key1].to(device)
+    return kwargs
 
 
 class BaseEvaluator(ABC):
@@ -83,21 +88,7 @@ class ObjectMatchingEvaluator(BaseEvaluator):
             for batch in pbar:
                 patches0 = batch["patches0"].to(device)
                 patches1 = batch["patches1"].to(device)
-                b0 = batch.get("bboxes0").to(device) if batch.get("bboxes0") is not None else None
-                b1 = batch.get("bboxes1").to(device) if batch.get("bboxes1") is not None else None
-
-                m_kwargs = {}
-                if "patch_lines0" in batch and batch["patch_lines0"] is not None:
-                    m_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
-                    m_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
-                if "line_mask0" in batch and batch["line_mask0"] is not None:
-                    m_kwargs["line_mask0"] = batch["line_mask0"].to(device)
-                    m_kwargs["line_mask1"] = batch["line_mask1"].to(device)
-                if b0 is not None:
-                    m_kwargs["bboxes0"] = b0
-                    m_kwargs["bboxes1"] = b1
-
-                out = model(patches0, patches1, **m_kwargs)
+                out = model(patches0, patches1, **build_object_forward_kwargs(batch, device))
                 pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                     out["prob_matrix"][0],
                     thresh=0.2,
@@ -172,21 +163,7 @@ class ObjectMatchingEvaluator(BaseEvaluator):
 
                 patches0 = batch["patches0"].to(device)
                 patches1 = batch["patches1"].to(device)
-                b0 = batch.get("bboxes0").to(device) if batch.get("bboxes0") is not None else None
-                b1 = batch.get("bboxes1").to(device) if batch.get("bboxes1") is not None else None
-
-                m_kwargs = {}
-                if "patch_lines0" in batch and batch["patch_lines0"] is not None:
-                    m_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
-                    m_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
-                if "line_mask0" in batch and batch["line_mask0"] is not None:
-                    m_kwargs["line_mask0"] = batch["line_mask0"].to(device)
-                    m_kwargs["line_mask1"] = batch["line_mask1"].to(device)
-                if b0 is not None:
-                    m_kwargs["bboxes0"] = b0
-                    m_kwargs["bboxes1"] = b1
-
-                out = model(patches0, patches1, **m_kwargs)
+                out = model(patches0, patches1, **build_object_forward_kwargs(batch, device))
                 pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                     out["prob_matrix"][0],
                     thresh=0.2,
@@ -195,51 +172,21 @@ class ObjectMatchingEvaluator(BaseEvaluator):
 
                 scene_tag = batch.get("scene_name", f"sample_{vis_idx + 1}")
                 save_file = out_dir / f"eval_sample_{vis_idx + 1:02d}_{scene_tag}.jpg"
-
-                if use_region_ds:
-                    bgr0 = batch.get("raw_img0")
-                    bgr1 = batch.get("raw_img1")
-                    masks0 = batch.get("masks0")
-                    masks1 = batch.get("masks1")
-
-                    if (bgr0 is None or masks0 is None) and data_dir is not None:
-                        p_dir = Path(data_dir) / scene_tag
-                        bgr0 = cv2.imread(str(p_dir / "image_0.png"))
-                        bgr1 = cv2.imread(str(p_dir / "image_1.png"))
-                        m0_list, m1_list = [], []
-                        for r in batch.get("regs0", []):
-                            m = cv2.imread(str(p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
-                            m0_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
-                        for r in batch.get("regs1", []):
-                            m = cv2.imread(str(p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
-                            m1_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
-                        masks0 = torch.from_numpy(np.stack(m0_list, axis=0)) if m0_list else torch.zeros((0, 480, 640))
-                        masks1 = torch.from_numpy(np.stack(m1_list, axis=0)) if m1_list else torch.zeros((0, 480, 640))
-
-                    if bgr0 is not None and bgr1 is not None and masks0 is not None and masks1 is not None:
-                        visualize_semantic_region_matches(
-                            bgr0=bgr0,
-                            bgr1=bgr1,
-                            masks0=masks0,
-                            masks1=masks1,
-                            regs0=batch.get("regs0", []),
-                            regs1=batch.get("regs1", []),
-                            pred_matches=pred_matches,
-                            gt_matches=batch["gt_matches"][0],
-                            pred_un0=pred_un0,
-                            pred_un1=pred_un1,
-                            out_path=save_file,
-                            title=f"Sample {vis_idx + 1}: {scene_tag}",
-                        )
-                elif "raw_img0" in batch and batch["raw_img0"] is not None:
-                    visualize_object_matches(
-                        batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
-                        pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
-                        title=f"Sample {vis_idx + 1}: {scene_tag}",
-                    )
-
-                saved_paths.append(save_file)
-                print(f"  [✓] Exported visualization: {save_file.name}")
+                wrote = save_pair_visualization(
+                    batch,
+                    out,
+                    save_file,
+                    title=f"Sample {vis_idx + 1}: {scene_tag}",
+                    pred_matches=pred_matches,
+                    pred_un0=pred_un0,
+                    pred_un1=pred_un1,
+                    data_dir=data_dir,
+                    scene_name=scene_tag,
+                    use_region_ds=use_region_ds,
+                )
+                if wrote:
+                    saved_paths.append(save_file)
+                    print(f"  [✓] Exported visualization: {save_file.name}")
 
         return saved_paths
 
@@ -410,4 +357,39 @@ def evaluate(
 
     print(f"[✓] Saved evaluation metrics to : {eval_json_path}")
     print(f"[✓] Saved evaluation report to  : {eval_md_path}")
+
+    # Automatically backfill test_benchmark into run's config.json if present
+    cfg_file = ckpt_path.parent / "config.json"
+    if cfg_file.is_file():
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                cdata = json.load(f)
+            cdata["test_benchmark"] = {
+                "raw_visual": {
+                    "precision": round(metrics.get("precision", 0.0), 2),
+                    "recall": round(metrics.get("recall", 0.0), 2),
+                    "f1": round(metrics.get("f1", 0.0), 2),
+                    "tp": metrics.get("tp", 0),
+                    "fp": metrics.get("fp", 0),
+                    "fn": metrics.get("fn", 0),
+                    "cross_cat_fp": metrics.get("cross_cat_fp", 0),
+                    "cross_cat_rate": round(metrics.get("cross_cat_rate", 0.0), 2),
+                    "dustbin_precision": round(metrics.get("dustbin_prec", metrics.get("dustbin_acc", 0.0)), 2),
+                    "dustbin_recall": round(metrics.get("dustbin_rec", 0.0), 2),
+                },
+                "semantic_constrained": {
+                    "precision": round(metrics.get("precision", 0.0), 2),
+                    "recall": round(metrics.get("recall", 0.0), 2),
+                    "f1": round(metrics.get("f1", 0.0), 2),
+                    "tp": metrics.get("tp", 0),
+                    "fp": metrics.get("fp", 0),
+                    "fn": metrics.get("fn", 0),
+                },
+            }
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                json.dump(cdata, f, indent=2, ensure_ascii=False)
+            print(f"[✓] Backfilled benchmark metrics into: {cfg_file}")
+        except Exception as e:
+            print(f"[!] Warning: Failed to update config.json with test metrics: {e}")
+
     return metrics

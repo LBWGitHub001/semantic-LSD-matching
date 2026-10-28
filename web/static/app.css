@@ -596,8 +596,33 @@ tr:hover td {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+}
+.terminal-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.terminal-header-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.terminal-header-actions .btn-sm {
+  white-space: nowrap;
+}
+.log-source-select {
+  width: 148px;
+  max-width: 148px;
+  flex: 0 0 148px;
+  padding: 2px 6px;
+  font-size: 11px;
+  height: 26px;
+  background: #1F2937;
+  text-overflow: ellipsis;
 }
 
 .terminal-body {
@@ -1273,49 +1298,156 @@ tr:hover td {
 }
 .train-param-row {
   display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 10px;
-  align-items: start;
-  padding: 8px 10px;
-  border-radius: 8px;
+  grid-template-columns: minmax(110px, 1.15fr) minmax(100px, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 6px;
   border: 1px solid transparent;
-  background: rgba(17, 24, 39, 0.35);
-  margin-bottom: 6px;
+  background: transparent;
+  margin-bottom: 2px;
+}
+.train-param-row.has-pin {
+  grid-template-columns: 18px minmax(110px, 1.15fr) minmax(100px, 1fr);
 }
 .train-param-row:hover {
   border-color: #374151;
-  background: rgba(31, 41, 55, 0.55);
+  background: rgba(31, 41, 55, 0.45);
 }
 .train-param-row.is-fixed {
-  opacity: 0.92;
+  opacity: 0.9;
+}
+.train-param-row.is-tall {
+  align-items: start;
+}
+.train-param-row.is-tall .form-label {
+  padding-top: 8px;
 }
 .train-param-row .pin-check {
-  margin-top: 4px;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
+  margin: 0;
   accent-color: #60A5FA;
   cursor: pointer;
+  justify-self: center;
 }
-.train-param-body {
+.train-param-row > .form-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary, #D1D5DB);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.train-param-control {
   min-width: 0;
 }
-.train-param-body .form-label {
-  margin-bottom: 4px;
+.train-param-control .form-control {
+  width: 100%;
 }
-.train-param-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
-  line-height: 1.4;
+.train-param-control .form-control[type="number"],
+.train-param-control .form-control[type="text"] {
+  max-width: 100%;
 }
 .train-param-fixed-value {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 13px;
   color: #9CA3AF;
-  padding: 6px 10px;
+  padding: 5px 10px;
   background: #0F172A;
   border: 1px solid #374151;
   border-radius: 6px;
+  text-align: right;
+}
+.train-param-dataset {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.train-param-dataset .form-control {
+  flex: 1;
+  min-width: 0;
+}
+.train-param-dataset .btn-sm {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.ds-format-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  gap: 14px;
+  margin-top: 12px;
+}
+.ds-code-box {
+  background: #080C14;
+  border: 1px solid #1F2937;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #E5E7EB;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+.ds-crop-strip {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.ds-crop-strip img {
+  width: 68px;
+  height: 68px;
+  object-fit: contain;
+  background: #080C14;
+  border: 1px solid #374151;
+  border-radius: 6px;
+}
+.train-param-ratio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.train-param-ratio .range-slider {
+  flex: 1;
+  min-width: 0;
+}
+.train-param-ratio .train-data-ratio-input {
+  width: 72px;
+  flex-shrink: 0;
+  text-align: center;
+  font-weight: 700;
+  color: #60A5FA;
+}
+.train-param-resume {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.train-param-resume-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.train-param-resume-row .form-control {
+  flex: 1;
+  min-width: 0;
+}
+.train-resume-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+#train-params-modal-body .train-param-section-title {
+  margin: 10px 0 4px;
+}
+#train-params-modal-body .train-param-section-title:first-child {
+  margin-top: 0;
 }
 .btn-sm {
   padding: 4px 10px;

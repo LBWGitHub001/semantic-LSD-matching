@@ -41,15 +41,22 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from models import build_loss, build_model
+from evaluation.evaluators import build_object_forward_kwargs
+from models import (
+    build_loss,
+    build_model,
+    get_available_models,
+    is_semantic_line_model,
+    model_family,
+    uses_patch_lines,
+)
 from datasets import (
     ObjectMatchingDataset,
     collate_single_pair,
     predict_bipartite_matches,
-    visualize_object_matches,
-    visualize_semantic_region_matches,
     LineFeatPairDataset,
 )
+from visualization.matching_visualizer import save_pair_visualization
 from tools.experiment_tracker import ExperimentLogger
 
 
@@ -102,9 +109,7 @@ def worker_init_fn(worker_id: int) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
-                        choices=["xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "line_object",
-                                 "semantic_line_matcher", "semantic_line",
-                                 "mask_line", "mask", "line_transformer", "linefeat"],
+                        choices=get_available_models(),
                         help="Model architecture: 'xfeat_object', 'xfeat_line_matcher', 'semantic_line_matcher', 'mask_line', 'line_transformer'")
     parser.add_argument("--data-dir", type=str, default=None, help="Dataset directory or index path")
     parser.add_argument("--epochs", type=int, default=12, help="Number of training epochs")
@@ -206,15 +211,12 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             if splits_data and (p_data / splits_data[0] / "correspondence.json").exists():
                 use_region_ds = True
 
-    is_semantic_line = args.model_type in ["semantic_line_matcher", "semantic_line"]
+    is_semantic_line = is_semantic_line_model(args.model_type)
     if is_semantic_line:
         # Dual line+region matcher: disable legacy global motion by default
         if args.motion_weight == 0.2:
             args.motion_weight = 0.0
-    needs_lines = args.model_type in [
-        "xfeat_line_matcher", "xfeat_line", "line_object",
-        "semantic_line_matcher", "semantic_line",
-    ]
+    needs_lines = uses_patch_lines(args.model_type)
     if use_region_ds:
         from datasets.semantic_region_dataset import SemanticRegionDataset, collate_region_pairs
         train_ds = SemanticRegionDataset(dataset_dir=data_dir, split="train", min_area_ratio=args.min_area_ratio, load_lines=needs_lines)
@@ -418,17 +420,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                 break
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
-
-            model_kwargs = {}
-            if "patch_lines0" in batch and batch["patch_lines0"] is not None:
-                model_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
-                model_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
-            if "line_mask0" in batch and batch["line_mask0"] is not None:
-                model_kwargs["line_mask0"] = batch["line_mask0"].to(device)
-                model_kwargs["line_mask1"] = batch["line_mask1"].to(device)
-            if "bboxes0" in batch and batch["bboxes0"] is not None:
-                model_kwargs["bboxes0"] = batch["bboxes0"].to(device)
-                model_kwargs["bboxes1"] = batch["bboxes1"].to(device)
+            model_kwargs = build_object_forward_kwargs(batch, device)
 
             c0 = batch["centroids0"].to(device) if "centroids0" in batch and batch["centroids0"] is not None else None
             c1 = batch["centroids1"].to(device) if "centroids1" in batch and batch["centroids1"] is not None else None
@@ -630,17 +622,7 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
                 break
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
-            model_kwargs = {}
-            if "patch_lines0" in batch and batch["patch_lines0"] is not None:
-                model_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
-                model_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
-            if "line_mask0" in batch and batch["line_mask0"] is not None:
-                model_kwargs["line_mask0"] = batch["line_mask0"].to(device)
-                model_kwargs["line_mask1"] = batch["line_mask1"].to(device)
-            if "bboxes0" in batch and batch["bboxes0"] is not None:
-                model_kwargs["bboxes0"] = batch["bboxes0"].to(device)
-                model_kwargs["bboxes1"] = batch["bboxes1"].to(device)
-            out = model(patches0, patches1, **model_kwargs)
+            out = model(patches0, patches1, **build_object_forward_kwargs(batch, device))
             pred_matches, pred_un0, pred_un1 = predict_bipartite_matches(
                 out["prob_matrix"][0],
                 areas_0=batch.get("areas0"),
@@ -651,48 +633,20 @@ def train_object_pipeline(args: argparse.Namespace) -> None:
             save_file = vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
             global_file = global_vis_dir / f"test_sample_{vis_idx + 1}_{scene_tag}.jpg"
 
-            if use_region_ds:
-                bgr0 = batch.get("raw_img0")
-                bgr1 = batch.get("raw_img1")
-                masks0 = batch.get("masks0")
-                masks1 = batch.get("masks1")
-                if bgr0 is None or masks0 is None:
-                    p_dir = p_data / scene_tag
-                    bgr0 = cv2.imread(str(p_dir / "image_0.png"))
-                    bgr1 = cv2.imread(str(p_dir / "image_1.png"))
-                    m0_list, m1_list = [], []
-                    for r in batch.get("regs0", []):
-                        m = cv2.imread(str(p_dir / "masks_0" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
-                        m0_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
-                    for r in batch.get("regs1", []):
-                        m = cv2.imread(str(p_dir / "masks_1" / f"mask_{r['idx']:02d}.png"), cv2.IMREAD_GRAYSCALE)
-                        m1_list.append((m > 127).astype(np.float32) if m is not None else np.zeros((480, 640), dtype=np.float32))
-                    masks0 = torch.from_numpy(np.stack(m0_list, axis=0)) if m0_list else torch.zeros((0, 480, 640))
-                    masks1 = torch.from_numpy(np.stack(m1_list, axis=0)) if m1_list else torch.zeros((0, 480, 640))
-
-                visualize_semantic_region_matches(
-                    bgr0=bgr0,
-                    bgr1=bgr1,
-                    masks0=masks0,
-                    masks1=masks1,
-                    regs0=batch.get("regs0", []),
-                    regs1=batch.get("regs1", []),
-                    pred_matches=pred_matches,
-                    gt_matches=batch["gt_matches"][0],
-                    pred_un0=pred_un0,
-                    pred_un1=pred_un1,
-                    out_path=save_file,
-                    title=f"Sample {vis_idx + 1}: {scene_tag}",
-                )
-                import shutil
-                shutil.copyfile(save_file, global_file)
-            elif "raw_img0" in batch and batch["raw_img0"] is not None:
-                visualize_object_matches(
-                    batch["raw_img0"], batch["raw_img1"], batch["objs0"], batch["objs1"],
-                    pred_matches, batch["gt_matches"][0], pred_un0, pred_un1, save_file,
-                    title=f"Sample {vis_idx + 1}: {scene_tag}",
-                )
-                import shutil
+            import shutil
+            wrote = save_pair_visualization(
+                batch,
+                out,
+                save_file,
+                title=f"Sample {vis_idx + 1}: {scene_tag}",
+                pred_matches=pred_matches,
+                pred_un0=pred_un0,
+                pred_un1=pred_un1,
+                data_dir=p_data,
+                scene_name=scene_tag,
+                use_region_ds=use_region_ds,
+            )
+            if wrote:
                 shutil.copyfile(save_file, global_file)
 
     config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -745,19 +699,7 @@ def evaluate_object_pipeline(
         for batch in pbar:
             patches0 = batch["patches0"].to(device)
             patches1 = batch["patches1"].to(device)
-
-            model_kwargs = {}
-            if "patch_lines0" in batch and batch["patch_lines0"] is not None:
-                model_kwargs["patch_lines0"] = batch["patch_lines0"].to(device)
-                model_kwargs["patch_lines1"] = batch["patch_lines1"].to(device)
-            if "line_mask0" in batch and batch["line_mask0"] is not None:
-                model_kwargs["line_mask0"] = batch["line_mask0"].to(device)
-                model_kwargs["line_mask1"] = batch["line_mask1"].to(device)
-            if "bboxes0" in batch and batch["bboxes0"] is not None:
-                model_kwargs["bboxes0"] = batch["bboxes0"].to(device)
-                model_kwargs["bboxes1"] = batch["bboxes1"].to(device)
-
-            out = model(patches0, patches1, **model_kwargs)
+            out = model(patches0, patches1, **build_object_forward_kwargs(batch, device))
 
             cats0 = [o.get("category", "") for o in batch.get("objs0", [])] if enforce_same_category else None
             cats1 = [o.get("category", "") for o in batch.get("objs1", [])] if enforce_same_category else None
@@ -1174,10 +1116,7 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.model_type in [
-        "xfeat_object", "xfeat", "xfeat_line_matcher", "xfeat_line", "line_object",
-        "semantic_line_matcher", "semantic_line",
-    ]:
+    if model_family(args.model_type) == "object":
         train_object_pipeline(args)
     else:
         train_line_pipeline(args)

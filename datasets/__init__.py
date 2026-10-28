@@ -13,6 +13,7 @@ from datasets.object_dataset import (
 from datasets.semantic_region_dataset import (
     SemanticRegionDataset,
     collate_region_pairs,
+    visualize_line_matches,
     visualize_semantic_region_matches,
 )
 from datasets.line_dataset import (
@@ -35,6 +36,7 @@ __all__ = [
     "SemanticRegionDataset",
     "collate_region_pairs",
     "visualize_semantic_region_matches",
+    "visualize_line_matches",
     "LineFeatPairDataset",
     "collate_line_pairs",
     "STRUCTURED3D_CLASSES",

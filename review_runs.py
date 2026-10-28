@@ -66,7 +66,11 @@ def format_run_tag(cfg: dict[str, Any], run_dir: Path | str) -> str:
     ds_dir = ds_cfg.get("dataset_dir") or cli_args.get("data_dir") or ""
     ds_name = Path(ds_dir).name if ds_dir else "dataset"
 
-    # 4. Timestamp
+    # 4. Optional custom label
+    label = exp_cfg.get("label") or cli_args.get("label")
+    label_tag = f"+【{label}】" if label else ""
+
+    # 5. Timestamp
     import re
     match = re.search(r"(\d{8}_\d{6})", run_dir_name)
     if match:
@@ -76,7 +80,7 @@ def format_run_tag(cfg: dict[str, Any], run_dir: Path | str) -> str:
         clean_st = re.sub(r"[^\d]", "", st)
         ts = f"{clean_st[:8]}_{clean_st[8:14]}" if len(clean_st) >= 14 else run_dir_name
 
-    return f"{model}+{arch_str}+{ds_name}+【{ts}】"
+    return f"{model}+{arch_str}+{ds_name}{label_tag}+【{ts}】"
 
 
 def find_all_runs(ckpt_root: Path | str = "checkpoints") -> list[dict[str, Any]]:
@@ -379,6 +383,57 @@ def compare_runs(run_paths: list[str]) -> None:
             print(f"[✓] Multi-run comparison curve saved to: {out_cmp}\n")
         except Exception as e:
             pass
+
+
+def render_run_curves(run_dir: Path | str) -> Optional[Path]:
+    """Renders curves.png and report.md for a given run directory."""
+    p_dir = Path(run_dir).resolve()
+    if not p_dir.is_dir():
+        return None
+
+    cfg_file = p_dir / "config.json"
+    cfg = {}
+    if cfg_file.is_file():
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+
+    history = cfg.get("history", [])
+    csv_file = p_dir / "metrics.csv"
+    if not history and csv_file.is_file():
+        try:
+            with open(csv_file, "r", encoding="utf-8") as cf:
+                reader = csv.DictReader(cf)
+                for row in reader:
+                    history.append({
+                        "epoch": int(row["epoch"]),
+                        "train_loss": float(row["train_loss"]) if row.get("train_loss") else None,
+                        "val_f1": float(row["val_f1"]) if row.get("val_f1") else None,
+                        "val_precision": float(row["val_precision"]) if row.get("val_precision") else None,
+                        "val_recall": float(row["val_recall"]) if row.get("val_recall") else None,
+                        "dustbin_precision": float(row["dustbin_precision"]) if row.get("dustbin_precision") else None,
+                        "dustbin_recall": float(row["dustbin_recall"]) if row.get("dustbin_recall") else None,
+                        "dustbin_accuracy": float(row["dustbin_accuracy"]) if row.get("dustbin_accuracy") else None,
+                        "cross_cat_fp": int(row["cross_cat_fp"]) if row.get("cross_cat_fp") else None,
+                        "lr": float(row["lr"]) if row.get("lr") else None,
+                        "epoch_time_sec": float(row["epoch_time_sec"]) if row.get("epoch_time_sec") else None,
+                        "is_best": str(row.get("is_best", "FALSE")).upper() == "TRUE",
+                    })
+        except Exception:
+            pass
+
+    try:
+        from tools.experiment_tracker import ExperimentLogger
+        logger = ExperimentLogger(p_dir, cfg, enable_stdout_tee=False)
+        logger.history = history
+        out_p = logger.plot_curves()
+        logger.generate_post_mortem_report()
+        return out_p
+    except Exception as e:
+        print(f"[!] Warning: Failed to render curves in {p_dir}: {e}")
+        return None
 
 
 def main() -> None:

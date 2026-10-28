@@ -137,6 +137,7 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         conv = next(node for node in graph["nodes"] if node["id"] == "s1_conv")
         self.assertEqual(conv["shape_out"], "(N, 32, 56×56)")
         self.assertIn("下采样", conv["meaning"])
+        self.assertEqual(graph["param_count"], 1722081)
 
     def test_semantic_line_preview_and_index_option(self) -> None:
         response = self.fetch("/api/model/preview?model=semantic_line_matcher&pyramid=true&d_model=128")
@@ -149,14 +150,41 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
 
         html = self.fetch("/").body.decode("utf-8")
         self.assertIn('value="semantic_line_matcher"', html)
-        self.assertIn("train-semantic-weights", html)
-        self.assertEqual(graph["param_count"], 1722081)
+        self.assertIn("train-pinned-host", html)
+
+        cfg = json.loads(self.fetch("/api/ui/train-config").body.decode("utf-8"))
+        sem_ids = {p["id"] for p in cfg["schemas"]["semantic_line_matcher"]["params"]}
+        self.assertTrue({"region_weight", "line_weight", "sem_weight", "geo_weight"}.issubset(sem_ids))
 
 
     def test_favicon_serving(self) -> None:
         response = self.fetch("/favicon.ico")
         self.assertEqual(response.code, 200)
         self.assertIn("image", response.headers.get("Content-Type", "").lower())
+
+    def test_dataset_always_pinned_and_preview_endpoint(self) -> None:
+        post_res = self.fetch(
+            "/api/ui/train-config",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            body=json.dumps({"models": {"semantic_line_matcher": {"pinned": ["epochs"]}}}),
+        )
+        self.assertEqual(post_res.code, 200)
+        payload = json.loads(post_res.body.decode("utf-8"))
+        pinned = payload["config"]["models"]["semantic_line_matcher"]["pinned"]
+        self.assertIn("data_dir", pinned)
+        data_param = next(p for p in payload["schemas"]["semantic_line_matcher"]["params"] if p["id"] == "data_dir")
+        self.assertTrue(data_param.get("always_pinned"))
+
+        preview_res = self.fetch("/api/dataset/preview?data_dir=data/xfeat_line_matcher")
+        self.assertEqual(preview_res.code, 200)
+        preview = json.loads(preview_res.body.decode("utf-8"))
+        self.assertIn("tree", preview)
+        panels = preview.get("panels") or {}
+        self.assertTrue(panels.get("raw"))
+        self.assertTrue(panels.get("regions"))
+        self.assertTrue(panels.get("lines"))
+        self.assertIn("correspondence", preview.get("samples", {}))
 
 
 if __name__ == "__main__":

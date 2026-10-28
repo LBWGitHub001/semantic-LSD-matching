@@ -698,6 +698,7 @@ from visualization.matching_visualizer import (
     draw_dashed_line,
     draw_mask_boundary,
     draw_text_with_pill,
+    visualize_line_matches,
     visualize_semantic_region_matches,
 )
 
@@ -710,4 +711,5 @@ __all__ = [
     "draw_mask_boundary",
     "draw_text_with_pill",
     "visualize_semantic_region_matches",
+    "visualize_line_matches",
 ]

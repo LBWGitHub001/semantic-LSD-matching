@@ -69,6 +69,7 @@
             </div>
             <div style="display: flex; gap: 6px;">
               <button class="btn btn-secondary btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">滚动: 开</button>
+              <button class="btn btn-secondary btn-sm" type="button" onclick="copyTerminalLogs('terminal-logs', this)">复制日志</button>
               <button class="btn btn-secondary btn-sm" onclick="clearTerminal()">清屏</button>
             </div>
           </div>
@@ -166,18 +167,6 @@
       initWebSocket();
       initStatusPolling();
       loadActiveLogs();
-
-      // Lifecycle binding: close tab -> stop training
-      window.addEventListener("beforeunload", () => {
-        if (isTrainingActive) {
-          navigator.sendBeacon("/api/train?action=stop");
-        }
-      });
-      window.addEventListener("pagehide", () => {
-        if (isTrainingActive) {
-          navigator.sendBeacon("/api/train?action=stop");
-        }
-      });
     });
 
     async function loadActiveLogs() {
@@ -290,9 +279,11 @@
       const isProgressBar = rawText.includes("%|") || rawText.includes("pair/s") || rawText.includes("it/s");
 
       if (isProgressBar && terminal.lastElementChild && terminal.lastElementChild.dataset.isProgress === "true") {
+        terminal.lastElementChild.dataset.raw = rawText;
         terminal.lastElementChild.innerHTML = colored;
       } else {
         const div = document.createElement("div");
+        div.dataset.raw = rawText;
         div.innerHTML = colored;
         if (isProgressBar) div.dataset.isProgress = "true";
         terminal.appendChild(div);
@@ -316,6 +307,42 @@
     function clearTerminal() {
       const terminal = document.getElementById("terminal-logs");
       if (terminal) terminal.innerHTML = "";
+    }
+
+    function copyTerminalLogs(elementId, btn) {
+      const terminal = document.getElementById(elementId);
+      if (!terminal) return;
+      const rawLines = Array.from(terminal.querySelectorAll("[data-raw]")).map((el) => el.dataset.raw || "");
+      const text = rawLines.length ? rawLines.join("\n") : (terminal.innerText || "");
+      const label = btn ? btn.textContent : "";
+      const markCopied = () => {
+        if (!btn) return;
+        btn.textContent = "已复制";
+        setTimeout(() => { btn.textContent = label || "复制日志"; }, 1400);
+      };
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "0";
+        ta.style.left = "0";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) {
+          markCopied();
+          return;
+        }
+      } catch (_) { /* fall through */ }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(markCopied).catch((e) => alert("复制失败: " + e));
+        return;
+      }
+      alert("复制失败: 浏览器拒绝写入剪贴板");
     }
 
     function ansiToHtml(str) {

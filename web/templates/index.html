@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Semantic LSD Matching - 统一管理系统与开发工作台</title>
-  <link rel="stylesheet" href="/static/app.css?v=20261027c">
+  <link rel="stylesheet" href="/static/app.css?v=20261028e">
 </head>
 <body>
 
@@ -321,16 +321,15 @@
           <!-- Terminal Logs -->
           <div class="terminal-window">
             <div class="terminal-header">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span>控制台 (Console)</span>
+              <div class="terminal-header-left">
                 <span class="badge badge-success" id="ws-badge">● WS 已连接</span>
-                <select id="log-source-select" class="form-control" style="width: auto; padding: 2px 8px; font-size: 11px; height: 26px; background: #1F2937;" onchange="switchLogSource()">
+                <select id="log-source-select" class="form-control log-source-select" onchange="switchLogSource()">
                   <option value="live">实时任务输出 (Live)</option>
                 </select>
               </div>
-              <div style="display: flex; gap: 6px;">
-                <button class="btn btn-secondary btn-sm" id="btn-autoscroll" onclick="toggleAutoScroll()">滚动: 开</button>
-                <button class="btn btn-secondary btn-sm" onclick="clearTerminal()">清屏</button>
+              <div class="terminal-header-actions">
+                <button class="btn btn-secondary btn-sm" type="button" onclick="copyTerminalLogs('terminal-logs', this)">复制日志</button>
+                <button class="btn btn-secondary btn-sm" id="btn-clear-terminal" onclick="clearTerminal()">清屏</button>
               </div>
             </div>
             <div class="terminal-body" id="terminal-logs">
@@ -549,6 +548,7 @@
           </div>
           <div style="display: flex; gap: 8px; align-items: center;">
             <button class="btn btn-secondary btn-sm" id="btn-queue-autoscroll" onclick="toggleQueueLogAutoScroll()">滚动: 开</button>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="copyTerminalLogs('queue-terminal-logs', this)">复制日志</button>
             <button class="btn btn-secondary btn-sm" onclick="clearQueueLog()">清屏</button>
             <button class="btn btn-danger btn-sm" id="btn-queue-stop-task" style="display: none;" onclick="stopTraining()">⏹ 停止当前任务</button>
           </div>
@@ -1110,6 +1110,19 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261028a"></script>
+  <!-- 数据集格式与样本可视化 -->
+  <div class="modal-overlay" id="dataset-format-modal" style="display: none;">
+    <div class="modal-content" style="max-width: 1120px; max-height: 92vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <div class="modal-title" id="dataset-format-modal-title">训练数据集格式与样本可视化</div>
+        <button class="modal-close" onclick="closeModal('dataset-format-modal')">&times;</button>
+      </div>
+      <div class="modal-body" id="dataset-format-modal-body" style="overflow-y: auto; padding-top: 12px;">
+        <div style="color: var(--text-muted); padding: 20px;">正在读取数据集格式…</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20261028f"></script>
 </body>
 </html>

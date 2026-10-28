@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from models import build_model, XFeatObjectMatcher
+from models import build_model, canonical_model_name, uses_patch_lines
 from evaluation.checkpoint import resolve_checkpoint_path
 
 
@@ -173,49 +173,24 @@ class ModelFactory:
         if model_type_hint and model_type_hint not in ["xfeat_object", "xfeat"]:
             info["model_type"] = model_type_hint
 
-        # Build model instance
-        if info["model_type"] in ["xfeat_object", "xfeat", "object"]:
-            model = XFeatObjectMatcher(
-                feat_dim=info["feat_dim"],
-                d_model=info["d_model"],
-                num_layers=info["num_layers"],
-                nhead=info["nhead"],
-                sinkhorn_iters=info["sinkhorn_iters"],
-                use_pyramid=info["use_pyramid"],
-                with_geometry=info["with_geometry"],
-            )
-        elif info["model_type"] in ["xfeat_line_matcher", "xfeat_line", "line_object"]:
-            from models.object_matcher import XFeatLineMatcher
-            model = XFeatLineMatcher(
+        model_name = canonical_model_name(info["model_type"])
+        model_kwargs: Dict[str, Any] = dict(
+            d_model=info["d_model"],
+            num_layers=info["num_layers"],
+            nhead=info["nhead"],
+        )
+        if info.get("family") == "object":
+            model_kwargs.update(
                 feat_dim=info.get("feat_dim", 64),
-                line_dim=info.get("line_dim", 64),
-                d_model=info["d_model"],
-                num_layers=info["num_layers"],
-                nhead=info["nhead"],
                 sinkhorn_iters=info["sinkhorn_iters"],
                 use_pyramid=info["use_pyramid"],
                 with_geometry=info["with_geometry"],
             )
-        elif info["model_type"] in ["semantic_line_matcher", "semantic_line"]:
-            from models.semantic_line_matcher import SemanticLineMatcher
-            model = SemanticLineMatcher(
-                feat_dim=info.get("feat_dim", 64),
-                line_dim=info.get("line_dim", 64),
-                d_model=info["d_model"],
-                num_layers=info["num_layers"],
-                nhead=info["nhead"],
-                sinkhorn_iters=info["sinkhorn_iters"],
-                use_pyramid=info["use_pyramid"],
-                with_geometry=info["with_geometry"],
-                enable_line_head=True,
-            )
-        else:
-            model = build_model(
-                info["model_type"],
-                d_model=info["d_model"],
-                num_layers=info["num_layers"],
-                nhead=info["nhead"],
-            )
+            if uses_patch_lines(model_name):
+                model_kwargs["line_dim"] = info.get("line_dim", 64)
+            if model_name == "semantic_line_matcher":
+                model_kwargs["enable_line_head"] = True
+        model = build_model(model_name, **model_kwargs)
 
         model = model.to(device)
 

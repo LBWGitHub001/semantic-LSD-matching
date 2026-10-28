@@ -19,6 +19,8 @@ CONFIG_PATH = ROOT_DIR / "outputs" / "ui_train_config.json"
 # Parameter definitions shared / specialized by model.
 # adjustable=False → shown under 不可调节; still pinnable as read-only 常驻.
 
+_ALWAYS_PINNED = ("data_dir",)
+
 _COMMON_ADJUSTABLE: list[dict[str, Any]] = [
     {
         "id": "data_dir",
@@ -26,6 +28,7 @@ _COMMON_ADJUSTABLE: list[dict[str, Any]] = [
         "type": "dataset",
         "default": "data/xfeat_line_matcher",
         "adjustable": True,
+        "always_pinned": True,
     },
     {
         "id": "epochs",
@@ -469,67 +472,55 @@ def _params_for_line_family() -> list[dict[str, Any]]:
     return params
 
 
+def _schema(title: str, family: str, params: list[dict[str, Any]], pinned: list[str]) -> dict[str, Any]:
+    return {
+        "title": title,
+        "family": family,
+        "params": params,
+        "default_pinned": list(pinned),
+    }
+
+
 MODEL_SCHEMAS: dict[str, dict[str, Any]] = {
-    "semantic_line_matcher": {
-        "title": "SemanticLineMatcher",
-        "family": "object",
-        "params": _params_for_object_family(with_motion=False, semantic=True),
-        "default_pinned": list(_DEFAULT_PINNED_SEMANTIC),
-    },
-    "semantic_line": {
-        "title": "SemanticLineMatcher",
-        "family": "object",
-        "params": _params_for_object_family(with_motion=False, semantic=True),
-        "default_pinned": list(_DEFAULT_PINNED_SEMANTIC),
-    },
-    "xfeat_line_matcher": {
-        "title": "XFeatLineMatcher",
-        "family": "object",
-        "params": _params_for_object_family(with_motion=True, semantic=False),
-        "default_pinned": list(_DEFAULT_PINNED_OBJECT),
-    },
-    "xfeat_line": {
-        "title": "XFeatLineMatcher",
-        "family": "object",
-        "params": _params_for_object_family(with_motion=True, semantic=False),
-        "default_pinned": list(_DEFAULT_PINNED_OBJECT),
-    },
-    "xfeat_object": {
-        "title": "XFeatObjectMatcher",
-        "family": "object",
-        "params": _params_for_object_family(with_motion=True, semantic=False),
-        "default_pinned": list(_DEFAULT_PINNED_OBJECT),
-    },
-    "xfeat": {
-        "title": "XFeatObjectMatcher",
-        "family": "object",
-        "params": _params_for_object_family(with_motion=True, semantic=False),
-        "default_pinned": list(_DEFAULT_PINNED_OBJECT),
-    },
-    "mask_line": {
-        "title": "MaskLineFeatMatchNet",
-        "family": "line",
-        "params": _params_for_line_family(),
-        "default_pinned": list(_DEFAULT_PINNED_LINE),
-    },
-    "mask": {
-        "title": "MaskLineFeatMatchNet",
-        "family": "line",
-        "params": _params_for_line_family(),
-        "default_pinned": list(_DEFAULT_PINNED_LINE),
-    },
-    "line_transformer": {
-        "title": "LineMatcherNet",
-        "family": "line",
-        "params": _params_for_line_family(),
-        "default_pinned": list(_DEFAULT_PINNED_LINE),
-    },
-    "linefeat": {
-        "title": "LineMatcherNet",
-        "family": "line",
-        "params": _params_for_line_family(),
-        "default_pinned": list(_DEFAULT_PINNED_LINE),
-    },
+    name: _schema(title, family, params, pinned)
+    for names, title, family, params, pinned in (
+        (
+            ("semantic_line_matcher", "semantic_line"),
+            "SemanticLineMatcher",
+            "object",
+            _params_for_object_family(with_motion=False, semantic=True),
+            _DEFAULT_PINNED_SEMANTIC,
+        ),
+        (
+            ("xfeat_line_matcher", "xfeat_line"),
+            "XFeatLineMatcher",
+            "object",
+            _params_for_object_family(with_motion=True, semantic=False),
+            _DEFAULT_PINNED_OBJECT,
+        ),
+        (
+            ("xfeat_object", "xfeat"),
+            "XFeatObjectMatcher",
+            "object",
+            _params_for_object_family(with_motion=True, semantic=False),
+            _DEFAULT_PINNED_OBJECT,
+        ),
+        (
+            ("mask_line", "mask"),
+            "MaskLineFeatMatchNet",
+            "line",
+            _params_for_line_family(),
+            _DEFAULT_PINNED_LINE,
+        ),
+        (
+            ("line_transformer", "linefeat"),
+            "LineMatcherNet",
+            "line",
+            _params_for_line_family(),
+            _DEFAULT_PINNED_LINE,
+        ),
+    )
+    for name in names
 }
 
 
@@ -537,10 +528,19 @@ def _default_values(params: list[dict[str, Any]]) -> dict[str, Any]:
     return {p["id"]: deepcopy(p["default"]) for p in params}
 
 
+def _ensure_always_pinned(pinned: list[str], valid_ids: set[str]) -> list[str]:
+    result = [x for x in _ALWAYS_PINNED if x in valid_ids]
+    for item in pinned:
+        if item in valid_ids and item not in result:
+            result.append(item)
+    return result
+
+
 def _default_model_state(model: str) -> dict[str, Any]:
     schema = MODEL_SCHEMAS.get(model) or MODEL_SCHEMAS["xfeat_line_matcher"]
+    valid_ids = {p["id"] for p in schema["params"]}
     return {
-        "pinned": list(schema["default_pinned"]),
+        "pinned": _ensure_always_pinned(list(schema["default_pinned"]), valid_ids),
         "values": _default_values(schema["params"]),
     }
 
@@ -581,7 +581,7 @@ def load_config() -> dict[str, Any]:
         pinned = saved.get("pinned")
         if isinstance(pinned, list):
             valid_ids = {p["id"] for p in schema["params"]}
-            base["pinned"] = [x for x in pinned if x in valid_ids]
+            base["pinned"] = _ensure_always_pinned(pinned, valid_ids)
         values = saved.get("values") or {}
         if isinstance(values, dict):
             for k, v in values.items():
@@ -611,7 +611,7 @@ def save_config(cfg: dict[str, Any]) -> dict[str, Any]:
             slot = current["models"].setdefault(name, _default_model_state(name))
             if isinstance(state.get("pinned"), list):
                 valid_ids = {p["id"] for p in MODEL_SCHEMAS[name]["params"]}
-                slot["pinned"] = [x for x in state["pinned"] if x in valid_ids]
+                slot["pinned"] = _ensure_always_pinned(state["pinned"], valid_ids)
             if isinstance(state.get("values"), dict):
                 for k, v in state["values"].items():
                     if k in slot["values"]:

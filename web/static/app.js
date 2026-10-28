@@ -25,6 +25,8 @@ let trainUiReady = false;
 // Initialize on DOM load
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
+  ensureCopyLogButtons();
+  tightenConsoleHeader();
   initWebSocket();
   initStatusPolling();
   loadDashboard();
@@ -221,9 +223,11 @@ function appendTerminalLine(rawText) {
 
   if (isProgressBar && terminal.lastElementChild && terminal.lastElementChild.dataset.isProgress === "true") {
     // In-place update to mimic terminal \r behavior (smooth progress bar)
+    terminal.lastElementChild.dataset.raw = rawText;
     terminal.lastElementChild.innerHTML = colored;
   } else {
     const div = document.createElement("div");
+    div.dataset.raw = rawText;
     div.innerHTML = colored;
     if (isProgressBar) {
       div.dataset.isProgress = "true";
@@ -250,6 +254,88 @@ function toggleAutoScroll() {
 function clearTerminal() {
   const terminal = document.getElementById("terminal-logs");
   if (terminal) terminal.innerHTML = "";
+}
+
+function copyTerminalLogs(elementId, btn) {
+  const terminal = document.getElementById(elementId);
+  if (!terminal) return;
+  const rawLines = Array.from(terminal.querySelectorAll("[data-raw]")).map((el) => el.dataset.raw || "");
+  const text = (rawLines.length ? rawLines.join("\n") : (terminal.innerText || "")).replace(/\u0000/g, "");
+  const label = btn ? btn.textContent : "";
+  const markCopied = () => {
+    if (!btn) return;
+    btn.textContent = "已复制";
+    setTimeout(() => { btn.textContent = label || "复制日志"; }, 1400);
+    if (typeof showToast === "function") showToast("日志已复制到剪贴板", "success");
+  };
+  const fallbackCopy = () => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "0";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  };
+  try {
+    if (fallbackCopy()) {
+      markCopied();
+      return;
+    }
+  } catch (_) { /* try async clipboard */ }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(markCopied).catch((e) => {
+      if (typeof showToast === "function") showToast(`复制失败: ${e}`, "error");
+    });
+    return;
+  }
+  if (typeof showToast === "function") showToast("复制失败: 浏览器拒绝写入剪贴板", "error");
+}
+
+function tightenConsoleHeader() {
+  const header = document.querySelector(".terminal-window .terminal-header");
+  if (!header) return;
+  header.querySelectorAll("span").forEach((el) => {
+    if (el.id === "ws-badge") return;
+    if ((el.textContent || "").includes("控制台")) el.remove();
+  });
+  const scrollBtn = document.getElementById("btn-autoscroll");
+  if (scrollBtn) scrollBtn.remove();
+  const select = document.getElementById("log-source-select");
+  if (select) {
+    select.classList.add("log-source-select");
+    select.style.width = "148px";
+    select.style.maxWidth = "148px";
+    select.style.flex = "0 0 148px";
+  }
+  header.querySelectorAll(".btn-sm").forEach((btn) => {
+    btn.style.whiteSpace = "nowrap";
+  });
+}
+
+function ensureCopyLogButtons() {
+  const specs = [
+    { logId: "terminal-logs", anchorIds: ["btn-clear-terminal", "btn-autoscroll"] },
+    { logId: "queue-terminal-logs", anchorIds: ["btn-queue-autoscroll"] },
+  ];
+  specs.forEach(({ logId, anchorIds }) => {
+    if (document.querySelector(`[onclick*="copyTerminalLogs('${logId}'"]`)) return;
+    const anchor = anchorIds.map((id) => document.getElementById(id)).find(Boolean);
+    if (!anchor || !anchor.parentElement) return;
+    const btn = document.createElement("button");
+    btn.className = "btn btn-secondary btn-sm";
+    btn.type = "button";
+    btn.textContent = "复制日志";
+    btn.addEventListener("click", () => copyTerminalLogs(logId, btn));
+    if (anchor.id === "btn-clear-terminal") anchor.insertAdjacentElement("beforebegin", btn);
+    else anchor.insertAdjacentElement("afterend", btn);
+  });
 }
 
 function ansiToHtml(str) {
@@ -2027,8 +2113,8 @@ function ensureTrainModelSlot(model) {
     trainUiConfig = { version: 1, active_model: model, models: {}, last_train_snapshot: null };
   }
   if (!trainUiConfig.models) trainUiConfig.models = {};
+  const schema = trainUiSchemas[model] || {};
   if (!trainUiConfig.models[model]) {
-    const schema = trainUiSchemas[model] || {};
     const values = {};
     (schema.params || []).forEach((p) => { values[p.id] = p.default; });
     trainUiConfig.models[model] = {
@@ -2036,7 +2122,12 @@ function ensureTrainModelSlot(model) {
       values,
     };
   }
-  return trainUiConfig.models[model];
+  const slot = trainUiConfig.models[model];
+  const always = (schema.params || []).filter((p) => p.always_pinned || p.id === "data_dir").map((p) => p.id);
+  always.forEach((id) => {
+    if (!slot.pinned.includes(id)) slot.pinned.unshift(id);
+  });
+  return slot;
 }
 
 function getTrainModelValues(model) {
@@ -2128,41 +2219,52 @@ function buildParamControlHtml(param, value, { showPin, pinned, idPrefix }) {
   const prefix = idPrefix || "train-param";
   const domId = `${prefix}-${id}`;
   const adjustable = param.adjustable !== false;
-  const checked = pinned ? "checked" : "";
+  const alwaysPinned = param.always_pinned === true || id === "data_dir";
+  const checked = (pinned || alwaysPinned) ? "checked" : "";
+  const pinDisabled = alwaysPinned ? "disabled" : "";
+  const pinTitle = alwaysPinned ? "永久常驻项" : "钉选为常驻";
   const pinCol = showPin
-    ? `<input class="pin-check" type="checkbox" data-pin-id="${escapeAttr(id)}" ${checked} onchange="onPinToggle('${escapeAttr(id)}', this.checked)" title="钉选为常驻">`
-    : `<span></span>`;
+    ? `<input class="pin-check" type="checkbox" data-pin-id="${escapeAttr(id)}" ${checked} ${pinDisabled} onchange="onPinToggle('${escapeAttr(id)}', this.checked)" title="${pinTitle}">`
+    : "";
 
   let control = "";
+  let tall = false;
   if (!adjustable && param.type !== "checkbox") {
     control = `<div class="train-param-fixed-value">${escapeAttr(value)}</div>`;
   } else if (param.type === "dataset") {
-    control = `<select class="form-control train-dataset-select" id="${domId}" data-param-id="${escapeAttr(id)}" onchange="onTrainParamInput('${escapeAttr(id)}', this.value)"></select>`;
+    control = `
+      <div class="train-param-dataset">
+        <select class="form-control train-dataset-select" id="${domId}" data-param-id="${escapeAttr(id)}" onchange="onTrainParamInput('${escapeAttr(id)}', this.value)"></select>
+        <button class="btn btn-secondary btn-sm" type="button" onclick="openDatasetFormatModal()" title="直观查看数据集文件结构与样本">可视化</button>
+      </div>`;
   } else if (param.type === "ratio") {
     const v = Number(value);
     const safe = Number.isFinite(v) ? Math.max(0.01, Math.min(1, v)) : 1;
     const sliderId = `${prefix}-data-ratio-slider`;
     const inputId = `${prefix}-data-ratio-input`;
     control = `
-      <div style="display:flex; align-items:center; gap:10px;">
+      <div class="train-param-ratio">
         <input type="range" id="${sliderId}" class="range-slider train-data-ratio-slider" min="${param.min ?? 0.01}" max="${param.max ?? 1}" step="${param.step ?? 0.01}" value="${safe}" oninput="syncDataRatioFromSlider(this.value)">
-        <input type="number" id="${inputId}" class="form-control train-data-ratio-input" style="width:76px; text-align:center; font-weight:bold; color:#60A5FA;" min="${param.min ?? 0.01}" max="${param.max ?? 1}" step="${param.step ?? 0.01}" value="${safe.toFixed(2)}" oninput="syncDataRatioFromInput(this.value)">
+        <input type="number" id="${inputId}" class="form-control train-data-ratio-input" min="${param.min ?? 0.01}" max="${param.max ?? 1}" step="${param.step ?? 0.01}" value="${safe.toFixed(2)}" oninput="syncDataRatioFromInput(this.value)">
       </div>`;
   } else if (param.type === "checkbox") {
     const isOn = !!value;
     control = `<label class="checkbox-label"><input type="checkbox" id="${domId}" data-param-id="${escapeAttr(id)}" ${isOn ? "checked" : ""} onchange="onTrainParamInput('${escapeAttr(id)}', this.checked)"> 启用</label>`;
   } else if (param.type === "resume") {
+    tall = true;
     control = `
-      <div style="display:flex; gap:8px; align-items:stretch;">
-        <select class="form-control train-resume-select" id="${prefix}-resume-select" style="flex:1;"><option value="">（不导入，从头训练）</option></select>
-        <button class="btn btn-secondary" type="button" style="white-space:nowrap;" onclick="refreshTrainCheckpoints()" title="刷新 checkpoint 列表">刷新</button>
-      </div>
-      <div style="display:flex; gap:8px; margin-top:8px;">
-        <button class="btn btn-primary" type="button" style="flex:1;" onclick="importSelectedModel()">导入模型</button>
-        <button class="btn btn-secondary" type="button" style="flex:0.7;" onclick="clearImportedModel()">清除</button>
-      </div>
-      <input type="hidden" class="train-resume-hidden" id="${prefix}-resume" value="${escapeAttr(value || "")}">
-      <div class="train-resume-status" id="${prefix}-resume-status" style="font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.4;"></div>`;
+      <div class="train-param-resume">
+        <div class="train-param-resume-row">
+          <select class="form-control train-resume-select" id="${prefix}-resume-select"><option value="">（不导入，从头训练）</option></select>
+          <button class="btn btn-secondary btn-sm" type="button" onclick="refreshTrainCheckpoints()" title="刷新 checkpoint 列表">刷新</button>
+        </div>
+        <div class="train-param-resume-row">
+          <button class="btn btn-primary btn-sm" type="button" onclick="importSelectedModel()">导入模型</button>
+          <button class="btn btn-secondary btn-sm" type="button" onclick="clearImportedModel()">清除</button>
+        </div>
+        <input type="hidden" class="train-resume-hidden" id="${prefix}-resume" value="${escapeAttr(value || "")}">
+        <div class="train-resume-status" id="${prefix}-resume-status"></div>
+      </div>`;
   } else if (param.type === "number") {
     const disabled = adjustable ? "" : "disabled";
     control = `<input type="number" class="form-control" id="${domId}" data-param-id="${escapeAttr(id)}" value="${escapeAttr(value)}" min="${param.min ?? ""}" max="${param.max ?? ""}" step="${param.step ?? "any"}" ${disabled} oninput="onTrainParamInput('${escapeAttr(id)}', this.value)">`;
@@ -2172,16 +2274,18 @@ function buildParamControlHtml(param, value, { showPin, pinned, idPrefix }) {
     control = `<input type="text" class="form-control" id="${domId}" data-param-id="${escapeAttr(id)}" value="${escapeAttr(value)}" ${ph} ${disabled} oninput="onTrainParamInput('${escapeAttr(id)}', this.value)">`;
   }
 
-  const hint = param.hint ? `<div class="train-param-hint">${escapeAttr(param.hint)}</div>` : "";
-  const fixedCls = adjustable ? "" : "is-fixed";
+  const hintTitle = param.hint ? ` title="${escapeAttr(param.hint)}"` : "";
+  const rowCls = [
+    "train-param-row",
+    showPin ? "has-pin" : "",
+    adjustable ? "" : "is-fixed",
+    tall ? "is-tall" : "",
+  ].filter(Boolean).join(" ");
   return `
-    <div class="train-param-row ${fixedCls}" data-param-row="${escapeAttr(id)}">
+    <div class="${rowCls}" data-param-row="${escapeAttr(id)}"${hintTitle}>
       ${pinCol}
-      <div class="train-param-body">
-        <label class="form-label">${escapeAttr(param.label)}</label>
-        ${control}
-        ${hint}
-      </div>
+      <label class="form-label" for="${domId}">${escapeAttr(param.label)}</label>
+      <div class="train-param-control">${control}</div>
     </div>`;
 }
 
@@ -2201,12 +2305,18 @@ function onTrainParamInput(id, raw) {
 
 function onPinToggle(id, checked) {
   const model = getActiveTrainModel();
+  const schema = trainUiSchemas[model];
+  const param = (schema?.params || []).find((p) => p.id === id);
+  if (param?.always_pinned || id === "data_dir") return;
   const slot = ensureTrainModelSlot(model);
   const set = new Set(slot.pinned || []);
   if (checked) set.add(id);
   else set.delete(id);
+  (schema?.params || []).forEach((p) => {
+    if (p.always_pinned || p.id === "data_dir") set.add(p.id);
+  });
   // Keep relative order from schema
-  const order = (trainUiSchemas[model]?.params || []).map((p) => p.id);
+  const order = (schema?.params || []).map((p) => p.id);
   slot.pinned = order.filter((x) => set.has(x));
   scheduleTrainUiSave();
   renderPinnedParams();
@@ -2225,7 +2335,7 @@ function renderPinnedParams() {
   }
   const slot = ensureTrainModelSlot(model);
   const pinned = new Set(slot.pinned || []);
-  const params = (schema.params || []).filter((p) => pinned.has(p.id));
+  const params = (schema.params || []).filter((p) => pinned.has(p.id) || p.always_pinned || p.id === "data_dir");
   if (!params.length) {
     host.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">当前模型没有常驻参数。点击右上角「全部参数」勾选钉选。</div>`;
     return;
@@ -2250,6 +2360,124 @@ function openAllParamsModal() {
   renderAllParamsModal();
   const modal = document.getElementById("train-params-modal");
   if (modal) modal.style.display = "flex";
+}
+
+function getCurrentTrainDatasetDir() {
+  const el = document.querySelector("#train-pinned-host .train-dataset-select")
+    || document.querySelector("#train-params-modal .train-dataset-select");
+  if (el && el.value) return el.value;
+  return getTrainModelValues(getActiveTrainModel()).data_dir || "data/xfeat_line_matcher";
+}
+
+function ensureDatasetFormatModalDom() {
+  let modal = document.getElementById("dataset-format-modal");
+  if (modal) return modal;
+  modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.id = "dataset-format-modal";
+  modal.style.display = "none";
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width: 1120px; max-height: 92vh; display: flex; flex-direction: column;">
+      <div class="modal-header">
+        <div class="modal-title" id="dataset-format-modal-title">训练数据集格式与样本可视化</div>
+        <button class="modal-close" onclick="closeModal('dataset-format-modal')">&times;</button>
+      </div>
+      <div class="modal-body" id="dataset-format-modal-body" style="overflow-y: auto; padding-top: 12px;"></div>
+    </div>`;
+  document.body.appendChild(modal);
+  return modal;
+}
+
+async function openDatasetFormatModal(pairName) {
+  const modal = ensureDatasetFormatModalDom();
+  const body = document.getElementById("dataset-format-modal-body");
+  const title = document.getElementById("dataset-format-modal-title");
+  const dataDir = getCurrentTrainDatasetDir();
+  modal.style.display = "flex";
+  if (title) title.textContent = `数据集格式可视化 · ${dataDir}`;
+  if (body) body.innerHTML = `<div style="color:var(--text-muted);padding:16px 4px;">正在读取 ${escapeAttr(dataDir)} 的目录结构与样本…</div>`;
+
+  try {
+    const q = new URLSearchParams({ data_dir: dataDir });
+    if (pairName) q.set("pair", pairName);
+    const res = await fetch(`/api/dataset/preview?${q.toString()}`);
+    const data = await res.json();
+    if (!res.ok || data.status === "error") {
+      throw new Error(data.message || `HTTP ${res.status}`);
+    }
+    renderDatasetFormatModal(data);
+  } catch (e) {
+    if (body) body.innerHTML = `<div style="color:#F87171;padding:16px 4px;">读取数据集失败：${escapeAttr(String(e))}</div>`;
+  }
+}
+
+function renderDatasetFormatModal(data) {
+  const body = document.getElementById("dataset-format-modal-body");
+  const title = document.getElementById("dataset-format-modal-title");
+  if (!body) return;
+  if (title) title.textContent = `数据集格式可视化 · ${data.dataset} / ${data.pair}`;
+
+  const pairOptions = (data.pairs || []).map((p) =>
+    `<option value="${escapeAttr(p)}" ${p === data.pair ? "selected" : ""}>${escapeAttr(p)}</option>`
+  ).join("");
+  const splits = data.splits || {};
+  const npz = data.samples?.patch_lines_npz || { exists: false, arrays: {} };
+  const npzRows = Object.entries(npz.arrays || {}).map(
+    ([k, v]) => `${k}: shape=${JSON.stringify(v.shape)} dtype=${v.dtype}`
+  ).join("\n") || "（无 patch_lines.npz）";
+  const crops = (data.crop0_urls || []).map(
+    (u) => `<img src="${escapeAttr(u)}" title="image_0 区域裁剪块 → pad/resize 为 112×112 patch">`
+  ).join("");
+  const lineBlock = data.samples?.line
+    ? JSON.stringify(data.samples.line, null, 2)
+    : "（当前数据集未保存 lines_0.json；可在 patch_lines.npz 中查看 5D 线段）";
+  const panelBlock = (title, note, url) => `
+    <div>
+      <div class="train-param-section-title" style="margin-top:0;">${title}</div>
+      <div style="font-size:12px; color:var(--text-muted); margin:-4px 0 8px;">${note}</div>
+      ${url
+        ? `<img src="${escapeAttr(url)}" style="width:100%; border-radius:8px; border:1px solid #374151; background:#080C14;">`
+        : `<div class="ds-code-box">这一项在当前样本里没有数据</div>`}
+    </div>`;
+
+  body.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <span class="badge badge-blue">train ${splits.train ?? 0}</span>
+        <span class="badge badge-purple">val ${splits.val ?? 0}</span>
+        <span class="badge badge-success">test ${splits.test ?? 0}</span>
+        <span class="badge ${data.has_cad_lines ? "badge-success" : "badge-secondary"}">${data.has_cad_lines ? "含 CAD 直线 ID / 5D 线段" : "区域掩膜数据集"}</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:12px; color:var(--text-muted);">切换样本对</span>
+        <select class="form-control" style="width:240px; height:30px; padding:2px 8px; font-size:12px;" onchange="openDatasetFormatModal(this.value)">${pairOptions}</select>
+      </div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:14px; margin-top:12px;">
+      ${panelBlock("原图", "左右分别为 View0 / View1，未叠加任何标签", data.panels?.raw)}
+      ${panelBlock("区域标签 · Ground Truth", "同色掩膜与连线是 correspondence.json 里的同一对区域，文字是 label", data.panels?.regions)}
+      ${panelBlock("直线标签 · Ground Truth", "白线是该视角全部 CAD 投影线；彩色同色连线才是跨视角同一个 line_id。匹配对少，是因为两张图共同可见的 CAD 边很少", data.panels?.lines)}
+    </div>
+    ${crops ? `<div style="font-size:12px; color:var(--text-muted); margin-top:8px;"><code>image_0/region_*.png</code> 实例裁剪块（送入网络前会等比缩放到 112×112）：</div><div class="ds-crop-strip">${crops}</div>` : ""}
+    <div class="ds-format-grid">
+      <div>
+        <div class="train-param-section-title" style="margin-top:0;">目录与文件组织</div>
+        <div class="ds-code-box">${escapeAttr(data.tree || "")}</div>
+
+        <div class="train-param-section-title"><code>patch_lines.npz</code> 张量规格（5D: cu, cv, L, sin2θ, cos2θ）</div>
+        <div class="ds-code-box">${escapeAttr(npzRows)}</div>
+
+        <div class="train-param-section-title"><code>regions_0.json[0]</code> 单个语义区域记录</div>
+        <div class="ds-code-box">${escapeAttr(JSON.stringify(data.samples?.region || {}, null, 2))}</div>
+
+        <div class="train-param-section-title"><code>correspondence.json</code> 跨视角真值对应摘要</div>
+        <div class="ds-code-box">${escapeAttr(JSON.stringify(data.samples?.correspondence || {}, null, 2))}</div>
+
+        <div class="train-param-section-title"><code>lines_0.json[0]</code> 单条 2D CAD 线段记录</div>
+        <div class="ds-code-box">${escapeAttr(lineBlock)}</div>
+      </div>
+    </div>`;
 }
 
 function renderAllParamsModal() {
@@ -2811,6 +3039,7 @@ function appendQueueLogLine(line) {
     p.style.color = "#A78BFA";
   }
 
+  p.dataset.raw = line;
   p.textContent = line;
   terminal.appendChild(p);
 

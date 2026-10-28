@@ -74,6 +74,47 @@ LOSS_REGISTRY = {
     "linefeat": LineMatchingLoss,
 }
 
+CANONICAL_MODEL_NAMES = {
+    "xfeat_object": "xfeat_object",
+    "xfeat": "xfeat_object",
+    "object": "xfeat_object",
+    "xfeat_line_matcher": "xfeat_line_matcher",
+    "xfeat_line": "xfeat_line_matcher",
+    "line_object": "xfeat_line_matcher",
+    "semantic_line_matcher": "semantic_line_matcher",
+    "semantic_line": "semantic_line_matcher",
+    "mask_line": "mask_line",
+    "mask": "mask_line",
+    "line_transformer": "line_transformer",
+    "linefeat": "line_transformer",
+}
+
+OBJECT_FAMILY_MODELS = {"xfeat_object", "xfeat_line_matcher", "semantic_line_matcher"}
+LINE_FEATURE_MODELS = {"xfeat_line_matcher", "semantic_line_matcher"}
+
+
+def canonical_model_name(model_name: str) -> str:
+    """Resolve any registered alias to its canonical model name."""
+    name = (model_name or "").lower()
+    if name not in CANONICAL_MODEL_NAMES:
+        raise ValueError(f"Unknown model name '{model_name}'. Available: {list(MODEL_REGISTRY.keys())}")
+    return CANONICAL_MODEL_NAMES[name]
+
+
+def model_family(model_name: str) -> str:
+    """Return 'object' for patch/region matchers or 'line' for full-image line matchers."""
+    return "object" if canonical_model_name(model_name) in OBJECT_FAMILY_MODELS else "line"
+
+
+def uses_patch_lines(model_name: str) -> bool:
+    """Whether the model consumes per-region 5D patch lines."""
+    return canonical_model_name(model_name) in LINE_FEATURE_MODELS
+
+
+def is_semantic_line_model(model_name: str) -> bool:
+    """Whether the model is the dual region + line Sinkhorn matcher."""
+    return canonical_model_name(model_name) == "semantic_line_matcher"
+
 
 def build_model(model_name: str, **kwargs) -> nn.Module:
     """Builds a model instance by name."""
@@ -102,6 +143,10 @@ __all__ = [
     "build_model",
     "build_loss",
     "get_available_models",
+    "canonical_model_name",
+    "model_family",
+    "uses_patch_lines",
+    "is_semantic_line_model",
     "MODEL_REGISTRY",
     "LOSS_REGISTRY",
     "XFeatObjectMatcher",

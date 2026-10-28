@@ -313,6 +313,172 @@ class DatasetsHandler(BaseApiHandler):
         self.write_json({"datasets": datasets})
 
 
+def _resolve_dataset_dir(raw_dir: str) -> Path | None:
+    """Resolve a relative or absolute dataset directory under ROOT_DIR."""
+    rel = (raw_dir or "data/xfeat_line_matcher").strip()
+    candidate = (ROOT_DIR / rel).resolve() if not Path(rel).is_absolute() else Path(rel).resolve()
+    try:
+        candidate.relative_to(ROOT_DIR.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_dir() else None
+
+
+def _read_json(path: Path) -> Any:
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+class DatasetPreviewHandler(BaseApiHandler):
+    """GET /api/dataset/preview - Format layout and rendered sample for a dataset."""
+
+    def get(self) -> None:
+        raw_dir = self.get_query_argument("data_dir", "data/xfeat_line_matcher")
+        pair_arg = self.get_query_argument("pair", "").strip()
+        ds_dir = _resolve_dataset_dir(raw_dir)
+        if ds_dir is None:
+            self.write_error_json(f"数据集目录不存在: {raw_dir}", status=404)
+            return
+
+        splits: dict[str, int] = {}
+        pair_names: list[str] = []
+        for split in ("train", "val", "test"):
+            items = _read_json(ds_dir / f"{split}_split.json")
+            if isinstance(items, list):
+                splits[split] = len(items)
+                if not pair_names and items:
+                    pair_names = [str(x) for x in items[:24] if (ds_dir / str(x)).is_dir()]
+        if not pair_names:
+            pair_names = sorted(p.name for p in ds_dir.iterdir() if p.is_dir())[:24]
+
+        pair_name = pair_arg if pair_arg in pair_names or (pair_arg and (ds_dir / pair_arg).is_dir()) else (pair_names[0] if pair_names else "")
+        pair_dir = ds_dir / pair_name if pair_name else None
+        if pair_dir is None or not pair_dir.is_dir():
+            self.write_error_json(f"数据集中没有可预览的样本对: {raw_dir}", status=404)
+            return
+
+        corr = _read_json(pair_dir / "correspondence.json") or {}
+        regs0 = _read_json(pair_dir / "regions_0.json") or []
+        regs1 = _read_json(pair_dir / "regions_1.json") or []
+        lines0 = _read_json(pair_dir / "lines_0.json") or []
+        lines1 = _read_json(pair_dir / "lines_1.json") or []
+
+        npz_info: dict[str, Any] = {"exists": False, "arrays": {}}
+        npz_path = pair_dir / "patch_lines.npz"
+        if npz_path.is_file():
+            try:
+                import numpy as np
+
+                with np.load(npz_path) as npz:
+                    npz_info = {
+                        "exists": True,
+                        "arrays": {k: {"shape": list(npz[k].shape), "dtype": str(npz[k].dtype)} for k in npz.files},
+                    }
+            except Exception:
+                npz_info = {"exists": True, "arrays": {}}
+
+        panels = self._render_pair_preview(ds_dir, pair_dir, regs0, regs1, corr)
+        rel_pair = pair_dir.relative_to(ROOT_DIR).as_posix()
+        rel_ds = ds_dir.relative_to(ROOT_DIR).as_posix()
+        crop_files0 = sorted(p.name for p in (pair_dir / "image_0").glob("*.png"))[:4] if (pair_dir / "image_0").is_dir() else []
+        mask_files0 = sorted(p.name for p in (pair_dir / "masks_0").glob("*.png"))[:4] if (pair_dir / "masks_0").is_dir() else []
+
+        tree = [
+            f"{rel_ds}/",
+            f"├── train_split.json ({splits.get('train', 0)} pairs) / val_split.json ({splits.get('val', 0)}) / test_split.json ({splits.get('test', 0)})",
+            f"└── {pair_dir.name}/",
+            "    ├── image_0.png, image_1.png          (双视角 RGB 原图, 480×640)",
+            f"    ├── image_0/ ({len(regs0)} 个裁剪块: {', '.join(crop_files0[:2]) or 'region_00.png'} … → 112×112 patch)",
+            f"    ├── masks_0/ ({len(regs0)} 张二值掩膜: {', '.join(mask_files0[:2]) or 'mask_00.png'} …)",
+            f"    ├── regions_0.json ({len(regs0)} 区域) / regions_1.json ({len(regs1)} 区域)",
+            f"    ├── correspondence.json (区域匹配 {len(corr.get('matches', []))} 对, 直线匹配 {len(corr.get('line_matches', []))} 对)",
+        ]
+        if lines0 or lines1:
+            tree.append(f"    ├── lines_0.json ({len(lines0)} 条 2D 投影 CAD 线段) / lines_1.json ({len(lines1)} 条)")
+        if npz_info["exists"]:
+            arr_desc = ", ".join(f"{k}:{v['shape']}" for k, v in npz_info["arrays"].items())
+            tree.append(f"    └── patch_lines.npz ({arr_desc})")
+
+        self.write_json({
+            "dataset": rel_ds,
+            "pair": pair_dir.name,
+            "pairs": pair_names,
+            "splits": splits,
+            "has_cad_lines": bool(lines0 or lines1 or "ids0" in npz_info["arrays"]),
+            "tree": "\n".join(tree),
+            "panels": panels,
+            "preview_url": panels.get("regions") or panels.get("raw"),
+            "image0_url": f"/files/{rel_pair}/image_0.png",
+            "image1_url": f"/files/{rel_pair}/image_1.png",
+            "crop0_urls": [f"/files/{rel_pair}/image_0/{name}" for name in crop_files0],
+            "samples": {
+                "region": regs0[0] if regs0 else None,
+                "correspondence": {
+                    "pair_id": corr.get("pair_id", pair_dir.name),
+                    "rotation_deg": corr.get("rotation_deg"),
+                    "baseline_m": corr.get("baseline_m"),
+                    "co_visible_area_ratio": corr.get("co_visible_area_ratio"),
+                    "matches_head": (corr.get("matches") or [])[:3],
+                    "line_matches_head": (corr.get("line_matches") or [])[:3],
+                },
+                "line": lines0[0] if lines0 else None,
+                "patch_lines_npz": npz_info,
+            },
+        })
+
+    @staticmethod
+    def _render_pair_preview(
+        ds_dir: Path,
+        pair_dir: Path,
+        regs0: list[dict[str, Any]],
+        regs1: list[dict[str, Any]],
+        corr: dict[str, Any],
+    ) -> dict[str, str]:
+        import cv2
+        import numpy as np
+
+        from visualization.matching_visualizer import render_dataset_ground_truth
+
+        bgr0 = cv2.imread(str(pair_dir / "image_0.png"))
+        bgr1 = cv2.imread(str(pair_dir / "image_1.png"))
+        if bgr0 is None or bgr1 is None:
+            return {}
+
+        def _load_masks(regs: list[dict[str, Any]], folder: str) -> np.ndarray:
+            stacked = []
+            for reg in regs:
+                mask = cv2.imread(str(pair_dir / folder / f"mask_{int(reg.get('idx', 0)):02d}.png"), cv2.IMREAD_GRAYSCALE)
+                stacked.append((mask > 127).astype(np.float32) if mask is not None else np.zeros(bgr0.shape[:2], dtype=np.float32))
+            if not stacked:
+                return np.zeros((0, bgr0.shape[0], bgr0.shape[1]), dtype=np.float32)
+            return np.stack(stacked, axis=0)
+
+        lines0 = _read_json(pair_dir / "lines_0.json") or []
+        lines1 = _read_json(pair_dir / "lines_1.json") or []
+        written = render_dataset_ground_truth(
+            bgr0=bgr0,
+            bgr1=bgr1,
+            regs0=regs0,
+            regs1=regs1,
+            masks0=_load_masks(regs0, "masks_0"),
+            masks1=_load_masks(regs1, "masks_1"),
+            lines0=lines0 if isinstance(lines0, list) else [],
+            lines1=lines1 if isinstance(lines1, list) else [],
+            correspondence=corr,
+            out_dir=ROOT_DIR / "outputs" / "dataset_preview",
+            stem=f"{ds_dir.name}__{pair_dir.name}",
+        )
+        return {
+            key: f"/files/outputs/dataset_preview/{path.name}?t={int(path.stat().st_mtime)}"
+            for key, path in written.items()
+        }
+
+
 class GalleryHandler(BaseApiHandler):
     """GET /api/gallery - Directly lists all visualization images across the system."""
 

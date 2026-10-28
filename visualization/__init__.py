@@ -18,6 +18,8 @@ from visualization.matching_visualizer import (
     draw_dashed_line,
     draw_mask_boundary,
     draw_text_with_pill,
+    save_pair_visualization,
+    visualize_line_matches,
     visualize_object_matches,
     visualize_semantic_region_matches,
 )
@@ -54,6 +56,8 @@ __all__ = [
     "draw_dashed_line",
     "draw_text_with_pill",
     "visualize_semantic_region_matches",
+    "save_pair_visualization",
+    "visualize_line_matches",
     "visualize_object_matches",
     # Architecture & Curve functions (Lazy)
     "render_model_architecture",

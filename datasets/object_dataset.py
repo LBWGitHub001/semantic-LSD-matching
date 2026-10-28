@@ -264,83 +264,12 @@ def predict_bipartite_matches(
     return matches, unmatched_0, unmatched_1
 
 
-def visualize_object_matches(
-    raw_img0: np.ndarray,
-    raw_img1: np.ndarray,
-    objs0: list[dict[str, Any]],
-    objs1: list[dict[str, Any]],
-    pred_matches: list[tuple[int, int]],
-    gt_matches: list[tuple[int, int]],
-    pred_un0: list[int],
-    pred_un1: list[int],
-    out_path: Path | str,
-    title: str = "Object Bipartite Matching",
-) -> None:
-    """Draws side-by-side '连连看' visualization with green match lines and bounding boxes."""
-    H0, W0, _ = raw_img0.shape
-    H1, W1, _ = raw_img1.shape
-    canvas_h = max(H0, H1) + 60
-    canvas_w = W0 + W1 + 40
-    canvas = np.full((canvas_h, canvas_w, 3), 245, dtype=np.uint8)
+# Re-export unified matching visualizer for backward compatibility
+from visualization.matching_visualizer import visualize_object_matches
 
-    y_offset = 50
-    x0_offset = 10
-    x1_offset = W0 + 30
-
-    canvas[y_offset : y_offset + H0, x0_offset : x0_offset + W0] = raw_img0
-    canvas[y_offset : y_offset + H1, x1_offset : x1_offset + W1] = raw_img1
-
-    cv2.putText(canvas, title, (20, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (40, 40, 40), 2, cv2.LINE_AA)
-
-    gt_set = set(gt_matches)
-
-    for i in pred_un0:
-        if i < len(objs0):
-            bx = objs0[i]["bbox"]
-            p1 = (int(bx[0] + x0_offset), int(bx[1] + y_offset))
-            p2 = (int(bx[2] + x0_offset), int(bx[3] + y_offset))
-            cv2.rectangle(canvas, p1, p2, (40, 40, 230), 2)
-            cv2.putText(canvas, f"{objs0[i]['category']} (unmatched)", (p1[0], max(p1[1] - 6, y_offset + 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (40, 40, 230), 1, cv2.LINE_AA)
-
-    for j in pred_un1:
-        if j < len(objs1):
-            bx = objs1[j]["bbox"]
-            p1 = (int(bx[0] + x1_offset), int(bx[1] + y_offset))
-            p2 = (int(bx[2] + x1_offset), int(bx[3] + y_offset))
-            cv2.rectangle(canvas, p1, p2, (40, 40, 230), 2)
-            cv2.putText(canvas, f"{objs1[j]['category']} (unmatched)", (p1[0], max(p1[1] - 6, y_offset + 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (40, 40, 230), 1, cv2.LINE_AA)
-
-    for i, j in pred_matches:
-        if i >= len(objs0) or j >= len(objs1):
-            continue
-        b0 = objs0[i]["bbox"]
-        b1 = objs1[j]["bbox"]
-        c0 = objs0[i].get("centroid", [(b0[0] + b0[2]) / 2.0, (b0[1] + b0[3]) / 2.0])
-        c1 = objs1[j].get("centroid", [(b1[0] + b1[2]) / 2.0, (b1[1] + b1[3]) / 2.0])
-
-        is_correct = (i, j) in gt_set if gt_set else True
-        color = (40, 190, 40) if is_correct else (200, 30, 220)
-
-        p0_min = (int(b0[0] + x0_offset), int(b0[1] + y_offset))
-        p0_max = (int(b0[2] + x0_offset), int(b0[3] + y_offset))
-        cv2.rectangle(canvas, p0_min, p0_max, color, 2)
-        cv2.putText(canvas, objs0[i]["category"], (p0_min[0], max(p0_min[1] - 6, y_offset + 15)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
-
-        p1_min = (int(b1[0] + x1_offset), int(b1[1] + y_offset))
-        p1_max = (int(b1[2] + x1_offset), int(b1[3] + y_offset))
-        cv2.rectangle(canvas, p1_min, p1_max, color, 2)
-        cv2.putText(canvas, objs1[j]["category"], (p1_min[0], max(p1_min[1] - 6, y_offset + 15)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
-
-        pt_from = (int(c0[0] + x0_offset), int(c0[1] + y_offset))
-        pt_to = (int(c1[0] + x1_offset), int(c1[1] + y_offset))
-        cv2.line(canvas, pt_from, pt_to, color, 2, cv2.LINE_AA)
-        cv2.circle(canvas, pt_from, 5, color, -1)
-        cv2.circle(canvas, pt_to, 5, color, -1)
-
-    out_p = Path(out_path)
-    out_p.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out_p), canvas)
+__all__ = [
+    "ObjectMatchingDataset",
+    "collate_object_pairs",
+    "compute_object_matches_heuristic",
+    "visualize_object_matches",
+]
