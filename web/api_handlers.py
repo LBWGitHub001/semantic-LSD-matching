@@ -15,7 +15,8 @@ import tornado.websocket
 
 from review_runs import find_all_runs
 from visualization.layer_graph import build_layer_graph
-from web.process_manager import TASK_MANAGER, TASK_QUEUE_MANAGER, ROOT_DIR
+from web.process_manager import TASK_MANAGER, TASK_QUEUE_MANAGER, ROOT_DIR, build_train_cli_args
+from web.train_ui_config import build_api_payload, load_config, save_config
 
 
 class BaseApiHandler(tornado.web.RequestHandler):
@@ -589,6 +590,18 @@ class ModelPreviewHandler(BaseApiHandler):
         self.write_json(data)
 
 
+class TrainUiConfigHandler(BaseApiHandler):
+    """GET/POST /api/ui/train-config — persistent hyperparameter UI state."""
+
+    def get(self) -> None:
+        self.write_json(build_api_payload(load_config()))
+
+    def post(self) -> None:
+        body = self.get_json_body()
+        saved = save_config(body if isinstance(body, dict) else {})
+        self.write_json({"success": True, **build_api_payload(saved)})
+
+
 class TrainHandler(BaseApiHandler):
     """POST /api/train/start and POST /api/train/stop - Controls training execution."""
 
@@ -599,60 +612,22 @@ class TrainHandler(BaseApiHandler):
             self.write_json({"success": stopped, "message": msg})
             return
 
-        # Start Training
         body = self.get_json_body()
-        model_type = body.get("model", "xfeat_line_matcher")
-        data_dir = body.get("data_dir", "data/xfeat_line_matcher")
-        epochs = body.get("epochs", 15)
-        lr = body.get("lr", 5e-4)
-        dustbin_weight = body.get("dustbin_weight", 0.1)
-        motion_weight = body.get("motion_weight", 0.4)
-        region_weight = body.get("region_weight", 1.0)
-        line_weight = body.get("line_weight", 1.0)
-        sem_weight = body.get("sem_weight", 0.1)
-        geo_weight = body.get("geo_weight", 0.2)
-        min_area_ratio = body.get("min_area_ratio", 0.40)
-        data_ratio = float(body.get("data_ratio", 1.0))
-        use_pyramid = body.get("pyramid", True)
-        use_amp = body.get("amp", True)
-        save_interval = body.get("save_interval", 5)
-        num_workers = body.get("num_workers", 4)
-        resume = body.get("resume")
-        label = str(body.get("label", "")).strip()
-        is_semantic = str(model_type) in ("semantic_line_matcher", "semantic_line")
+        # Persist last training snapshot alongside UI config
+        try:
+            save_config({
+                "active_model": body.get("model", "xfeat_line_matcher"),
+                "last_train_snapshot": body,
+                "models": {
+                    str(body.get("model", "xfeat_line_matcher")): {
+                        "values": {k: v for k, v in body.items() if k != "model"},
+                    }
+                },
+            })
+        except Exception:
+            pass
 
-        cmd = [
-            "train.py",
-            "--model", str(model_type),
-            "--data-dir", str(data_dir),
-            "--epochs", str(epochs),
-            "--lr", str(lr),
-            "--dustbin-weight", str(dustbin_weight),
-            "--motion-weight", str(0.0 if is_semantic else motion_weight),
-            "--min-area-ratio", str(min_area_ratio),
-            "--num-workers", str(num_workers),
-            "--save-interval", str(save_interval),
-        ]
-        if is_semantic:
-            cmd.extend([
-                "--region-weight", str(region_weight),
-                "--line-weight", str(line_weight),
-                "--sem-weight", str(sem_weight),
-                "--geo-weight", str(geo_weight),
-            ])
-        if data_ratio < 1.0:
-            cmd.extend(["--data-ratio", str(data_ratio)])
-        if use_pyramid:
-            cmd.append("--pyramid")
-        else:
-            cmd.append("--no-pyramid")
-        if use_amp:
-            cmd.append("--amp")
-        if resume:
-            cmd.extend(["--resume", str(resume)])
-        if label:
-            cmd.extend(["--label", str(label)])
-
+        cmd = build_train_cli_args(body)
         success, msg, task_info = TASK_MANAGER.start_task("train", cmd)
         if success:
             self.write_json({"success": True, "message": msg, "task": task_info})
@@ -672,24 +647,22 @@ class QueueHandler(BaseApiHandler):
 
         if action == "add":
             label = str(body.get("label", "")).strip()
-            config = {
-                "model": body.get("model", "xfeat_line_matcher"),
-                "data_dir": body.get("data_dir", "data/synthetic_cad"),
-                "epochs": int(body.get("epochs", 15)),
-                "lr": float(body.get("lr", 5e-4)),
-                "dustbin_weight": float(body.get("dustbin_weight", 0.1)),
-                "motion_weight": float(body.get("motion_weight", 0.4)),
-                "region_weight": float(body.get("region_weight", 1.0)),
-                "line_weight": float(body.get("line_weight", 1.0)),
-                "sem_weight": float(body.get("sem_weight", 0.1)),
-                "geo_weight": float(body.get("geo_weight", 0.2)),
-                "min_area_ratio": float(body.get("min_area_ratio", 0.40)),
-                "data_ratio": float(body.get("data_ratio", 1.0)),
-                "pyramid": bool(body.get("pyramid", True)),
-                "amp": bool(body.get("amp", True)),
-                "label": label,
-                "resume": body.get("resume") or None,
-            }
+            config = dict(body) if isinstance(body, dict) else {}
+            config["model"] = config.get("model", "xfeat_line_matcher")
+            config["label"] = label
+            config["resume"] = config.get("resume") or None
+            try:
+                save_config({
+                    "active_model": config["model"],
+                    "last_train_snapshot": config,
+                    "models": {
+                        str(config["model"]): {
+                            "values": {k: v for k, v in config.items() if k != "model"},
+                        }
+                    },
+                })
+            except Exception:
+                pass
             task = TASK_QUEUE_MANAGER.add_task(label=label, config=config)
             self.write_json({
                 "success": True,

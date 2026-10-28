@@ -261,9 +261,12 @@
     <!-- ======================================================== -->
     <div class="tab-pane" id="tab-train">
       <div class="grid-train-layout">
-        <!-- Left: Hyperparameters Form -->
+        <!-- Left: Hyperparameters Form (常驻 pinned + 全部参数 modal) -->
         <div class="card">
-          <div class="card-title">超参数配置 (Hyperparameters)</div>
+          <div class="card-title" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+            <span>超参数配置 (Hyperparameters)</span>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="openAllParamsModal()" title="查看并钉选全部参数">全部参数</button>
+          </div>
 
           <div class="form-group">
             <label class="form-label">模型架构 (Model Architecture)</label>
@@ -276,116 +279,12 @@
             </select>
           </div>
 
-          <div class="form-group">
-            <label class="form-label">训练数据集 (Dataset Directory)</label>
-            <select class="form-control" id="train-data-dir">
-              <option value="data/xfeat_line_matcher">xfeat_line_matcher (真实CAD直线)</option>
-              <option value="data/structured3d_semantic_regions">structured3d_semantic_regions</option>
-            </select>
+          <div id="train-pinned-host" class="train-pinned-host">
+            <!-- 常驻参数由 app.js 按模型动态渲染 -->
+            <div style="color: var(--text-muted); font-size: 12px; padding: 8px 0;">正在加载常驻超参数…</div>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">总训练轮数 (Epochs)</label>
-              <input type="number" class="form-control" id="train-epochs" value="15" min="1" max="100">
-            </div>
-            <div class="form-group">
-              <label class="form-label">学习率 (Learning Rate)</label>
-              <input type="text" class="form-control" id="train-lr" value="0.0005">
-            </div>
-          </div>
-
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">垃圾桶损失权重 (Dustbin Weight)</label>
-              <input type="number" step="0.05" class="form-control" id="train-dustbin" value="0.1">
-            </div>
-            <div class="form-group" id="train-motion-group">
-              <label class="form-label">位移场损失权重 (Motion Weight)</label>
-              <input type="number" step="0.05" class="form-control" id="train-motion" value="0.4">
-            </div>
-          </div>
-
-          <div id="train-semantic-weights" style="display: none;">
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">区域 KL 权重 (Region Weight)</label>
-                <input type="number" step="0.05" class="form-control" id="train-region-weight" value="1.0">
-              </div>
-              <div class="form-group">
-                <label class="form-label">直线 KL 权重 (Line Weight)</label>
-                <input type="number" step="0.05" class="form-control" id="train-line-weight" value="1.0">
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">语义集中 JSD 权重 (Sem Weight)</label>
-                <input type="number" step="0.05" class="form-control" id="train-sem-weight" value="0.1">
-              </div>
-              <div class="form-group">
-                <label class="form-label">邻接保持权重 (Geo Weight)</label>
-                <input type="number" step="0.05" class="form-control" id="train-geo-weight" value="0.2">
-              </div>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">最小共视面积门限 (Min Area Ratio)</label>
-            <input type="number" step="0.05" class="form-control" id="train-area-ratio" value="0.40">
-          </div>
-
-          <!-- 数据集使用比例 (介绍 + 条【输入框】) -->
-          <div class="form-group">
-            <label class="form-label">数据集采样比例 (Data Fraction: 0.01 ~ 1.0)</label>
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <input type="range" id="train-data-ratio-slider" class="range-slider" min="0.01" max="1.0" step="0.01" value="1.0" oninput="syncDataRatioFromSlider(this.value)">
-              <input type="number" id="train-data-ratio-input" class="form-control" style="width: 76px; text-align: center; font-weight: bold; color: #60A5FA;" min="0.01" max="1.0" step="0.01" value="1.0" oninput="syncDataRatioFromInput(this.value)">
-            </div>
-            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-              💡 随机抽取数据集内容的多少（如 0.5 表示随机使用该数据集一半的数据）
-            </div>
-          </div>
-
-          <!-- 自定义训练标签 / 实验备注 -->
-          <div class="form-group">
-            <label class="form-label">自定义训练标签 / 实验备注 (Optional Label)</label>
-            <input type="text" class="form-control" id="train-label" placeholder="例如: lr0005_ablation, baseline_cad, loss_v2 (选填)">
-            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-              💡 选填。自定义语义备注将写入复盘标识与 Checkpoint 元数据中（如 模型+网络结构+数据集+【标签】+【时间戳】）
-            </div>
-          </div>
-
-          <div class="form-row" style="margin-bottom: 20px;">
-            <label class="checkbox-label">
-              <input type="checkbox" id="train-pyramid" checked> 多尺度金字塔 (Pyramid FPN)
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="train-amp" checked> 混合精度加速 (AMP FP16)
-            </label>
-          </div>
-
-          <!-- 导入已有 checkpoint 作为断点续训 -->
-          <div class="form-group" style="margin-bottom: 14px;">
-            <label class="form-label">导入模型 / 断点续训 (Resume Checkpoint)</label>
-            <div style="display: flex; gap: 8px; align-items: stretch;">
-              <select class="form-control" id="train-resume-select" style="flex: 1;">
-                <option value="">（不导入，从头训练）</option>
-              </select>
-              <button class="btn btn-secondary" type="button" style="white-space: nowrap;" onclick="refreshTrainCheckpoints()" title="刷新 checkpoint 列表">刷新</button>
-            </div>
-            <div style="display: flex; gap: 8px; margin-top: 8px;">
-              <button class="btn btn-primary" type="button" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;" onclick="importSelectedModel()">
-                <span>📥</span> <span>导入模型</span>
-              </button>
-              <button class="btn btn-secondary" type="button" style="flex: 0.7;" onclick="clearImportedModel()">清除</button>
-            </div>
-            <input type="hidden" id="train-resume" value="">
-            <div id="train-resume-status" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">
-              未导入模型。点击「导入模型」选择已有 <code>.pth</code>，训练时将以 <code>--resume</code> 续训。
-            </div>
-          </div>
-
-          <div style="display: flex; gap: 8px;">
+          <div style="display: flex; gap: 8px; margin-top: 8px;">
             <button class="btn btn-primary" style="flex: 1.3; display: flex; align-items: center; justify-content: center; gap: 6px;" type="button" onclick="addToTrainingQueue()">
               <span>➕</span> <span>添加到训练列表</span>
             </button>
@@ -397,14 +296,14 @@
             </button>
           </div>
 
-          <!-- 预览模型架构按钮 -->
           <div style="margin-top: 10px;">
             <button class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;" type="button" onclick="previewCurrentModel()">
               <span>📐</span> <span>预览当前模型具体结构 (Preview Architecture)</span>
             </button>
           </div>
           <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 10px; line-height: 1.5; background: rgba(31, 41, 55, 0.6); padding: 8px 12px; border-radius: 6px; border: 1px solid #374151;">
-            💡 <b>工作台生命周期直接管理</b>：任务生命周期由当前管理平台直接启停控制；您可在右侧终端或在“当前训练任务列表”中实时监控任务输出。如需全屏大图，可随时 <a href="/train_live" target="_blank" style="color: #60A5FA; text-decoration: underline;">在新标签页打开独立监控 ↗</a>
+            常驻列表可在「全部参数」中勾选钉选，配置写入 <code>outputs/ui_train_config.json</code>。全屏监控：
+            <a href="/train_live" target="_blank" style="color: #60A5FA; text-decoration: underline;">独立页 ↗</a>
           </div>
         </div>
 
@@ -1194,6 +1093,23 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20261027c"></script>
+  <!-- 全部超参数：可调节 / 不可调节 + 钉选常驻 -->
+  <div class="modal-overlay" id="train-params-modal" style="display: none;">
+    <div class="modal-content" style="max-width: 820px;">
+      <div class="modal-header">
+        <div class="modal-title" id="train-params-modal-title">全部参数</div>
+        <button class="modal-close" onclick="closeModal('train-params-modal')">&times;</button>
+      </div>
+      <div class="modal-body" id="train-params-modal-body" style="padding-top: 12px;">
+        <!-- filled by JS -->
+      </div>
+      <div style="padding: 12px 20px; border-top: 1px solid var(--border); display:flex; justify-content:space-between; align-items:center; gap:10px;">
+        <span style="font-size: 12px; color: var(--text-muted);">勾选左侧框将参数钉到主表单「常驻」区</span>
+        <button class="btn btn-primary btn-sm" type="button" onclick="closeModal('train-params-modal'); renderPinnedParams();">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20261028a"></script>
 </body>
 </html>

@@ -24,6 +24,81 @@ from typing import Any, Callable, Dict, List, Optional, Set
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
+def build_train_cli_args(cfg: dict[str, Any]) -> list[str]:
+    """Build train.py CLI argv (without python) from a UI / queue config dict."""
+    model = str(cfg.get("model", "xfeat_line_matcher"))
+    is_semantic = model in ("semantic_line_matcher", "semantic_line")
+    is_line = model in ("mask_line", "mask", "line_transformer", "linefeat")
+
+    data_dir = cfg.get("data_dir", "data/xfeat_line_matcher")
+    epochs = cfg.get("epochs", 15)
+    lr = cfg.get("lr", 0.0005)
+    dustbin = cfg.get("dustbin_weight", 0.1)
+    motion = cfg.get("motion_weight", 0.4)
+    min_area = cfg.get("min_area_ratio", 0.40)
+    data_ratio = float(cfg.get("data_ratio", 1.0) or 1.0)
+    pyramid = bool(cfg.get("pyramid", True))
+    amp = bool(cfg.get("amp", True))
+    label = str(cfg.get("label") or "").strip()
+    resume = cfg.get("resume") or None
+    num_workers = int(cfg.get("num_workers", 4))
+    save_interval = int(cfg.get("save_interval", 5))
+    val_interval = int(cfg.get("val_interval", 1))
+    weight_decay = cfg.get("weight_decay", 1e-4)
+    d_model = int(cfg.get("d_model", 128))
+    num_layers = int(cfg.get("num_layers", 2))
+    nhead = int(cfg.get("nhead", 4))
+
+    cmd = [
+        "train.py",
+        "--model", model,
+        "--data-dir", str(data_dir),
+        "--epochs", str(epochs),
+        "--lr", str(lr),
+        "--weight-decay", str(weight_decay),
+        "--d-model", str(d_model),
+        "--num-layers", str(num_layers),
+        "--nhead", str(nhead),
+        "--num-workers", str(num_workers),
+        "--save-interval", str(save_interval),
+        "--val-interval", str(val_interval),
+    ]
+
+    if is_line:
+        min_matches = int(cfg.get("min_matches", 3))
+        cmd.extend(["--min-matches", str(min_matches)])
+    else:
+        cmd.extend([
+            "--dustbin-weight", str(dustbin),
+            "--motion-weight", str(0.0 if is_semantic else motion),
+            "--min-area-ratio", str(min_area),
+            "--motion-margin", str(cfg.get("motion_margin", 0.15)),
+        ])
+        if data_ratio < 1.0:
+            cmd.extend(["--data-ratio", str(data_ratio)])
+        if pyramid:
+            cmd.append("--pyramid")
+        else:
+            cmd.append("--no-pyramid")
+        if is_semantic:
+            cmd.extend([
+                "--region-weight", str(cfg.get("region_weight", 1.0)),
+                "--line-weight", str(cfg.get("line_weight", 1.0)),
+                "--sem-weight", str(cfg.get("sem_weight", 0.1)),
+                "--geo-weight", str(cfg.get("geo_weight", 0.2)),
+                "--adj-sigma", str(cfg.get("adj_sigma", 0.3)),
+                "--line-sample-points", str(int(cfg.get("line_sample_points", 8))),
+            ])
+
+    if amp:
+        cmd.append("--amp")
+    if label:
+        cmd.extend(["--label", label])
+    if resume:
+        cmd.extend(["--resume", str(resume)])
+    return cmd
+
+
 def get_conda_python() -> str:
     """Finds the best python interpreter, prioritizing the project's conda environment."""
     candidates = [
@@ -579,53 +654,10 @@ class TaskQueueManager:
             return self._execute_task(target_task)
 
     def _execute_task(self, task: QueuedTrainingTask) -> tuple[bool, str, dict[str, Any]]:
-        cfg = task.config
-        model = cfg.get("model", "xfeat_line_matcher")
-        data_dir = cfg.get("data_dir", "data/synthetic_cad")
-        epochs = cfg.get("epochs", 15)
-        lr = cfg.get("lr", 0.0005)
-        dustbin = cfg.get("dustbin_weight", 0.1)
-        motion = cfg.get("motion_weight", 0.1)
-        region_weight = cfg.get("region_weight", 1.0)
-        line_weight = cfg.get("line_weight", 1.0)
-        sem_weight = cfg.get("sem_weight", 0.1)
-        geo_weight = cfg.get("geo_weight", 0.2)
-        min_area = cfg.get("min_area_ratio", 0.40)
-        data_ratio = cfg.get("data_ratio", 1.0)
-        pyramid = cfg.get("pyramid", True)
-        amp = cfg.get("amp", True)
-        label = task.label or cfg.get("label", "")
-        is_semantic = str(model) in ("semantic_line_matcher", "semantic_line")
-
-        cmd = [
-            "train.py",
-            "--model", str(model),
-            "--data-dir", str(data_dir),
-            "--epochs", str(epochs),
-            "--lr", str(lr),
-            "--dustbin-weight", str(dustbin),
-            "--motion-weight", str(0.0 if is_semantic else motion),
-            "--min-area-ratio", str(min_area),
-            "--data-ratio", str(data_ratio),
-        ]
-        if is_semantic:
-            cmd.extend([
-                "--region-weight", str(region_weight),
-                "--line-weight", str(line_weight),
-                "--sem-weight", str(sem_weight),
-                "--geo-weight", str(geo_weight),
-            ])
-        if pyramid:
-            cmd.append("--pyramid")
-        else:
-            cmd.append("--no-pyramid")
-        if amp:
-            cmd.append("--amp")
-        if label:
-            cmd.extend(["--label", str(label)])
-        resume = cfg.get("resume")
-        if resume:
-            cmd.extend(["--resume", str(resume)])
+        cfg = dict(task.config or {})
+        if task.label and not cfg.get("label"):
+            cfg["label"] = task.label
+        cmd = build_train_cli_args(cfg)
 
         ok, msg, task_dict = TASK_MANAGER.start_task("train", cmd)
         if ok:

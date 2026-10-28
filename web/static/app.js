@@ -15,18 +15,26 @@ let currentGalleryIdx = 0;
 let liveLossHistory = [];
 let liveF1History = [];
 
+// Training UI config (常驻 / 全部参数)
+let trainUiSchemas = {};
+let trainUiConfig = null;
+let trainUiSaveTimer = null;
+let trainDatasetOptions = [];
+let trainUiReady = false;
+
 // Initialize on DOM load
 document.addEventListener("DOMContentLoaded", () => {
   initTabs();
   initWebSocket();
   initStatusPolling();
   loadDashboard();
-  loadDatasets();
   loadCheckpoints();
-  refreshTrainCheckpoints();
   initModelDocs();
   loadTrainingQueue();
-  onTrainModelChange();
+  Promise.all([loadDatasets(), loadTrainUiConfig()]).then(() => {
+    trainUiReady = true;
+    renderPinnedParams();
+  });
 });
 
 // -------------------------------------------------------------
@@ -1091,14 +1099,15 @@ function renderLayerGraph(graph) {
 
 async function previewCurrentModel() {
   const modelEl = document.getElementById("train-model");
-  const pyramidEl = document.getElementById("train-pyramid");
   const model = modelEl ? modelEl.value : "xfeat_line_matcher";
-  const pyramid = pyramidEl ? pyramidEl.checked : true;
+  const vals = getTrainModelValues(model);
+  const pyramid = vals.pyramid !== undefined ? !!vals.pyramid : true;
+  const dModel = vals.d_model !== undefined ? vals.d_model : 128;
   const modal = document.getElementById("model-preview-modal");
   if (!modal) return;
 
   try {
-    const res = await fetch(`/api/model/preview?model=${encodeURIComponent(model)}&pyramid=${pyramid}&d_model=128`);
+    const res = await fetch(`/api/model/preview?model=${encodeURIComponent(model)}&pyramid=${pyramid}&d_model=${encodeURIComponent(dModel)}`);
     const data = await res.json();
     if (data.error) {
       alert("获取模型预览失败: " + data.message);
@@ -1187,23 +1196,20 @@ async function loadDatasets() {
   try {
     const res = await fetch("/api/datasets");
     const data = await res.json();
-    const trainSelect = document.getElementById("train-data-dir");
+    trainDatasetOptions = data.datasets || [];
     const evalSelect = document.getElementById("eval-data-dir");
+    if (evalSelect) {
+      evalSelect.innerHTML = "";
+      trainDatasetOptions.forEach((d) => {
+        evalSelect.innerHTML += `<option value="${d.rel_path}">${d.name} (${d.total_pairs} 对样本)</option>`;
+      });
+    }
+    fillDatasetSelect(document.getElementById("train-data-dir"));
 
-    if (trainSelect) trainSelect.innerHTML = "";
-    if (evalSelect) evalSelect.innerHTML = "";
-
-    (data.datasets || []).forEach(d => {
-      const opt = `<option value="${d.rel_path}">${d.name} (${d.total_pairs} 对样本)</option>`;
-      if (trainSelect) trainSelect.innerHTML += opt;
-      if (evalSelect) evalSelect.innerHTML += opt;
-    });
-
-    // Populate dataset cards in Tab 5
     const datasetCardsContainer = document.getElementById("dataset-cards-container");
     if (datasetCardsContainer) {
       datasetCardsContainer.innerHTML = "";
-      (data.datasets || []).forEach(d => {
+      trainDatasetOptions.forEach((d) => {
         datasetCardsContainer.innerHTML += `
           <div class="card" style="margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -1226,25 +1232,56 @@ async function loadDatasets() {
   }
 }
 
+function fillDatasetSelect(selectEl, selected) {
+  if (!selectEl) return;
+  const prev = selected !== undefined ? selected : selectEl.value;
+  selectEl.innerHTML = "";
+  if (!trainDatasetOptions.length) {
+    selectEl.innerHTML = `
+      <option value="data/xfeat_line_matcher">xfeat_line_matcher</option>
+      <option value="data/structured3d_semantic_regions">structured3d_semantic_regions</option>`;
+  } else {
+    trainDatasetOptions.forEach((d) => {
+      const opt = document.createElement("option");
+      opt.value = d.rel_path;
+      opt.textContent = `${d.name} (${d.total_pairs} 对样本)`;
+      selectEl.appendChild(opt);
+    });
+  }
+  if (prev) selectEl.value = prev;
+}
+
 // -------------------------------------------------------------
 // Data Ratio Slider & Input Two-Way Sync
 // -------------------------------------------------------------
 function syncDataRatioFromSlider(val) {
   const fVal = Math.max(0.01, Math.min(1.0, parseFloat(val) || 1.0));
-  const input = document.getElementById("train-data-ratio-input");
-  if (input) input.value = fVal.toFixed(2);
+  document.querySelectorAll(".train-data-ratio-input").forEach((input) => {
+    input.value = fVal.toFixed(2);
+  });
+  document.querySelectorAll(".train-data-ratio-slider").forEach((slider) => {
+    slider.value = fVal;
+  });
+  setTrainParamValue("data_ratio", fVal);
 }
 
 function syncDataRatioFromInput(val) {
   let fVal = parseFloat(val);
   if (isNaN(fVal)) return;
   fVal = Math.max(0.01, Math.min(1.0, fVal));
-  const slider = document.getElementById("train-data-ratio-slider");
-  if (slider) slider.value = fVal;
+  document.querySelectorAll(".train-data-ratio-slider").forEach((slider) => {
+    slider.value = fVal;
+  });
+  document.querySelectorAll(".train-data-ratio-input").forEach((input) => {
+    input.value = fVal.toFixed(2);
+  });
+  setTrainParamValue("data_ratio", fVal);
 }
 
 async function startTraining() {
   const params = getTrainingFormData();
+  if (trainUiConfig) trainUiConfig.last_train_snapshot = params;
+  await saveTrainUiConfig({ last_train_snapshot: params });
   const { model, data_dir, epochs, lr, label, data_ratio, resume } = params;
 
   const btnStart = document.querySelector("#tab-train .btn-success");
@@ -1980,114 +2017,411 @@ function isSemanticLineModel(model) {
   return model === "semantic_line_matcher" || model === "semantic_line";
 }
 
+function getActiveTrainModel() {
+  const el = document.getElementById("train-model");
+  return el ? el.value : (trainUiConfig?.active_model || "xfeat_line_matcher");
+}
+
+function ensureTrainModelSlot(model) {
+  if (!trainUiConfig) {
+    trainUiConfig = { version: 1, active_model: model, models: {}, last_train_snapshot: null };
+  }
+  if (!trainUiConfig.models) trainUiConfig.models = {};
+  if (!trainUiConfig.models[model]) {
+    const schema = trainUiSchemas[model] || {};
+    const values = {};
+    (schema.params || []).forEach((p) => { values[p.id] = p.default; });
+    trainUiConfig.models[model] = {
+      pinned: Array.isArray(schema.default_pinned) ? [...schema.default_pinned] : [],
+      values,
+    };
+  }
+  return trainUiConfig.models[model];
+}
+
+function getTrainModelValues(model) {
+  return ensureTrainModelSlot(model).values || {};
+}
+
+function getTrainModelPinned(model) {
+  return ensureTrainModelSlot(model).pinned || [];
+}
+
+function setTrainParamValue(id, value, model) {
+  const m = model || getActiveTrainModel();
+  const slot = ensureTrainModelSlot(m);
+  slot.values[id] = value;
+  scheduleTrainUiSave();
+}
+
+function scheduleTrainUiSave() {
+  if (trainUiSaveTimer) clearTimeout(trainUiSaveTimer);
+  trainUiSaveTimer = setTimeout(() => { saveTrainUiConfig(); }, 450);
+}
+
+async function loadTrainUiConfig() {
+  try {
+    const res = await fetch("/api/ui/train-config");
+    const data = await res.json();
+    trainUiSchemas = data.schemas || {};
+    trainUiConfig = data.config || null;
+    const modelEl = document.getElementById("train-model");
+    if (modelEl && trainUiConfig?.active_model) {
+      const opts = Array.from(modelEl.options).map((o) => o.value);
+      if (opts.includes(trainUiConfig.active_model)) {
+        modelEl.value = trainUiConfig.active_model;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to load train UI config:", e);
+    trainUiSchemas = {};
+    trainUiConfig = { version: 1, active_model: "xfeat_line_matcher", models: {}, last_train_snapshot: null };
+  }
+}
+
+async function saveTrainUiConfig(extra) {
+  if (!trainUiConfig) return;
+  const model = getActiveTrainModel();
+  trainUiConfig.active_model = model;
+  const payload = {
+    active_model: model,
+    models: trainUiConfig.models,
+    last_train_snapshot: trainUiConfig.last_train_snapshot,
+    ...(extra || {}),
+  };
+  try {
+    const res = await fetch("/api/ui/train-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.config) trainUiConfig = data.config;
+    if (data.schemas) trainUiSchemas = data.schemas;
+  } catch (e) {
+    console.error("Failed to save train UI config:", e);
+  }
+}
+
 function onTrainModelChange() {
-  const modelEl = document.getElementById("train-model");
-  const model = modelEl ? modelEl.value : "";
-  const semanticBox = document.getElementById("train-semantic-weights");
-  const motionGroup = document.getElementById("train-motion-group");
-  const showSemantic = isSemanticLineModel(model);
-  if (semanticBox) semanticBox.style.display = showSemantic ? "block" : "none";
-  if (motionGroup) motionGroup.style.display = showSemantic ? "none" : "block";
+  const model = getActiveTrainModel();
+  if (trainUiConfig) trainUiConfig.active_model = model;
+  ensureTrainModelSlot(model);
+  renderPinnedParams();
+  const modal = document.getElementById("train-params-modal");
+  if (modal && modal.style.display === "flex") {
+    renderAllParamsModal();
+  }
+  scheduleTrainUiSave();
+}
+
+function paramDomId(id) {
+  return `train-param-${id}`;
+}
+
+function escapeAttr(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+function buildParamControlHtml(param, value, { showPin, pinned, idPrefix }) {
+  const id = param.id;
+  const prefix = idPrefix || "train-param";
+  const domId = `${prefix}-${id}`;
+  const adjustable = param.adjustable !== false;
+  const checked = pinned ? "checked" : "";
+  const pinCol = showPin
+    ? `<input class="pin-check" type="checkbox" data-pin-id="${escapeAttr(id)}" ${checked} onchange="onPinToggle('${escapeAttr(id)}', this.checked)" title="钉选为常驻">`
+    : `<span></span>`;
+
+  let control = "";
+  if (!adjustable && param.type !== "checkbox") {
+    control = `<div class="train-param-fixed-value">${escapeAttr(value)}</div>`;
+  } else if (param.type === "dataset") {
+    control = `<select class="form-control train-dataset-select" id="${domId}" data-param-id="${escapeAttr(id)}" onchange="onTrainParamInput('${escapeAttr(id)}', this.value)"></select>`;
+  } else if (param.type === "ratio") {
+    const v = Number(value);
+    const safe = Number.isFinite(v) ? Math.max(0.01, Math.min(1, v)) : 1;
+    const sliderId = `${prefix}-data-ratio-slider`;
+    const inputId = `${prefix}-data-ratio-input`;
+    control = `
+      <div style="display:flex; align-items:center; gap:10px;">
+        <input type="range" id="${sliderId}" class="range-slider train-data-ratio-slider" min="${param.min ?? 0.01}" max="${param.max ?? 1}" step="${param.step ?? 0.01}" value="${safe}" oninput="syncDataRatioFromSlider(this.value)">
+        <input type="number" id="${inputId}" class="form-control train-data-ratio-input" style="width:76px; text-align:center; font-weight:bold; color:#60A5FA;" min="${param.min ?? 0.01}" max="${param.max ?? 1}" step="${param.step ?? 0.01}" value="${safe.toFixed(2)}" oninput="syncDataRatioFromInput(this.value)">
+      </div>`;
+  } else if (param.type === "checkbox") {
+    const isOn = !!value;
+    control = `<label class="checkbox-label"><input type="checkbox" id="${domId}" data-param-id="${escapeAttr(id)}" ${isOn ? "checked" : ""} onchange="onTrainParamInput('${escapeAttr(id)}', this.checked)"> 启用</label>`;
+  } else if (param.type === "resume") {
+    control = `
+      <div style="display:flex; gap:8px; align-items:stretch;">
+        <select class="form-control train-resume-select" id="${prefix}-resume-select" style="flex:1;"><option value="">（不导入，从头训练）</option></select>
+        <button class="btn btn-secondary" type="button" style="white-space:nowrap;" onclick="refreshTrainCheckpoints()" title="刷新 checkpoint 列表">刷新</button>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn btn-primary" type="button" style="flex:1;" onclick="importSelectedModel()">导入模型</button>
+        <button class="btn btn-secondary" type="button" style="flex:0.7;" onclick="clearImportedModel()">清除</button>
+      </div>
+      <input type="hidden" class="train-resume-hidden" id="${prefix}-resume" value="${escapeAttr(value || "")}">
+      <div class="train-resume-status" id="${prefix}-resume-status" style="font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.4;"></div>`;
+  } else if (param.type === "number") {
+    const disabled = adjustable ? "" : "disabled";
+    control = `<input type="number" class="form-control" id="${domId}" data-param-id="${escapeAttr(id)}" value="${escapeAttr(value)}" min="${param.min ?? ""}" max="${param.max ?? ""}" step="${param.step ?? "any"}" ${disabled} oninput="onTrainParamInput('${escapeAttr(id)}', this.value)">`;
+  } else {
+    const disabled = adjustable ? "" : "disabled";
+    const ph = param.placeholder ? `placeholder="${escapeAttr(param.placeholder)}"` : "";
+    control = `<input type="text" class="form-control" id="${domId}" data-param-id="${escapeAttr(id)}" value="${escapeAttr(value)}" ${ph} ${disabled} oninput="onTrainParamInput('${escapeAttr(id)}', this.value)">`;
+  }
+
+  const hint = param.hint ? `<div class="train-param-hint">${escapeAttr(param.hint)}</div>` : "";
+  const fixedCls = adjustable ? "" : "is-fixed";
+  return `
+    <div class="train-param-row ${fixedCls}" data-param-row="${escapeAttr(id)}">
+      ${pinCol}
+      <div class="train-param-body">
+        <label class="form-label">${escapeAttr(param.label)}</label>
+        ${control}
+        ${hint}
+      </div>
+    </div>`;
+}
+
+function onTrainParamInput(id, raw) {
+  const model = getActiveTrainModel();
+  const schema = trainUiSchemas[model];
+  const param = (schema?.params || []).find((p) => p.id === id);
+  let value = raw;
+  if (param?.type === "number" || param?.type === "ratio") {
+    const n = parseFloat(raw);
+    value = Number.isFinite(n) ? n : param.default;
+  } else if (param?.type === "checkbox") {
+    value = !!raw;
+  }
+  setTrainParamValue(id, value, model);
+}
+
+function onPinToggle(id, checked) {
+  const model = getActiveTrainModel();
+  const slot = ensureTrainModelSlot(model);
+  const set = new Set(slot.pinned || []);
+  if (checked) set.add(id);
+  else set.delete(id);
+  // Keep relative order from schema
+  const order = (trainUiSchemas[model]?.params || []).map((p) => p.id);
+  slot.pinned = order.filter((x) => set.has(x));
+  scheduleTrainUiSave();
+  renderPinnedParams();
+  const modal = document.getElementById("train-params-modal");
+  if (modal && modal.style.display === "flex") renderAllParamsModal();
+}
+
+function renderPinnedParams() {
+  const host = document.getElementById("train-pinned-host");
+  if (!host) return;
+  const model = getActiveTrainModel();
+  const schema = trainUiSchemas[model];
+  if (!schema) {
+    host.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">尚未加载模型参数 schema。请确认服务端 /api/ui/train-config 可用。</div>`;
+    return;
+  }
+  const slot = ensureTrainModelSlot(model);
+  const pinned = new Set(slot.pinned || []);
+  const params = (schema.params || []).filter((p) => pinned.has(p.id));
+  if (!params.length) {
+    host.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:8px 0;">当前模型没有常驻参数。点击右上角「全部参数」勾选钉选。</div>`;
+    return;
+  }
+  host.innerHTML = params.map((p) =>
+    buildParamControlHtml(p, slot.values[p.id] ?? p.default, {
+      showPin: false,
+      pinned: true,
+      idPrefix: "train-param",
+    })
+  ).join("");
+
+  document.querySelectorAll("#train-pinned-host .train-dataset-select").forEach((el) => {
+    fillDatasetSelect(el, slot.values.data_dir);
+  });
+  if (params.some((p) => p.type === "resume")) {
+    refreshTrainCheckpoints().then(() => updateResumeStatusUI(slot.values.resume || ""));
+  }
+}
+
+function openAllParamsModal() {
+  renderAllParamsModal();
+  const modal = document.getElementById("train-params-modal");
+  if (modal) modal.style.display = "flex";
+}
+
+function renderAllParamsModal() {
+  const body = document.getElementById("train-params-modal-body");
+  const title = document.getElementById("train-params-modal-title");
+  const model = getActiveTrainModel();
+  const schema = trainUiSchemas[model];
+  if (!body || !schema) return;
+  if (title) title.textContent = `全部参数 · ${schema.title || model}`;
+
+  const slot = ensureTrainModelSlot(model);
+  const pinned = new Set(slot.pinned || []);
+  const adjustable = (schema.params || []).filter((p) => p.adjustable !== false);
+  const fixed = (schema.params || []).filter((p) => p.adjustable === false);
+
+  const sectionHtml = (label, list) => {
+    if (!list.length) return "";
+    return `<div class="train-param-section-title">${label}</div>` +
+      list.map((p) => buildParamControlHtml(p, slot.values[p.id] ?? p.default, {
+        showPin: true,
+        pinned: pinned.has(p.id),
+        idPrefix: "train-modal",
+      })).join("");
+  };
+  body.innerHTML = sectionHtml("可调节", adjustable) + sectionHtml("不可调节", fixed);
+
+  body.querySelectorAll(".train-dataset-select").forEach((el) => {
+    fillDatasetSelect(el, slot.values.data_dir);
+  });
+  if (body.querySelector(".train-resume-select")) {
+    refreshTrainCheckpoints().then(() => updateResumeStatusUI(slot.values.resume || ""));
+  }
 }
 
 async function refreshTrainCheckpoints() {
-  const select = document.getElementById("train-resume-select");
-  if (!select) return;
-  const previous = select.value;
+  const selects = Array.from(document.querySelectorAll(".train-resume-select"));
+  if (!selects.length) return;
+  const previous = getTrainModelValues(getActiveTrainModel()).resume || selects[0].value || "";
   try {
     const res = await fetch("/api/checkpoints");
     const data = await res.json();
-    select.innerHTML = '<option value="">（不导入，从头训练）</option>';
-    (data.checkpoints || []).forEach((c) => {
-      const star = c.is_best ? "★ " : "";
-      const opt = document.createElement("option");
-      opt.value = c.rel_path;
-      opt.textContent = `${star}${c.folder}/${c.name} (${c.size_mb} MB)`;
-      select.appendChild(opt);
+    selects.forEach((select) => {
+      select.innerHTML = '<option value="">（不导入，从头训练）</option>';
+      (data.checkpoints || []).forEach((c) => {
+        const star = c.is_best ? "★ " : "";
+        const opt = document.createElement("option");
+        opt.value = c.rel_path;
+        opt.textContent = `${star}${c.folder}/${c.name} (${c.size_mb} MB)`;
+        select.appendChild(opt);
+      });
+      if (previous) select.value = previous;
     });
-    if (previous) {
-      select.value = previous;
-    }
   } catch (e) {
     console.error("Failed to load train checkpoints:", e);
   }
 }
 
+function updateResumeStatusUI(path) {
+  document.querySelectorAll(".train-resume-hidden").forEach((hidden) => {
+    hidden.value = path || "";
+  });
+  document.querySelectorAll(".train-resume-status").forEach((status) => {
+    if (path) {
+      status.innerHTML = `已导入：<code style="color:#60A5FA;">${escapeAttr(path)}</code>。开始训练 / 入队时将自动 <code>--resume</code>。`;
+      status.style.color = "#34D399";
+    } else {
+      status.innerHTML = '未导入模型。点击「导入模型」选择已有 <code>.pth</code>，训练时将以 <code>--resume</code> 续训。';
+      status.style.color = "";
+    }
+  });
+  document.querySelectorAll(".train-resume-select").forEach((select) => {
+    if (path) select.value = path;
+  });
+}
+
 function importSelectedModel() {
-  const select = document.getElementById("train-resume-select");
-  const hidden = document.getElementById("train-resume");
-  const status = document.getElementById("train-resume-status");
-  if (!select || !hidden) return;
+  const selects = Array.from(document.querySelectorAll(".train-resume-select"));
+  const select = selects.find((s) => (s.value || "").trim()) || selects[0];
+  if (!select) return;
   const path = (select.value || "").trim();
   if (!path) {
     alert("请先在下拉列表中选择一个 checkpoint（.pth）");
     return;
   }
-  hidden.value = path;
-  if (status) {
-    status.innerHTML = `已导入：<code style="color:#60A5FA;">${path}</code>。开始训练 / 入队时将自动 <code>--resume</code>。`;
-    status.style.color = "#34D399";
-  }
+  setTrainParamValue("resume", path);
+  updateResumeStatusUI(path);
   if (typeof appendTerminalLine === "function") {
     appendTerminalLine(`[+] 已导入断点模型: ${path}\n`);
   }
 }
 
 function clearImportedModel() {
-  const select = document.getElementById("train-resume-select");
-  const hidden = document.getElementById("train-resume");
-  const status = document.getElementById("train-resume-status");
-  if (select) select.value = "";
-  if (hidden) hidden.value = "";
-  if (status) {
-    status.innerHTML = '未导入模型。点击「导入模型」选择已有 <code>.pth</code>，训练时将以 <code>--resume</code> 续训。';
-    status.style.color = "";
-  }
+  document.querySelectorAll(".train-resume-select").forEach((select) => {
+    select.value = "";
+  });
+  setTrainParamValue("resume", "");
+  updateResumeStatusUI("");
+}
+
+function coerceTrainNumber(v, fallback) {
+  const n = typeof v === "number" ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function getTrainingFormData() {
-  const model = document.getElementById("train-model").value;
-  const data_dir = document.getElementById("train-data-dir").value;
-  const epochs = parseInt(document.getElementById("train-epochs").value);
-  const lr = parseFloat(document.getElementById("train-lr").value);
-  const dustbin_weight = parseFloat(document.getElementById("train-dustbin").value);
-  const motion_weight = parseFloat(document.getElementById("train-motion").value);
-  const region_weight = parseFloat((document.getElementById("train-region-weight") || {}).value ?? 1.0);
-  const line_weight = parseFloat((document.getElementById("train-line-weight") || {}).value ?? 1.0);
-  const sem_weight = parseFloat((document.getElementById("train-sem-weight") || {}).value ?? 0.1);
-  const geo_weight = parseFloat((document.getElementById("train-geo-weight") || {}).value ?? 0.2);
-  const min_area_ratio = parseFloat(document.getElementById("train-area-ratio").value);
-  const data_ratio_el = document.getElementById("train-data-ratio-input");
-  const data_ratio = data_ratio_el ? Math.max(0.01, Math.min(1.0, parseFloat(data_ratio_el.value) || 1.0)) : 1.0;
-  const pyramid = document.getElementById("train-pyramid").checked;
-  const amp = document.getElementById("train-amp").checked;
-  const label_el = document.getElementById("train-label");
-  const label = label_el ? label_el.value.trim() : "";
-  const resume_el = document.getElementById("train-resume");
-  const resume = resume_el ? resume_el.value.trim() : "";
+  const model = getActiveTrainModel();
+  const vals = { ...getTrainModelValues(model) };
 
-  return {
+  // Prefer live DOM values when present (pinned / modal)
+  document.querySelectorAll("[data-param-id]").forEach((el) => {
+    const id = el.getAttribute("data-param-id");
+    if (!id) return;
+    if (el.type === "checkbox") vals[id] = el.checked;
+    else vals[id] = el.value;
+  });
+  const dataDirEl = document.querySelector("#train-pinned-host .train-dataset-select")
+    || document.querySelector(".train-dataset-select");
+  if (dataDirEl) vals.data_dir = dataDirEl.value;
+  const ratioEl = document.querySelector("#train-pinned-host .train-data-ratio-input")
+    || document.querySelector(".train-data-ratio-input");
+  if (ratioEl) vals.data_ratio = ratioEl.value;
+  const resumeEl = document.querySelector("#train-pinned-host .train-resume-hidden")
+    || document.querySelector(".train-resume-hidden");
+  if (resumeEl) vals.resume = resumeEl.value;
+
+  const data_ratio = Math.max(0.01, Math.min(1.0, coerceTrainNumber(vals.data_ratio, 1.0)));
+  const resume = (vals.resume || "").toString().trim();
+
+  const payload = {
     model,
-    data_dir,
-    epochs,
-    lr,
-    dustbin_weight,
-    motion_weight: isSemanticLineModel(model) ? 0.0 : motion_weight,
-    region_weight,
-    line_weight,
-    sem_weight,
-    geo_weight,
-    min_area_ratio,
+    data_dir: vals.data_dir || "data/xfeat_line_matcher",
+    epochs: parseInt(vals.epochs, 10) || 15,
+    lr: coerceTrainNumber(vals.lr, 0.0005),
+    dustbin_weight: coerceTrainNumber(vals.dustbin_weight, 0.1),
+    motion_weight: isSemanticLineModel(model) ? 0.0 : coerceTrainNumber(vals.motion_weight, 0.4),
+    motion_margin: coerceTrainNumber(vals.motion_margin, 0.15),
+    region_weight: coerceTrainNumber(vals.region_weight, 1.0),
+    line_weight: coerceTrainNumber(vals.line_weight, 1.0),
+    sem_weight: coerceTrainNumber(vals.sem_weight, 0.1),
+    geo_weight: coerceTrainNumber(vals.geo_weight, 0.2),
+    adj_sigma: coerceTrainNumber(vals.adj_sigma, 0.3),
+    line_sample_points: parseInt(vals.line_sample_points, 10) || 8,
+    min_area_ratio: coerceTrainNumber(vals.min_area_ratio, 0.40),
     data_ratio,
-    pyramid,
-    amp,
-    label,
+    pyramid: vals.pyramid === undefined ? true : !!vals.pyramid,
+    amp: vals.amp === undefined ? true : !!vals.amp,
+    label: (vals.label || "").toString().trim(),
     resume: resume || null,
+    d_model: parseInt(vals.d_model, 10) || 128,
+    num_layers: parseInt(vals.num_layers, 10) || 2,
+    nhead: parseInt(vals.nhead, 10) || 4,
+    weight_decay: coerceTrainNumber(vals.weight_decay, 0.0001),
+    num_workers: parseInt(vals.num_workers, 10) || 4,
+    save_interval: parseInt(vals.save_interval, 10) || 5,
+    val_interval: parseInt(vals.val_interval, 10) || 1,
+    min_matches: parseInt(vals.min_matches, 10) || 3,
   };
+
+  // Keep in-memory values in sync for persistence
+  const slot = ensureTrainModelSlot(model);
+  Object.keys(payload).forEach((k) => {
+    if (k === "model") return;
+    if (k in slot.values) slot.values[k] = payload[k] === null ? "" : payload[k];
+  });
+
+  return payload;
 }
 
 async function addToTrainingQueue() {
   const params = getTrainingFormData();
+  if (trainUiConfig) trainUiConfig.last_train_snapshot = params;
+  await saveTrainUiConfig({ last_train_snapshot: params });
   try {
     const res = await fetch("/api/queue?action=add", {
       method: "POST",

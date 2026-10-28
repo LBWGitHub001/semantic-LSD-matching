@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import tornado.ioloop
 import tornado.web
 
@@ -23,10 +27,12 @@ from web.api_handlers import (
     HistoricalLogsHandler,
     LogsWebSocketHandler,
     ModelPreviewHandler,
+    QueueHandler,
     RunDetailHandler,
     RunsHandler,
     StatusHandler,
     TrainHandler,
+    TrainUiConfigHandler,
 )
 from web.process_manager import ROOT_DIR
 
@@ -66,6 +72,27 @@ class ReviewHandler(tornado.web.RequestHandler):
             self.write("<h1>Experiment Review</h1><p>review.html not found.</p>")
 
 
+class FaviconHandler(tornado.web.RequestHandler):
+    """Serves /favicon.ico to eliminate 404 console noise."""
+
+    def get(self) -> None:
+        fav_path = WEB_DIR / "static" / "favicon.ico"
+        if fav_path.is_file():
+            self.set_header("Content-Type", "image/x-icon")
+            with open(fav_path, "rb") as f:
+                self.write(f.read())
+        else:
+            self.set_header("Content-Type", "image/svg+xml")
+            self.write('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">⚡</text></svg>')
+
+
+class NoCacheStaticHandler(tornado.web.StaticFileHandler):
+    """Serve UI assets without a sticky browser cache."""
+
+    def set_extra_headers(self, path: str) -> None:
+        self.set_header("Cache-Control", "no-cache, must-revalidate")
+
+
 def make_app() -> tornado.web.Application:
     """Configures and returns the Tornado Application."""
     settings: dict[str, Any] = {
@@ -80,6 +107,7 @@ def make_app() -> tornado.web.Application:
         (r"/", MainHandler),
         (r"/train_live", TrainLiveHandler),
         (r"/review", ReviewHandler),
+        (r"/favicon.ico", FaviconHandler),
 
         # REST APIs
         (r"/api/status", StatusHandler),
@@ -90,7 +118,9 @@ def make_app() -> tornado.web.Application:
         (r"/api/datasets", DatasetsHandler),
         (r"/api/gallery", GalleryHandler),
         (r"/api/model/preview", ModelPreviewHandler),
+        (r"/api/queue", QueueHandler),
         (r"/api/train", TrainHandler),
+        (r"/api/ui/train-config", TrainUiConfigHandler),
         (r"/api/eval", EvalHandler),
         (r"/api/dataset", DatasetGenHandler),
         (r"/api/logs/active", ActiveLogsHandler),
@@ -99,8 +129,8 @@ def make_app() -> tornado.web.Application:
         # WebSocket Live Terminal
         (r"/ws/logs", LogsWebSocketHandler),
 
-        # Static assets
-        (r"/static/(.*)", tornado.web.StaticFileHandler, {"path": str(WEB_DIR / "static")}),
+        # Static assets. No long-lived cache: the UI script is updated in place.
+        (r"/static/(.*)", NoCacheStaticHandler, {"path": str(WEB_DIR / "static")}),
         # Files (checkpoints, outputs, dataset samples)
         (r"/files/(.*)", tornado.web.StaticFileHandler, {"path": str(ROOT_DIR)}),
     ]
