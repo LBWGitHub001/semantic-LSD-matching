@@ -268,10 +268,10 @@
           <div class="form-group">
             <label class="form-label">模型架构 (Model Architecture)</label>
             <select class="form-control" id="train-model" onchange="onTrainModelChange()">
-              <option value="semantic_line_matcher">semantic_line_matcher (新: 纹理直线+区域双输出)</option>
-              <option value="xfeat_line_matcher" selected>xfeat_line_matcher (推荐: 线段+多尺度金字塔)</option>
+              <option value="semantic_line_matcher">semantic_line_matcher (纹理直线+区域双输出)</option>
+              <option value="xfeat_line_matcher" selected>xfeat_line_matcher (线段+多尺度金字塔)</option>
               <option value="xfeat_object">xfeat_object (纯物体区域基线)</option>
-              <option value="mask_line">mask_line (早期掩码线段网络)</option>
+              <option value="mask_line">mask_line (掩码线段网络)</option>
               <option value="line_transformer">line_transformer (LineMatcherNet)</option>
             </select>
           </div>
@@ -279,7 +279,7 @@
           <div class="form-group">
             <label class="form-label">训练数据集 (Dataset Directory)</label>
             <select class="form-control" id="train-data-dir">
-              <option value="data/xfeat_line_matcher">xfeat_line_matcher (默认真实CAD直线)</option>
+              <option value="data/xfeat_line_matcher">xfeat_line_matcher (真实CAD直线)</option>
               <option value="data/structured3d_semantic_regions">structured3d_semantic_regions</option>
             </select>
           </div>
