@@ -1083,6 +1083,20 @@ class Structured3DLineRegionComponent(BaseDatasetComponent):
 
 
 # ==============================================================================
+# 6b. Component: DeepLSD homography pairs
+# ==============================================================================
+class HomoMatcherComponent(BaseDatasetComponent):
+    """Structured3D pairs with RGB, depth, and DeepLSD distance/angle fields."""
+
+    name = "homo_matcher"
+
+    def build_dataset(self, out_dir: Path | str, s3d_dir: Path | str, **kwargs: Any) -> dict[str, Any]:
+        from datasets.homo_matcher_generate import build_homo_matcher_dataset
+
+        return build_homo_matcher_dataset(out_dir=out_dir, s3d_dir=s3d_dir, **kwargs)
+
+
+# ==============================================================================
 # 7. Dataset Generator Factory (工厂类核心)
 # ==============================================================================
 class DatasetGeneratorFactory:
@@ -1101,6 +1115,7 @@ class DatasetGeneratorFactory:
         "wireframe_3d": Wireframe3DLineComponent,
         "structured3d_lines": Structured3DLineRegionComponent,
         "structured3d": Structured3DLineRegionComponent,
+        "homo_matcher": HomoMatcherComponent,
     }
 
     def __init__(self, components: List[BaseDatasetComponent], config: Dict[str, Any]) -> None:
@@ -1137,6 +1152,8 @@ class DatasetGeneratorFactory:
             selected_names = list(component_names)
         elif task in ("structured3d_lines", "structured3d"):
             selected_names = ["structured3d_lines"]
+        elif task == "homo_matcher":
+            selected_names = ["homo_matcher"]
         elif task == "semantic_line" or task == "all":
             selected_names = ["object", "lsd_line", "wireframe_3d"]
         elif task == "object":
@@ -1357,8 +1374,8 @@ class DatasetGeneratorFactory:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Unified Multi-Modal Dataset Generator Factory with Pluggable Components")
     parser.add_argument("--task", type=str, default="semantic_line",
-                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d"],
-                        help="Generator task preset: 'semantic_line' (synthetic), 'object', 'line', or 'structured3d_lines' (real CAD GT lines)")
+                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "homo_matcher"],
+                        help="Generator task preset")
     parser.add_argument("--components", type=str, default=None,
                         help="Comma-separated custom components (e.g., 'object,lsd_line')")
     parser.add_argument("--num-scenes", type=int, default=10, help="Number of 3D scenes to generate for synthetic tasks (default: 10)")
@@ -1375,6 +1392,8 @@ def main() -> None:
     parser.add_argument("--min-matches", type=int, default=3, help="Minimum matching regions per viewpoint pair")
     parser.add_argument("--min-area-ratio", type=float, default=0.40, help="Minimum mutually matched co-visible area ratio (default: 0.40)")
     parser.add_argument("--max-rotation", type=float, default=85.0, help="Maximum camera rotation in degrees (default: 85.0)")
+    parser.add_argument("--max-pairs", type=int, default=None, help="Stop after this many DeepLSD homography pairs")
+    parser.add_argument("--weight", type=str, default=None, help="DeepLSD weight for homo_matcher")
     args = parser.parse_args()
 
     custom_comps = [c.strip() for c in args.components.split(",")] if args.components else None
@@ -1404,6 +1423,16 @@ def main() -> None:
             min_area_ratio=args.min_area_ratio,
             max_rotation_deg=args.max_rotation,
         )
+    elif args.task == "homo_matcher":
+        component = factory.components[0]
+        weight_kwargs = {"weight": args.weight} if args.weight else {}
+        component.build_dataset(
+            out_dir=args.out_dir,
+            s3d_dir=args.s3d_dir,
+            max_scenes=args.max_scenes,
+            max_pairs=args.max_pairs,
+            **weight_kwargs,
+        )
     else:
         factory.generate(
             out_dir=args.out_dir,
@@ -1420,6 +1449,7 @@ __all__ = [
     "LSDLineComponent",
     "Wireframe3DLineComponent",
     "Structured3DLineRegionComponent",
+    "HomoMatcherComponent",
     "DatasetGeneratorFactory",
     "UnifiedProceduralRoom",
     "render_indoor_view",

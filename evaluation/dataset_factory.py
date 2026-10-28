@@ -38,7 +38,12 @@ class DatasetFactory:
         elif any((d / "correspondence.json").is_file() for d in p_data.iterdir() if d.is_dir()):
             use_region_ds = True
 
-        if model_info["family"] == "object":
+        if model_info["family"] == "homography":
+            from datasets.homo_matcher_dataset import HomoMatcherDataset, collate_homo_matcher
+
+            dataset = HomoMatcherDataset(dataset_dir=p_data, split=split)
+            collate_fn = collate_homo_matcher
+        elif model_info["family"] == "object":
             if use_region_ds:
                 model_type = model_info.get("model_type", "xfeat_object")
                 needs_lines = uses_patch_lines(model_type) if model_type else False

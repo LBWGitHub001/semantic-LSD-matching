@@ -12,22 +12,23 @@ Outputs under vis_deeplsd/<scene>_<room>_v<id>/:
 from __future__ import annotations
 
 import argparse
-import multiprocessing as mp
+import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import cv2
 import numpy as np
-import torch
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent.parent
 DEEPLSD_ROOT = ROOT / "third_party" / "DeepLSD"
 if str(DEEPLSD_ROOT) not in sys.path:
     sys.path.insert(0, str(DEEPLSD_ROOT))
-
-from deeplsd.models.deeplsd_inference import DeepLSD
 
 
 def view_dir(rgb_path: Path, out_root: Path) -> Path:
@@ -50,14 +51,19 @@ def read_view(rgb_path: Path) -> tuple[np.ndarray, np.ndarray]:
     return bgr, gray
 
 
-def load_model(weight: Path, device: torch.device) -> DeepLSD:
+def load_model(weight: Path, device):
+    import torch
+    from deeplsd.models.deeplsd_inference import DeepLSD
+
     ckpt = torch.load(weight, map_location="cpu", weights_only=False)
     net = DeepLSD({"detect_lines": False})
     net.load_state_dict(ckpt["model"])
     return net.to(device).eval()
 
 
-def _forward_batch(net: DeepLSD, grays: list[np.ndarray], device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+def _forward_batch(net, grays: list[np.ndarray], device) -> tuple[np.ndarray, np.ndarray]:
+    import torch
+
     batch = np.stack(grays, axis=0)
     tensor = torch.from_numpy(batch)
     if device.type == "cuda":
@@ -78,7 +84,9 @@ def _forward_batch(net: DeepLSD, grays: list[np.ndarray], device: torch.device) 
         del tensor
 
 
-def infer_batch(net: DeepLSD, grays: list[np.ndarray], device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+def infer_batch(net, grays: list[np.ndarray], device) -> tuple[np.ndarray, np.ndarray]:
+    import torch
+
     if not grays:
         empty = np.zeros((0, 0, 0), dtype=np.float16)
         return empty, empty
@@ -95,24 +103,46 @@ def infer_batch(net: DeepLSD, grays: list[np.ndarray], device: torch.device) -> 
         return np.concatenate([df_a, df_b], axis=0), np.concatenate([ang_a, ang_b], axis=0)
 
 
-def detect_lines(gray: np.ndarray, df: np.ndarray, line_level: np.ndarray) -> np.ndarray:
+def _log(message: str) -> None:
+    tqdm.write(message, file=sys.stdout)
+
+
+def detect_lines(gray: np.ndarray, df: np.ndarray, line_level: np.ndarray, label: str = "") -> np.ndarray:
     """CPU post-process matching DeepLSD.detect_afm_lines (normal filtering, no merge)."""
+    import threading
+    import time
+
     if str(DEEPLSD_ROOT) not in sys.path:
         sys.path.insert(0, str(DEEPLSD_ROOT))
     from deeplsd.geometry.line_utils import filter_outlier_lines
     from deeplsd.utils.tensor import preprocess_angle
     from pytlsd import lsd
 
+    who = threading.current_thread().name
+    tag = f"[{who}] {label}" if label else f"[{who}]"
+    t0 = time.perf_counter()
     img = gray.astype(np.float64)
-    df64 = np.asarray(df, dtype=np.float64)
-    level = np.asarray(line_level, dtype=np.float64)
+    # FP16 距离场里会有零星 NaN。NaN < 3 为假，这些像素不会被标成无效。
+    # 它们一旦进入区域，矩形参数变成 NaN，pytlsd 的矩形迭代器就不会结束。
+    raw_df = np.asarray(df, dtype=np.float64)
+    n_bad = int(np.count_nonzero(~np.isfinite(raw_df)))
+    df64 = np.nan_to_num(raw_df, nan=5.0, posinf=5.0, neginf=0.0)
+    level = np.nan_to_num(np.asarray(line_level, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
     gradnorm = np.maximum(5.0 - df64, 0.0)
     angle = preprocess_angle(level - np.pi / 2, img, mask=True)[0]
-    angle[gradnorm < 3] = -1024
+    invalid = ~(np.isfinite(gradnorm) & (gradnorm >= 3.0) & np.isfinite(angle))
+    angle[invalid] = -1024.0
+    gradnorm[invalid] = 0.0
+    note = f"  已屏蔽距离场 NaN {n_bad}" if n_bad else ""
+    _log(f"{tag} 进入 LSD  {img.shape[1]}x{img.shape[0]}  准备 {time.perf_counter() - t0:.2f}s{note}")
+    t1 = time.perf_counter()
     raw = lsd(img, scale=1.0, gradnorm=gradnorm, gradangle=angle, grad_nfa=True)
+    n_raw = 0 if raw.size == 0 else raw.shape[0]
+    _log(f"{tag} LSD 结束  原始线段 {n_raw}  用时 {time.perf_counter() - t1:.2f}s")
     if raw.size == 0:
         return np.zeros((0, 2, 2), dtype=np.float32)
     lines = raw[:, :4].reshape(-1, 2, 2)
+    t2 = time.perf_counter()
     filtered = filter_outlier_lines(
         img,
         lines[:, :, [1, 0]],
@@ -124,6 +154,8 @@ def detect_lines(gray: np.ndarray, df: np.ndarray, line_level: np.ndarray) -> np
         df_thresh=1.5,
         ang_thresh=np.pi / 9,
     )[0]
+    n_keep = 0 if filtered.size == 0 else filtered.shape[0]
+    _log(f"{tag} 过滤结束  保留 {n_keep}/{n_raw}  用时 {time.perf_counter() - t2:.2f}s")
     if filtered.size == 0:
         return np.zeros((0, 2, 2), dtype=np.float32)
     return np.asarray(filtered[:, :, [1, 0]], dtype=np.float32)
@@ -149,23 +181,36 @@ def _write_lines(bgr: np.ndarray, lines: np.ndarray, jpg_path: str, npy_path: st
 
 def postprocess_one(task: tuple) -> int:
     """Disk task reads fields.npz. Memory task already has the two fields."""
+    import threading
+    import time
+
+    who = threading.current_thread().name
+    t0 = time.perf_counter()
     kind = task[0]
     if kind == "disk":
         _, rgb_path, fields_path, jpg_path, npy_path, keep_fields = task
+        label = Path(jpg_path).parent.name
+        _log(f"[{who}] 开始 {label}  读原图和 fields.npz")
         bgr, gray = read_view(Path(rgb_path))
         with np.load(fields_path) as fields:
-            df = fields["df"]
-            angle = fields["angle"]
-        count = _write_lines(bgr, detect_lines(gray, df, angle), jpg_path, npy_path)
+            df = np.array(fields["df"])
+            angle = np.array(fields["angle"])
+        _log(f"[{who}] 已读入 {label}  {time.perf_counter() - t0:.2f}s  df={df.shape}")
+        count = _write_lines(bgr, detect_lines(gray, df, angle, label), jpg_path, npy_path)
         if not keep_fields:
             Path(fields_path).unlink(missing_ok=True)
+        _log(f"[{who}] 已保存 {label}  {count} 条线  总计 {time.perf_counter() - t0:.2f}s")
         return count
     _, bgr, gray, df, angle, jpg_path, npy_path = task
-    return _write_lines(bgr, detect_lines(gray, df, angle), jpg_path, npy_path)
+    label = Path(jpg_path).parent.name
+    _log(f"[{who}] 开始 {label}  使用内存中的场")
+    count = _write_lines(bgr, detect_lines(gray, df, angle, label), jpg_path, npy_path)
+    _log(f"[{who}] 已保存 {label}  {count} 条线  总计 {time.perf_counter() - t0:.2f}s")
+    return count
 
 
 def os_cpu_count() -> int:
-    import os
+    # pytlsd releases the GIL, so threads share this process instead of reimporting torch.
     return max(1, min(8, (os.cpu_count() or 2) - 1))
 
 
@@ -177,7 +222,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=4, help="FP16 network batch. OOM splits it automatically.")
     parser.add_argument("--read-workers", type=int, default=8)
     parser.add_argument("--prefetch-batches", type=int, default=2)
-    parser.add_argument("--post-workers", type=int, default=0, help="0 uses up to 8 CPU workers.")
+    parser.add_argument("--post-workers", type=int, default=0, help="0 uses up to 8 threads in this process.")
     parser.add_argument("--keep-fields", action="store_true", help="Keep fields.npz that were already on disk.")
     args = parser.parse_args()
 
@@ -209,8 +254,12 @@ def main() -> None:
         print("[+] done", flush=True)
         return
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    net = load_model(args.weight, device) if pending else None
+    net = None
+    device = None
+    if pending:
+        import torch
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        net = load_model(args.weight, device)
     progress = tqdm(total=total, desc="DeepLSD", unit="view", dynamic_ncols=True)
     read_pool = ThreadPoolExecutor(max_workers=args.read_workers) if pending else None
     batches = [pending[i : i + args.batch_size] for i in range(0, len(pending), args.batch_size)]
@@ -241,9 +290,8 @@ def main() -> None:
             done, left = wait(pending_futures, return_when=FIRST_COMPLETED)
         return done, left
 
-    ctx = mp.get_context("spawn")
     disk_left = list(disk_tasks)
-    with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         def pump_disk() -> None:
             while disk_left and len(inflight) < max_inflight:
                 inflight.add(pool.submit(postprocess_one, disk_left.pop()))
@@ -251,8 +299,9 @@ def main() -> None:
         def submit_read(batch_paths: list[Path]):
             return batch_paths, [read_pool.submit(read_view, path) for path in batch_paths]
 
-        queued = [submit_read(batch) for batch in batches[: args.prefetch_batches]]
+        queued = [submit_read(batch) for batch in batches[: args.prefetch_batches]] if read_pool is not None else []
         next_batch = args.prefetch_batches
+        _log(f"线程池已就绪，先投入 {min(len(disk_left), max_inflight)} 个后处理任务。LSD 结束前进度条保持 0。")
         try:
             pump_disk()
             while queued:

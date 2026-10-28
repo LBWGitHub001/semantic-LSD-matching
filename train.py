@@ -139,6 +139,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--geo-weight", type=float, default=0.2, help="semantic_line_matcher: adjacency geo weight")
     parser.add_argument("--adj-sigma", type=float, default=0.3, help="semantic_line_matcher: soft adjacency temperature")
     parser.add_argument("--line-sample-points", type=int, default=8, help="semantic_line_matcher: along-line sample count")
+    parser.add_argument("--cycle-weight", type=float, default=1.0, help="homo_matcher: weight of H12 H21 - I")
+    parser.add_argument("--depth-weight", type=float, default=1.0, help="homo_matcher: weight of the ridge depth loss")
     parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
     parser.add_argument("--data-ratio", "--data-fraction", dest="data_ratio", type=float, default=1.0, help="Fraction of training dataset to randomly sample (0.0 to 1.0, default: 1.0)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
@@ -1114,10 +1116,133 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
     print(f"\n[+] Saved run configuration to: {config_json_path}")
 
 
+def train_homography_pipeline(args: argparse.Namespace) -> None:
+    """Train HomoMatcher on 5-channel pairs."""
+    from datasets.homo_matcher_dataset import HomoMatcherDataset, collate_homo_matcher
+
+    data_dir = Path(args.data_dir or "data/homo_matcher")
+    base_save_dir = Path(args.save_dir or "checkpoints/homo_matcher")
+    start_time = datetime.now()
+    start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
+    run_name = args.run_name or f"{args.model_type}+{data_dir.name}+【{start_time_str}】"
+    save_dir = base_save_dir if args.no_timestamp else base_save_dir / run_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
+    lr = args.lr if args.lr is not None else 1e-4
+    train_ds = HomoMatcherDataset(data_dir, split="train", sample_points=args.line_sample_points)
+    val_ds = HomoMatcherDataset(data_dir, split="val", sample_points=args.line_sample_points)
+    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_homo_matcher, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_homo_matcher, num_workers=0)
+    model = build_model(
+        args.model_type,
+        d_model=args.d_model,
+        num_layers=args.num_layers,
+        nhead=args.nhead,
+    ).to(device)
+    loss_fn = build_loss(
+        args.model_type,
+        lambda1=args.cycle_weight,
+        lambda2=args.depth_weight,
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
+    config_path = save_dir / "config.json"
+    config_data = {
+        "experiment_info": {
+            "run_name": run_name,
+            "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time": None,
+            "git_commit": get_git_commit(),
+            "command": " ".join(sys.argv),
+        },
+        "model": {
+            "model_type": "homo_matcher",
+            "family": "homography",
+            "d_model": args.d_model,
+            "num_layers": args.num_layers,
+            "nhead": args.nhead,
+            "feat_dim": 64,
+            "grid_size": model.grid_size,
+        },
+        "hyperparameters": {
+            "epochs": args.epochs,
+            "learning_rate": lr,
+            "cycle_weight": args.cycle_weight,
+            "depth_weight": args.depth_weight,
+        },
+    }
+    save_config_json(config_path, config_data)
+    print(f"[*] homography training  pairs={len(train_ds)} val={len(val_ds)}  device={device}")
+    best_score = float("inf")
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        total = 0.0
+        steps = 0
+        for batch in train_loader:
+            if args.max_steps is not None and steps >= args.max_steps:
+                break
+            moved = _batch_to_device(batch, device)
+            pred = model(moved["image0"], moved["image1"])
+            out = loss_fn(pred, moved)
+            optimizer.zero_grad(set_to_none=True)
+            out["loss"].backward()
+            optimizer.step()
+            total += float(out["loss"].detach())
+            steps += 1
+        val_metrics = _homography_validate(model, loss_fn, val_loader, device, args.max_steps)
+        score = val_metrics["l1"] + val_metrics["l2"]
+        print(
+            f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
+            f"  val L1 {val_metrics['l1']:.4f}  L2 {val_metrics['l2']:.4f}"
+        )
+        ckpt = {
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "args": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+            "val_metrics": val_metrics,
+        }
+        torch.save(ckpt, save_dir / "last_model.pth")
+        if score <= best_score:
+            best_score = score
+            torch.save(ckpt, save_dir / "best_model.pth")
+    config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_config_json(config_path, config_data)
+    print(f"[+] saved {save_dir}")
+
+
+def _batch_to_device(batch: dict, device: torch.device) -> dict:
+    moved = {}
+    for key, value in batch.items():
+        moved[key] = value.to(device) if torch.is_tensor(value) else value
+    return moved
+
+
+def _homography_validate(model, loss_fn, loader, device, max_steps) -> dict[str, float]:
+    model.eval()
+    totals = {"l1": 0.0, "l2": 0.0, "loss": 0.0}
+    steps = 0
+    with torch.inference_mode():
+        for batch in loader:
+            if max_steps is not None and steps >= max_steps:
+                break
+            moved = _batch_to_device(batch, device)
+            pred = model(moved["image0"], moved["image1"])
+            out = loss_fn(pred, moved)
+            totals["l1"] += float(out["l1"])
+            totals["l2"] += float(out["l2"])
+            totals["loss"] += float(out["loss"])
+            steps += 1
+    denom = max(steps, 1)
+    return {key: value / denom for key, value in totals.items()} | {"total_pairs": steps}
+
+
 def main() -> None:
     args = parse_args()
-    if model_family(args.model_type) == "object":
+    family = model_family(args.model_type)
+    if family == "object":
         train_object_pipeline(args)
+    elif family == "homography":
+        train_homography_pipeline(args)
     else:
         train_line_pipeline(args)
 

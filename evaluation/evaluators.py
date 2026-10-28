@@ -218,12 +218,101 @@ class LineMatchingEvaluator(BaseEvaluator):
         return []
 
 
+class HomographyEvaluator(BaseEvaluator):
+    """Reports the cycle loss and the ridge depth loss, and draws warped ridges."""
+
+    def evaluate(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        min_area_ratio: float = 0.50,
+    ) -> Dict[str, Any]:
+        from models import build_loss
+
+        del min_area_ratio
+        criterion = build_loss("homo_matcher")
+        model.eval()
+        totals = {"l1": 0.0, "l2": 0.0, "loss": 0.0}
+        steps = 0
+        with torch.inference_mode():
+            for batch in loader:
+                moved = {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
+                pred = model(moved["image0"], moved["image1"])
+                out = criterion(pred, moved)
+                totals["l1"] += float(out["l1"])
+                totals["l2"] += float(out["l2"])
+                totals["loss"] += float(out["loss"])
+                steps += 1
+        denom = max(steps, 1)
+        metrics = {key: value / denom for key, value in totals.items()}
+        metrics.update(
+            {
+                "total_pairs": steps,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "dustbin_acc": 0.0,
+                "tp": 0,
+                "fp": 0,
+                "fn": 0,
+            }
+        )
+        return metrics
+
+    def visualize(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        out_dir: Path,
+        num_vis: int = 5,
+        min_area_ratio: float = 0.50,
+        data_dir: Optional[Path] = None,
+        use_region_ds: bool = True,
+    ) -> List[Path]:
+        import cv2
+        import numpy as np
+        from models.homo_matcher.draw import draw_ridge_lines
+        from models.homo_matcher.loss import apply_homography
+
+        del min_area_ratio, data_dir, use_region_ds
+        out_dir.mkdir(parents=True, exist_ok=True)
+        paths: List[Path] = []
+        model.eval()
+        with torch.inference_mode():
+            for batch in loader:
+                if len(paths) >= num_vis:
+                    break
+                moved = {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
+                pred = model(moved["image0"], moved["image1"])
+                ridges = moved["ridges0"]
+                mask = moved["ridge_mask"][0].bool()
+                kept = ridges[0, mask].detach().cpu().numpy()
+                if len(kept) == 0:
+                    endpoints = np.zeros((0, 2, 2), dtype=np.float32)
+                    warped_ends = endpoints
+                else:
+                    endpoints = np.stack([kept[:, 0], kept[:, -1]], axis=1)
+                    warped = apply_homography(pred["H12"].float(), ridges.float())
+                    warped_kept = warped[0, mask].detach().cpu().numpy()
+                    warped_ends = np.stack([warped_kept[:, 0], warped_kept[:, -1]], axis=1)
+                left = draw_ridge_lines(batch["bgr0"][0].numpy(), endpoints)
+                right = draw_ridge_lines(batch["bgr1"][0].numpy(), warped_ends)
+                canvas = np.concatenate([left, right], axis=1)
+                dest = out_dir / f"{batch['pair_id'][0]}.jpg"
+                cv2.imwrite(str(dest), canvas)
+                paths.append(dest)
+        return paths
+
+
 class EvaluatorFactory:
     """Factory creating task-specific evaluators."""
 
     _registry: Dict[str, type[BaseEvaluator]] = {
         "object": ObjectMatchingEvaluator,
         "line": LineMatchingEvaluator,
+        "homography": HomographyEvaluator,
     }
 
     @classmethod
@@ -296,14 +385,20 @@ def evaluate(
     elapsed = time.time() - t0
 
     print("---------------------------------------------------------------------------")
-    print(f"BENCHMARK EVALUATION RESULTS ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
-    print(f"  Match Precision    : {metrics['precision']:.2f}%")
-    print(f"  Match Recall       : {metrics['recall']:.2f}%")
-    print(f"  Match F1-Score     : {metrics['f1']:.2f}%")
-    print(f"  Dustbin Accuracy   : {metrics['dustbin_acc']:.2f}%")
-    print(f"  Correspondences    : {metrics['tp']} TP, {metrics['fp']} FP, {metrics['fn']} FN")
-    if "cross_cat_fp" in metrics:
-        print(f"  Cross-Category FP  : {metrics['cross_cat_fp']} ({metrics['cross_cat_rate']:.1f}% of all FPs)")
+    if model_info.get("family") == "homography":
+        print(f"HOMOGRAPHY EVALUATION ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
+        print(f"  L1 cycle           : {metrics['l1']:.4f}")
+        print(f"  L2 depth profiles  : {metrics['l2']:.4f}")
+        print(f"  Total loss         : {metrics['loss']:.4f}")
+    else:
+        print(f"BENCHMARK EVALUATION RESULTS ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
+        print(f"  Match Precision    : {metrics['precision']:.2f}%")
+        print(f"  Match Recall       : {metrics['recall']:.2f}%")
+        print(f"  Match F1-Score     : {metrics['f1']:.2f}%")
+        print(f"  Dustbin Accuracy   : {metrics['dustbin_acc']:.2f}%")
+        print(f"  Correspondences    : {metrics['tp']} TP, {metrics['fp']} FP, {metrics['fn']} FN")
+        if "cross_cat_fp" in metrics:
+            print(f"  Cross-Category FP  : {metrics['cross_cat_fp']} ({metrics['cross_cat_rate']:.1f}% of all FPs)")
     print("---------------------------------------------------------------------------\n")
 
     if num_vis > 0:
@@ -337,18 +432,25 @@ def evaluate(
         f.write(f"> **评测数据集**: `{p_data.name}` (划分: `{split}`)  \n")
         f.write(f"> **耗时**: `{elapsed:.2f}s` | **测试对数**: `{metrics['total_pairs']}`\n\n")
         f.write("## 核心指标结果\n")
-        f.write("| 评测指标 | 结果数值 | 说明 |\n")
-        f.write("| :--- | :---: | :--- |\n")
-        f.write(f"| **Match Precision** | **{metrics['precision']:.2f}%** | 匹配准确率 (查准率) |\n")
-        f.write(f"| **Match Recall** | **{metrics['recall']:.2f}%** | 目标召回率 (查全率) |\n")
-        f.write(f"| **Match F1-Score** | **{metrics['f1']:.2f}%** | 核心综合性能指标 |\n")
-        f.write(f"| **Dustbin Accuracy** | **{metrics['dustbin_acc']:.2f}%** | 垃圾桶正确率 |\n")
-        f.write(f"| **True Positives (TP)** | {metrics['tp']} | 正确匹配数 |\n")
-        f.write(f"| **False Positives (FP)** | {metrics['fp']} | 错误匹配数 |\n")
-        f.write(f"| **False Negatives (FN)** | {metrics['fn']} | 漏检未配对数 |\n")
-        if "cross_cat_fp" in metrics:
-            f.write(f"| **Cross-Category FP** | {metrics['cross_cat_fp']} ({metrics['cross_cat_rate']:.1f}%) | 跨类别严重误匹配 |\n")
-        f.write("\n")
+        if model_info.get("family") == "homography":
+            f.write("| 评测指标 | 结果数值 |\n")
+            f.write("| :--- | :---: |\n")
+            f.write(f"| **L1 cycle** | **{metrics['l1']:.4f}** |\n")
+            f.write(f"| **L2 depth** | **{metrics['l2']:.4f}** |\n")
+            f.write(f"| **Total** | **{metrics['loss']:.4f}** |\n\n")
+        else:
+            f.write("| 评测指标 | 结果数值 | 说明 |\n")
+            f.write("| :--- | :---: | :--- |\n")
+            f.write(f"| **Match Precision** | **{metrics['precision']:.2f}%** | 匹配准确率 (查准率) |\n")
+            f.write(f"| **Match Recall** | **{metrics['recall']:.2f}%** | 目标召回率 (查全率) |\n")
+            f.write(f"| **Match F1-Score** | **{metrics['f1']:.2f}%** | 核心综合性能指标 |\n")
+            f.write(f"| **Dustbin Accuracy** | **{metrics['dustbin_acc']:.2f}%** | 垃圾桶正确率 |\n")
+            f.write(f"| **True Positives (TP)** | {metrics['tp']} | 正确匹配数 |\n")
+            f.write(f"| **False Positives (FP)** | {metrics['fp']} | 错误匹配数 |\n")
+            f.write(f"| **False Negatives (FN)** | {metrics['fn']} | 漏检未配对数 |\n")
+            if "cross_cat_fp" in metrics:
+                f.write(f"| **Cross-Category FP** | {metrics['cross_cat_fp']} ({metrics['cross_cat_rate']:.1f}%) | 跨类别严重误匹配 |\n")
+            f.write("\n")
         if num_vis > 0 and "visualizations" in metrics:
             f.write("## 诊断可视化列表\n")
             for vp in metrics["visualizations"]:

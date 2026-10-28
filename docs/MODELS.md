@@ -1,6 +1,7 @@
 # 核心匹配网络模型技术详解 (Models Technical Documentation)
 
-本文档系统介绍项目内实现的**四大视觉匹配网络模型**的技术架构、数学推导、核心超参数与实测基准性能：
+本文档系统介绍项目内实现的匹配网络。单应网络 `homo_matcher` 的图文说明见 [`models/homo_matcher/README.md`](../models/homo_matcher/README.md)。
+
 1. **`XFeatLineMatcher`**：多模态区域直线网络（当前推荐主力，多尺度金字塔 + 5D 几何 + 位移共识损失）
 2. **`XFeatObjectMatcher`**：物体级双向图匹配网络（"连连看"，跨视角宏观构件配对）
 3. **`MaskLineFeatMatchNet`**：6通道连续几何场线段匹配网络（微观几何线段与边缘配对）
@@ -304,6 +305,16 @@ $$M(P_{\pi_0} \mathcal{L}_0, P_{\pi_1} \mathcal{L}_1) = P_{\pi_0} M(\mathcal{L}_
 ### 3. 优缺点对比分析
 - **优势**：概念直观，对富有局部表面纹理的线段表现稳健；
 - **局限性**：当线段受到视锥边界截断（Stick-breaking）时，离散采样的关键点在物理空间上发生错位；对于弱纹理白墙边缘，离散采样点缺少周边环境的几何场距离约束。
+
+---
+
+## 五·补、`homo_matcher`
+
+两张图各 5 个通道（灰度、距离场、\(\sin 2\theta\)、\(\cos 2\theta\)、亮带），网络输出互逆单应 \(H_{12}, H_{21}\)。损失是循环项 \(H_{12}H_{21}-I\) 加上距离场亮脊上的深度序列。直线不来自 CAD，也不再跑 LSD。
+
+注册名：`homo_matcher`。家族：`homography`。
+
+完整图示、参数和命令见 [`models/homo_matcher/README.md`](../models/homo_matcher/README.md)。
 
 ---
 

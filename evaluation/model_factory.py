@@ -34,7 +34,29 @@ class ModelFactory:
             "use_pyramid": True,
             "with_geometry": False,
             "sinkhorn_iters": 20,
+            "grid_size": 16,
         }
+
+        if any(k.startswith("coord_head.") for k in state_dict):
+            info["family"] = "homography"
+            info["model_type"] = "homo_matcher"
+            info["use_pyramid"] = False
+            info["with_geometry"] = False
+            if "proj.weight" in state_dict:
+                info["d_model"] = int(state_dict["proj.weight"].shape[0])
+                info["feat_dim"] = int(state_dict["proj.weight"].shape[1])
+            layer_indices = {
+                int(key.split("cross_attn.")[1].split(".")[0])
+                for key in state_dict
+                if key.startswith("cross_attn.")
+            }
+            if layer_indices:
+                info["num_layers"] = max(layer_indices) + 1
+            if config and "model" in config:
+                for key in ("d_model", "num_layers", "nhead", "feat_dim", "grid_size"):
+                    if key in config["model"]:
+                        info[key] = config["model"][key]
+            return info
 
         # 1. Line Matchers detection
         if any("conv_6ch" in k or ("backbone.conv1.weight" in k and state_dict[k].shape[1] == 6) for k in state_dict):
@@ -179,7 +201,10 @@ class ModelFactory:
             num_layers=info["num_layers"],
             nhead=info["nhead"],
         )
-        if info.get("family") == "object":
+        if info.get("family") == "homography":
+            model_kwargs["feat_dim"] = info.get("feat_dim", 64)
+            model_kwargs["grid_size"] = info.get("grid_size", 16)
+        elif info.get("family") == "object":
             model_kwargs.update(
                 feat_dim=info.get("feat_dim", 64),
                 sinkhorn_iters=info["sinkhorn_iters"],

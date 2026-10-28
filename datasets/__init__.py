@@ -20,6 +20,10 @@ from datasets.line_dataset import (
     LineFeatPairDataset,
     collate_line_pairs,
 )
+from datasets.homo_matcher_dataset import (
+    HomoMatcherDataset,
+    collate_homo_matcher,
+)
 from datasets.read_structured3d import (
     STRUCTURED3D_CLASSES,
     Camera,
@@ -39,6 +43,8 @@ __all__ = [
     "visualize_line_matches",
     "LineFeatPairDataset",
     "collate_line_pairs",
+    "HomoMatcherDataset",
+    "collate_homo_matcher",
     "STRUCTURED3D_CLASSES",
     "Camera",
     "Structured3DDataset",

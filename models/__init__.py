@@ -39,6 +39,12 @@ from models.semantic_line_matcher import (
     SemanticLineMatchingLoss,
 )
 
+# 5. DeepLSD field homography
+from models.homo_matcher import (
+    HomoMatcher,
+    HomoMatcherLoss,
+)
+
 MODEL_REGISTRY = {
     # Model 1: Object Bipartite Matchers ("连连看")
     "xfeat_object": XFeatObjectMatcher,
@@ -57,6 +63,7 @@ MODEL_REGISTRY = {
     # Model 3: Baseline Line-Transformer Matcher
     "line_transformer": LineMatcherNet,
     "linefeat": LineMatcherNet,
+    "homo_matcher": HomoMatcher,
 }
 
 LOSS_REGISTRY = {
@@ -72,6 +79,7 @@ LOSS_REGISTRY = {
     "mask": LineMatchingLoss,
     "line_transformer": LineMatchingLoss,
     "linefeat": LineMatchingLoss,
+    "homo_matcher": HomoMatcherLoss,
 }
 
 CANONICAL_MODEL_NAMES = {
@@ -87,10 +95,12 @@ CANONICAL_MODEL_NAMES = {
     "mask": "mask_line",
     "line_transformer": "line_transformer",
     "linefeat": "line_transformer",
+    "homo_matcher": "homo_matcher",
 }
 
 OBJECT_FAMILY_MODELS = {"xfeat_object", "xfeat_line_matcher", "semantic_line_matcher"}
 LINE_FEATURE_MODELS = {"xfeat_line_matcher", "semantic_line_matcher"}
+HOMOGRAPHY_MODELS = {"homo_matcher"}
 
 
 def canonical_model_name(model_name: str) -> str:
@@ -102,8 +112,13 @@ def canonical_model_name(model_name: str) -> str:
 
 
 def model_family(model_name: str) -> str:
-    """Return 'object' for patch/region matchers or 'line' for full-image line matchers."""
-    return "object" if canonical_model_name(model_name) in OBJECT_FAMILY_MODELS else "line"
+    """Return 'object', 'homography', or 'line'."""
+    name = canonical_model_name(model_name)
+    if name in HOMOGRAPHY_MODELS:
+        return "homography"
+    if name in OBJECT_FAMILY_MODELS:
+        return "object"
+    return "line"
 
 
 def uses_patch_lines(model_name: str) -> bool:
@@ -114,6 +129,11 @@ def uses_patch_lines(model_name: str) -> bool:
 def is_semantic_line_model(model_name: str) -> bool:
     """Whether the model is the dual region + line Sinkhorn matcher."""
     return canonical_model_name(model_name) == "semantic_line_matcher"
+
+
+def is_homography_model(model_name: str) -> bool:
+    """Whether the model predicts a pair of homographies from DeepLSD fields."""
+    return canonical_model_name(model_name) in HOMOGRAPHY_MODELS
 
 
 def build_model(model_name: str, **kwargs) -> nn.Module:
@@ -147,6 +167,7 @@ __all__ = [
     "model_family",
     "uses_patch_lines",
     "is_semantic_line_model",
+    "is_homography_model",
     "MODEL_REGISTRY",
     "LOSS_REGISTRY",
     "XFeatObjectMatcher",
@@ -163,4 +184,6 @@ __all__ = [
     "LineMatchPipeline",
     "SemanticLineMatcher",
     "SemanticLineMatchingLoss",
+    "HomoMatcher",
+    "HomoMatcherLoss",
 ]
