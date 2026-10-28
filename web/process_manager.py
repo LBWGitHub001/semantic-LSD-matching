@@ -623,6 +623,9 @@ class TaskQueueManager:
             cmd.append("--amp")
         if label:
             cmd.extend(["--label", str(label)])
+        resume = cfg.get("resume")
+        if resume:
+            cmd.extend(["--resume", str(resume)])
 
         ok, msg, task_dict = TASK_MANAGER.start_task("train", cmd)
         if ok:

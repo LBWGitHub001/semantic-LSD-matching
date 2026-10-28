@@ -688,6 +688,7 @@ class QueueHandler(BaseApiHandler):
                 "pyramid": bool(body.get("pyramid", True)),
                 "amp": bool(body.get("amp", True)),
                 "label": label,
+                "resume": body.get("resume") or None,
             }
             task = TASK_QUEUE_MANAGER.add_task(label=label, config=config)
             self.write_json({

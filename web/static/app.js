@@ -23,6 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadDashboard();
   loadDatasets();
   loadCheckpoints();
+  refreshTrainCheckpoints();
   initModelDocs();
   loadTrainingQueue();
   onTrainModelChange();
@@ -1244,7 +1245,7 @@ function syncDataRatioFromInput(val) {
 
 async function startTraining() {
   const params = getTrainingFormData();
-  const { model, data_dir, epochs, lr, label, data_ratio } = params;
+  const { model, data_dir, epochs, lr, label, data_ratio, resume } = params;
 
   const btnStart = document.querySelector("#tab-train .btn-success");
   if (btnStart) {
@@ -1258,7 +1259,8 @@ async function startTraining() {
   clearTerminal();
   const ratioLabel = data_ratio < 1.0 ? `, ratio=${Math.round(data_ratio * 100)}%` : "";
   const labelTag = label ? `, label=【${label}】` : "";
-  appendTerminalLine(`[+] 正在请求启动训练: model=${model}${labelTag}, data=${data_dir}${ratioLabel}, epochs=${epochs}, lr=${lr}...`);
+  const resumeTag = resume ? `, resume=${resume}` : "";
+  appendTerminalLine(`[+] 正在请求启动训练: model=${model}${labelTag}, data=${data_dir}${ratioLabel}, epochs=${epochs}, lr=${lr}${resumeTag}...`);
 
   liveLossHistory = [];
   liveF1History = [];
@@ -1988,6 +1990,61 @@ function onTrainModelChange() {
   if (motionGroup) motionGroup.style.display = showSemantic ? "none" : "block";
 }
 
+async function refreshTrainCheckpoints() {
+  const select = document.getElementById("train-resume-select");
+  if (!select) return;
+  const previous = select.value;
+  try {
+    const res = await fetch("/api/checkpoints");
+    const data = await res.json();
+    select.innerHTML = '<option value="">（不导入，从头训练）</option>';
+    (data.checkpoints || []).forEach((c) => {
+      const star = c.is_best ? "★ " : "";
+      const opt = document.createElement("option");
+      opt.value = c.rel_path;
+      opt.textContent = `${star}${c.folder}/${c.name} (${c.size_mb} MB)`;
+      select.appendChild(opt);
+    });
+    if (previous) {
+      select.value = previous;
+    }
+  } catch (e) {
+    console.error("Failed to load train checkpoints:", e);
+  }
+}
+
+function importSelectedModel() {
+  const select = document.getElementById("train-resume-select");
+  const hidden = document.getElementById("train-resume");
+  const status = document.getElementById("train-resume-status");
+  if (!select || !hidden) return;
+  const path = (select.value || "").trim();
+  if (!path) {
+    alert("请先在下拉列表中选择一个 checkpoint（.pth）");
+    return;
+  }
+  hidden.value = path;
+  if (status) {
+    status.innerHTML = `已导入：<code style="color:#60A5FA;">${path}</code>。开始训练 / 入队时将自动 <code>--resume</code>。`;
+    status.style.color = "#34D399";
+  }
+  if (typeof appendTerminalLine === "function") {
+    appendTerminalLine(`[+] 已导入断点模型: ${path}\n`);
+  }
+}
+
+function clearImportedModel() {
+  const select = document.getElementById("train-resume-select");
+  const hidden = document.getElementById("train-resume");
+  const status = document.getElementById("train-resume-status");
+  if (select) select.value = "";
+  if (hidden) hidden.value = "";
+  if (status) {
+    status.innerHTML = '未导入模型。点击「导入模型」选择已有 <code>.pth</code>，训练时将以 <code>--resume</code> 续训。';
+    status.style.color = "";
+  }
+}
+
 function getTrainingFormData() {
   const model = document.getElementById("train-model").value;
   const data_dir = document.getElementById("train-data-dir").value;
@@ -2006,6 +2063,8 @@ function getTrainingFormData() {
   const amp = document.getElementById("train-amp").checked;
   const label_el = document.getElementById("train-label");
   const label = label_el ? label_el.value.trim() : "";
+  const resume_el = document.getElementById("train-resume");
+  const resume = resume_el ? resume_el.value.trim() : "";
 
   return {
     model,
@@ -2022,7 +2081,8 @@ function getTrainingFormData() {
     data_ratio,
     pyramid,
     amp,
-    label
+    label,
+    resume: resume || null,
   };
 }
 
@@ -2180,6 +2240,7 @@ function renderQueueUI(queueData) {
         <span>FPN: ${task.config.pyramid ? "✓" : "✗"}</span> |
         <span>AMP: ${task.config.amp ? "✓" : "✗"}</span> |
         <span>Dustbin: ${task.config.dustbin_weight ?? 0.1}</span>
+        ${task.config.resume ? `<br><span style="color:#60A5FA;">Resume: ${task.config.resume}</span>` : ""}
       </div>
     `;
 
