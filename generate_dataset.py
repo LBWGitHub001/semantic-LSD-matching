@@ -26,6 +26,9 @@ Usage:
 
   # 5. Build dataset directly from Structured3D with Ground-Truth 3D Wireframe Lines:
   python generate_dataset.py --task structured3d_lines --s3d-dir Structured3D_perspective_full_00/Structured3D --out-dir data/structured3d_gt_lines --max-scenes 50
+
+  # 6. DeepLSD distance/angle pairs for FCN_field:
+  python generate_dataset.py --task FCN_field --max-scenes 1 --max-pairs 4 --out-dir data/homo_matcher
 """
 
 from __future__ import annotations
@@ -1085,10 +1088,10 @@ class Structured3DLineRegionComponent(BaseDatasetComponent):
 # ==============================================================================
 # 6b. Component: DeepLSD homography pairs
 # ==============================================================================
-class HomoMatcherComponent(BaseDatasetComponent):
+class FCNFieldComponent(BaseDatasetComponent):
     """Structured3D pairs with RGB, depth, and DeepLSD distance/angle fields."""
 
-    name = "homo_matcher"
+    name = "FCN_field"
 
     def build_dataset(self, out_dir: Path | str, s3d_dir: Path | str, **kwargs: Any) -> dict[str, Any]:
         from datasets.homo_matcher_generate import build_homo_matcher_dataset
@@ -1106,6 +1109,8 @@ class DatasetGeneratorFactory:
       - ObjectMaskComponent
       - LSDLineComponent (The straight line component)
       - Wireframe3DLineComponent
+      - Structured3DLineRegionComponent
+      - FCNFieldComponent
     """
 
     _registry: Dict[str, Type[BaseDatasetComponent]] = {
@@ -1115,7 +1120,7 @@ class DatasetGeneratorFactory:
         "wireframe_3d": Wireframe3DLineComponent,
         "structured3d_lines": Structured3DLineRegionComponent,
         "structured3d": Structured3DLineRegionComponent,
-        "homo_matcher": HomoMatcherComponent,
+        "FCN_field": FCNFieldComponent,
     }
 
     def __init__(self, components: List[BaseDatasetComponent], config: Dict[str, Any]) -> None:
@@ -1152,8 +1157,8 @@ class DatasetGeneratorFactory:
             selected_names = list(component_names)
         elif task in ("structured3d_lines", "structured3d"):
             selected_names = ["structured3d_lines"]
-        elif task == "homo_matcher":
-            selected_names = ["homo_matcher"]
+        elif task == "FCN_field":
+            selected_names = ["FCN_field"]
         elif task == "semantic_line" or task == "all":
             selected_names = ["object", "lsd_line", "wireframe_3d"]
         elif task == "object":
@@ -1371,30 +1376,50 @@ class DatasetGeneratorFactory:
 # ==============================================================================
 # 8. CLI Entrypoint
 # ==============================================================================
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified Multi-Modal Dataset Generator Factory with Pluggable Components")
     parser.add_argument("--task", type=str, default="semantic_line",
-                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "homo_matcher"],
+                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "FCN_field"],
                         help="Generator task preset")
     parser.add_argument("--components", type=str, default=None,
                         help="Comma-separated custom components (e.g., 'object,lsd_line')")
-    parser.add_argument("--num-scenes", type=int, default=10, help="Number of 3D scenes to generate for synthetic tasks (default: 10)")
-    parser.add_argument("--views-per-scene", type=int, default=8, help="Number of camera views per scene for synthetic tasks (default: 8)")
+    parser.add_argument("--num-scenes", type=int, default=10, help="Synthetic tasks only. Number of 3D scenes (default: 10)")
+    parser.add_argument("--views-per-scene", type=int, default=8, help="Synthetic tasks only. Camera views per scene (default: 8)")
     parser.add_argument("--out-dir", type=str, default="data/synthetic_semantic_lines", help="Output dataset directory")
-    parser.add_argument("--min-line-len", type=float, default=16.0, help="Minimum straight line length in pixels (default: 16.0)")
-    parser.add_argument("--random-colors", action="store_true", default=True, help="Enable Dimension 2 randomized material palettes & shading")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--min-line-len", type=float, default=16.0, help="Synthetic tasks only. Minimum straight line length in pixels (default: 16.0)")
+    parser.add_argument("--random-colors", action="store_true", default=True, help="Synthetic tasks only. Enable Dimension 2 randomized material palettes & shading")
+    parser.add_argument("--seed", type=int, default=42, help="Synthetic tasks only. Random seed")
 
-    # Arguments specific to Structured3D Real-World dataset builder
-    parser.add_argument("--s3d-dir", type=str, default="Structured3D_perspective_full_00/Structured3D", help="Structured3D raw directory")
-    parser.add_argument("--max-scenes", type=int, default=None, help="Max Structured3D scenes to process (default: all available)")
-    parser.add_argument("--num-workers", type=int, default=os.cpu_count() or 8, help="Parallel worker processes for Structured3D")
-    parser.add_argument("--min-matches", type=int, default=3, help="Minimum matching regions per viewpoint pair")
-    parser.add_argument("--min-area-ratio", type=float, default=0.40, help="Minimum mutually matched co-visible area ratio (default: 0.40)")
-    parser.add_argument("--max-rotation", type=float, default=85.0, help="Maximum camera rotation in degrees (default: 85.0)")
-    parser.add_argument("--max-pairs", type=int, default=None, help="Stop after this many DeepLSD homography pairs")
-    parser.add_argument("--weight", type=str, default=None, help="DeepLSD weight for homo_matcher")
+    parser.add_argument("--s3d-dir", type=str, default="Structured3D_perspective_full_00/Structured3D", help="structured3d / FCN_field. Structured3D raw directory")
+    parser.add_argument("--max-scenes", type=int, default=None, help="structured3d / FCN_field. Max scenes (default: all available)")
+    parser.add_argument("--num-workers", type=int, default=os.cpu_count() or 8, help="structured3d: processes. FCN_field: read/write threads. GPU inference stays on one device")
+    parser.add_argument("--min-matches", type=int, default=3, help="structured3d only. Minimum matching regions per viewpoint pair")
+    parser.add_argument("--min-area-ratio", type=float, default=0.40, help="structured3d only. Minimum mutually matched co-visible area ratio (default: 0.40)")
+    parser.add_argument("--max-rotation", type=float, default=85.0, help="structured3d only. Maximum camera rotation in degrees (default: 85.0)")
+    parser.add_argument("--max-pairs", type=int, default=None, help="FCN_field only. Stop after this many pairs")
+    parser.add_argument("--weight", type=str, default=None, help="FCN_field only. DeepLSD weight path")
+    return parser
+
+
+def applicable_arguments(task: str) -> set[str]:
+    """Destinations this generator task actually reads."""
+    common = {"task", "components", "out_dir"}
+    if task in ("structured3d_lines", "structured3d"):
+        return common | {"s3d_dir", "max_scenes", "num_workers", "min_matches", "min_area_ratio", "max_rotation"}
+    if task == "FCN_field":
+        return common | {"s3d_dir", "max_scenes", "num_workers", "max_pairs", "weight"}
+    return common | {"num_scenes", "views_per_scene", "min_line_len", "random_colors", "seed"}
+
+
+def main() -> None:
+    from factory_args import warn_unused_arguments
+
+    parser = build_parser()
     args = parser.parse_args()
+    warn_unused_arguments(parser, applicable_arguments(args.task), args.task)
+
+    if args.task == "FCN_field" and args.out_dir == "data/synthetic_semantic_lines":
+        args.out_dir = "data/homo_matcher"
 
     custom_comps = [c.strip() for c in args.components.split(",")] if args.components else None
     cfg = {
@@ -1423,7 +1448,7 @@ def main() -> None:
             min_area_ratio=args.min_area_ratio,
             max_rotation_deg=args.max_rotation,
         )
-    elif args.task == "homo_matcher":
+    elif args.task == "FCN_field":
         component = factory.components[0]
         weight_kwargs = {"weight": args.weight} if args.weight else {}
         component.build_dataset(
@@ -1431,6 +1456,7 @@ def main() -> None:
             s3d_dir=args.s3d_dir,
             max_scenes=args.max_scenes,
             max_pairs=args.max_pairs,
+            num_workers=args.num_workers,
             **weight_kwargs,
         )
     else:
@@ -1449,7 +1475,7 @@ __all__ = [
     "LSDLineComponent",
     "Wireframe3DLineComponent",
     "Structured3DLineRegionComponent",
-    "HomoMatcherComponent",
+    "FCNFieldComponent",
     "DatasetGeneratorFactory",
     "UnifiedProceduralRoom",
     "render_indoor_view",

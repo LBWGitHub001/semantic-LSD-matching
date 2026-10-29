@@ -331,13 +331,13 @@ loader, use_region_ds = DatasetFactory.create(
 
 ## 附、DeepLSD 单应数据组件
 
-`DatasetGeneratorFactory` 注册了 `homo_matcher`。它不写 LSD 线段，只保存两张图的 RGB、深度，以及 DeepLSD 直出的距离场和角度场。
+`DatasetGeneratorFactory` 注册了 `FCN_field`。它不写 LSD 线段，只保存两张图的 RGB、深度，以及 DeepLSD 直出的距离场和角度场。已有样本仍放在 `data/homo_matcher`。
 
 ```bash
-python tools/build_homo_matcher_dataset.py --max-scenes 1 --max-pairs 4
+python generate_dataset.py --task FCN_field --max-scenes 1 --max-pairs 4 --out-dir data/homo_matcher
 ```
 
-模型、验证和直线端点图见 [`models/homo_matcher/README.md`](../models/homo_matcher/README.md)。
+模型、验证和直线端点图见 [`models/FCN_field/README.md`](../models/FCN_field/README.md)。
 
 ---
 

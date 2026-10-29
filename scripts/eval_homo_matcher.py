@@ -33,7 +33,7 @@ def main() -> None:
         split=args.split,
         out_dir=args.out_dir,
         num_vis=args.num_vis,
-        model_type="homo_matcher",
+        model_type="FCN_field",
     )
 
 

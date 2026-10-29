@@ -106,7 +106,7 @@ def worker_init_fn(worker_id: int) -> None:
     cv2.setNumThreads(0)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
                         choices=get_available_models(),
@@ -139,15 +139,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--geo-weight", type=float, default=0.2, help="semantic_line_matcher: adjacency geo weight")
     parser.add_argument("--adj-sigma", type=float, default=0.3, help="semantic_line_matcher: soft adjacency temperature")
     parser.add_argument("--line-sample-points", type=int, default=8, help="semantic_line_matcher: along-line sample count")
-    parser.add_argument("--cycle-weight", type=float, default=1.0, help="homo_matcher: weight of H12 H21 - I")
-    parser.add_argument("--depth-weight", type=float, default=1.0, help="homo_matcher: weight of the ridge depth loss")
+    parser.add_argument("--cycle-weight", type=float, default=1.0, help="FCN_field: weight of the velocity cycle")
+    parser.add_argument("--depth-weight", type=float, default=1.0, help="FCN_field: weight of the ridge depth loss")
     parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
     parser.add_argument("--data-ratio", "--data-fraction", dest="data_ratio", type=float, default=1.0, help="Fraction of training dataset to randomly sample (0.0 to 1.0, default: 1.0)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
     parser.add_argument("--no-pyramid", dest="use_pyramid", action="store_false", help="Disable multi-scale feature pyramid (use single-scale legacy backbone)")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    return parser.parse_args()
+    return parser.parse_args(), parser
+
+
+def train_applicable_arguments(model_type: str) -> set[str]:
+    """Destinations this training factory actually reads."""
+    from models import is_semantic_line_model, model_family
+
+    common = {
+        "model_type", "data_dir", "epochs", "lr", "weight_decay",
+        "d_model", "num_layers", "save_dir", "run_name", "label",
+        "no_timestamp", "device", "max_steps",
+    }
+    family = model_family(model_type)
+    if family == "homography":
+        return (common - {"d_model", "num_layers"}) | {
+            "line_sample_points", "cycle_weight", "depth_weight",
+        }
+    if family == "object" and is_semantic_line_model(model_type):
+        return common | {
+            "nhead", "grad_accum", "num_workers", "amp", "val_interval",
+            "save_interval", "save_last", "resume", "dustbin_weight",
+            "min_area_ratio", "data_ratio", "use_pyramid",
+            "region_weight", "line_weight", "sem_weight", "geo_weight",
+            "adj_sigma", "line_sample_points",
+        }
+    if family == "object":
+        return common | {
+            "nhead", "grad_accum", "num_workers", "amp", "val_interval",
+            "save_interval", "save_last", "resume", "dustbin_weight",
+            "motion_weight", "motion_margin", "min_area_ratio",
+            "data_ratio", "use_pyramid",
+        }
+    return common | {
+        "min_matches", "num_workers", "amp", "val_interval",
+        "save_interval", "save_last", "resume", "data_ratio",
+    }
 
 
 # ==============================================================================
@@ -1117,11 +1152,11 @@ def train_line_pipeline(args: argparse.Namespace) -> None:
 
 
 def train_homography_pipeline(args: argparse.Namespace) -> None:
-    """Train HomoMatcher on 5-channel pairs."""
+    """Train FCNField on 5-channel pairs."""
     from datasets.homo_matcher_dataset import HomoMatcherDataset, collate_homo_matcher
 
     data_dir = Path(args.data_dir or "data/homo_matcher")
-    base_save_dir = Path(args.save_dir or "checkpoints/homo_matcher")
+    base_save_dir = Path(args.save_dir or "checkpoints/FCN_field")
     start_time = datetime.now()
     start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
     run_name = args.run_name or f"{args.model_type}+{data_dir.name}+【{start_time_str}】"
@@ -1133,12 +1168,7 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
     val_ds = HomoMatcherDataset(data_dir, split="val", sample_points=args.line_sample_points)
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_homo_matcher, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_homo_matcher, num_workers=0)
-    model = build_model(
-        args.model_type,
-        d_model=args.d_model,
-        num_layers=args.num_layers,
-        nhead=args.nhead,
-    ).to(device)
+    model = build_model(args.model_type).to(device)
     loss_fn = build_loss(
         args.model_type,
         lambda1=args.cycle_weight,
@@ -1155,12 +1185,9 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
             "command": " ".join(sys.argv),
         },
         "model": {
-            "model_type": "homo_matcher",
+            "model_type": "FCN_field",
             "family": "homography",
-            "d_model": args.d_model,
-            "num_layers": args.num_layers,
-            "nhead": args.nhead,
-            "feat_dim": 64,
+            "feat_dim": model.feat_dim,
             "grid_size": model.grid_size,
         },
         "hyperparameters": {
@@ -1185,6 +1212,7 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
             out = loss_fn(pred, moved)
             optimizer.zero_grad(set_to_none=True)
             out["loss"].backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             total += float(out["loss"].detach())
             steps += 1
@@ -1237,7 +1265,10 @@ def _homography_validate(model, loss_fn, loader, device, max_steps) -> dict[str,
 
 
 def main() -> None:
-    args = parse_args()
+    from factory_args import warn_unused_arguments
+
+    args, parser = parse_args()
+    warn_unused_arguments(parser, train_applicable_arguments(args.model_type), args.model_type)
     family = model_family(args.model_type)
     if family == "object":
         train_object_pipeline(args)

@@ -1,6 +1,6 @@
 # 核心匹配网络模型技术详解 (Models Technical Documentation)
 
-本文档系统介绍项目内实现的匹配网络。单应网络 `homo_matcher` 的图文说明见 [`models/homo_matcher/README.md`](../models/homo_matcher/README.md)。
+本文档系统介绍项目内实现的匹配网络。稠密速度场 `FCN_field` 的图文说明见 [`models/FCN_field/README.md`](../models/FCN_field/README.md)。
 
 1. **`XFeatLineMatcher`**：多模态区域直线网络（当前推荐主力，多尺度金字塔 + 5D 几何 + 位移共识损失）
 2. **`XFeatObjectMatcher`**：物体级双向图匹配网络（"连连看"，跨视角宏观构件配对）
@@ -308,13 +308,13 @@ $$M(P_{\pi_0} \mathcal{L}_0, P_{\pi_1} \mathcal{L}_1) = P_{\pi_0} M(\mathcal{L}_
 
 ---
 
-## 五·补、`homo_matcher`
+## 五·补、`FCN_field`
 
-两张图各 5 个通道（灰度、距离场、\(\sin 2\theta\)、\(\cos 2\theta\)、亮带），网络输出互逆单应 \(H_{12}, H_{21}\)。损失是循环项 \(H_{12}H_{21}-I\) 加上距离场亮脊上的深度序列。直线不来自 CAD，也不再跑 LSD。
+两张图各 5 个通道。全卷积预测稠密速度 \((v_x,v_y)\)，方向和大小由这个向量得到。\(L_1\) 要求两个速度场互为反向，\(L_2\) 是亮脊上的点按速度移到另一张图后的深度序列。
 
-注册名：`homo_matcher`。家族：`homography`。
+注册名：`FCN_field`。家族：`homography`。数据目录仍是 `data/homo_matcher`。
 
-完整图示、参数和命令见 [`models/homo_matcher/README.md`](../models/homo_matcher/README.md)。
+完整图示、参数和命令见 [`models/FCN_field/README.md`](../models/FCN_field/README.md)。
 
 ---
 

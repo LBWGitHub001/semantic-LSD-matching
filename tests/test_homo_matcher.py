@@ -15,11 +15,11 @@ if str(ROOT) not in sys.path:
 
 from generate_dataset import DatasetGeneratorFactory
 from models import build_loss, build_model, model_family
-from models.homo_matcher.model import weighted_dlt
-from models.homo_matcher.ridge import extract_ridge_lines, pack_input
+from models.FCN_field.model import weighted_dlt
+from models.FCN_field.ridge import extract_ridge_lines, pack_input
 
 
-class TestHomoMatcher(unittest.TestCase):
+class TestFCNField(unittest.TestCase):
     def test_ridge_follows_distance_field(self) -> None:
         height, width = 80, 160
         distance = np.full((height, width), 5.0, dtype=np.float32)
@@ -51,13 +51,14 @@ class TestHomoMatcher(unittest.TestCase):
 
     def test_forward_and_loss_backward(self) -> None:
         torch.manual_seed(0)
-        model = build_model("homo_matcher", d_model=32, num_layers=1, nhead=4, grid_size=4, feat_dim=32)
-        loss_fn = build_loss("homo_matcher", lambda1=1.0, lambda2=1.0)
+        model = build_model("FCN_field", grid_size=4, feat_dim=32)
+        loss_fn = build_loss("FCN_field", lambda1=1.0, lambda2=1.0)
         image0 = torch.rand(2, 5, 64, 64)
         image1 = torch.rand(2, 5, 64, 64)
         pred = model(image0, image1)
-        self.assertEqual(tuple(pred["H12"].shape), (2, 3, 3))
-        self.assertTrue(torch.allclose(pred["H12"][:, 2, 2], torch.ones(2), atol=1e-4))
+        self.assertEqual(tuple(pred["velocity12"].shape), (2, 2, 64, 64))
+        self.assertEqual(tuple(pred["magnitude12"].shape), (2, 64, 64))
+        self.assertNotIn("H12", pred)
         ridges = torch.zeros(2, 2, 8, 2)
         ridges[..., 0] = torch.linspace(4, 50, 8)
         ridges[..., 1] = 20
@@ -69,12 +70,15 @@ class TestHomoMatcher(unittest.TestCase):
         }
         out = loss_fn(pred, batch)
         out["loss"].backward()
+        self.assertTrue(out["loss"].requires_grad)
+        self.assertEqual(tuple(pred["velocity12"].shape), image0.shape[:1] + (2,) + image0.shape[-2:])
+        self.assertIsNotNone(model.velocity_head.weight.grad)
         self.assertTrue(torch.isfinite(out["loss"]))
-        self.assertEqual(model_family("homo_matcher"), "homography")
+        self.assertEqual(model_family("FCN_field"), "homography")
 
     def test_dataset_factory_registration(self) -> None:
-        factory = DatasetGeneratorFactory.create(task="homo_matcher")
-        self.assertEqual([component.name for component in factory.components], ["homo_matcher"])
+        factory = DatasetGeneratorFactory.create(task="FCN_field")
+        self.assertEqual([component.name for component in factory.components], ["FCN_field"])
         from evaluation import EvaluatorFactory
 
         evaluator = EvaluatorFactory.create("homography")

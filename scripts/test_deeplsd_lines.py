@@ -21,9 +21,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from models.homo_matcher.draw import draw_ridge_lines
-from models.homo_matcher.fields import DEFAULT_WEIGHT, infer_fields, load_deeplsd
-from models.homo_matcher.ridge import extract_ridge_lines
+from models.FCN_field.draw import draw_ridge_lines
+from models.FCN_field.fields import DEFAULT_WEIGHT, infer_fields, load_deeplsd
+from models.FCN_field.ridge import extract_ridge_lines
 
 
 def _load_fields(rgb_path: Path, fields_path: Path | None, net, device) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

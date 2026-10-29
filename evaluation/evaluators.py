@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 import json
 from pathlib import Path
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -231,7 +232,7 @@ class HomographyEvaluator(BaseEvaluator):
         from models import build_loss
 
         del min_area_ratio
-        criterion = build_loss("homo_matcher")
+        criterion = build_loss("FCN_field")
         model.eval()
         totals = {"l1": 0.0, "l2": 0.0, "loss": 0.0}
         steps = 0
@@ -273,8 +274,8 @@ class HomographyEvaluator(BaseEvaluator):
     ) -> List[Path]:
         import cv2
         import numpy as np
-        from models.homo_matcher.draw import draw_ridge_lines
-        from models.homo_matcher.loss import apply_homography
+        from models.FCN_field.draw import draw_ridge_lines
+        from models.FCN_field.loss import warp_by_velocity
 
         del min_area_ratio, data_dir, use_region_ds
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -294,7 +295,7 @@ class HomographyEvaluator(BaseEvaluator):
                     warped_ends = endpoints
                 else:
                     endpoints = np.stack([kept[:, 0], kept[:, -1]], axis=1)
-                    warped = apply_homography(pred["H12"].float(), ridges.float())
+                    warped = warp_by_velocity(pred["velocity12"].float(), ridges.float())
                     warped_kept = warped[0, mask].detach().cpu().numpy()
                     warped_ends = np.stack([warped_kept[:, 0], warped_kept[:, -1]], axis=1)
                 left = draw_ridge_lines(batch["bgr0"][0].numpy(), endpoints)
@@ -369,6 +370,11 @@ def evaluate(
     print(f"  Min Area Ratio:    {min_area_ratio * 100:.0f}%")
     print(f"  Output Directory:  {p_out}")
     print("=" * 75 + "\n")
+
+    if model_info.get("family") == "homography" and any(
+        token == "--min-area-ratio" or token.startswith("--min-area-ratio=") for token in sys.argv[1:]
+    ):
+        print("[!] --min-area-ratio 对 FCN_field 不会执行，已忽略", flush=True)
 
     loader, use_region_ds = DatasetFactory.create(
         model_info=model_info,

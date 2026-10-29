@@ -50,7 +50,7 @@ __all__ = [
 ]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(description="Unified Evaluator for Line & Object Matchers")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to .pth checkpoint file or run directory (containing best_model.pth / last_model.pth / latest)")
@@ -70,11 +70,11 @@ def parse_args() -> argparse.Namespace:
                         help="Device to run evaluation on")
     parser.add_argument("--num-workers", type=int, default=2,
                         help="DataLoader worker count (default: 2)")
-    return parser.parse_args()
+    return parser.parse_args(), parser
 
 
 def main() -> None:
-    args = parse_args()
+    args, _parser = parse_args()
     evaluate(
         checkpoint=args.checkpoint,
         data_dir=args.data_dir,

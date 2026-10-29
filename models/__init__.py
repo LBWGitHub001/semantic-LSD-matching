@@ -40,9 +40,9 @@ from models.semantic_line_matcher import (
 )
 
 # 5. DeepLSD field homography
-from models.homo_matcher import (
-    HomoMatcher,
-    HomoMatcherLoss,
+from models.FCN_field import (
+    FCNField,
+    FCNFieldLoss,
 )
 
 MODEL_REGISTRY = {
@@ -63,7 +63,8 @@ MODEL_REGISTRY = {
     # Model 3: Baseline Line-Transformer Matcher
     "line_transformer": LineMatcherNet,
     "linefeat": LineMatcherNet,
-    "homo_matcher": HomoMatcher,
+    "FCN_field": FCNField,
+    "fcn_field": FCNField,
 }
 
 LOSS_REGISTRY = {
@@ -79,7 +80,8 @@ LOSS_REGISTRY = {
     "mask": LineMatchingLoss,
     "line_transformer": LineMatchingLoss,
     "linefeat": LineMatchingLoss,
-    "homo_matcher": HomoMatcherLoss,
+    "FCN_field": FCNFieldLoss,
+    "fcn_field": FCNFieldLoss,
 }
 
 CANONICAL_MODEL_NAMES = {
@@ -95,20 +97,22 @@ CANONICAL_MODEL_NAMES = {
     "mask": "mask_line",
     "line_transformer": "line_transformer",
     "linefeat": "line_transformer",
-    "homo_matcher": "homo_matcher",
+    "FCN_field": "FCN_field",
+    "fcn_field": "FCN_field",
 }
 
 OBJECT_FAMILY_MODELS = {"xfeat_object", "xfeat_line_matcher", "semantic_line_matcher"}
 LINE_FEATURE_MODELS = {"xfeat_line_matcher", "semantic_line_matcher"}
-HOMOGRAPHY_MODELS = {"homo_matcher"}
+HOMOGRAPHY_MODELS = {"FCN_field"}
 
 
 def canonical_model_name(model_name: str) -> str:
     """Resolve any registered alias to its canonical model name."""
-    name = (model_name or "").lower()
-    if name not in CANONICAL_MODEL_NAMES:
-        raise ValueError(f"Unknown model name '{model_name}'. Available: {list(MODEL_REGISTRY.keys())}")
-    return CANONICAL_MODEL_NAMES[name]
+    raw = model_name or ""
+    for candidate in (raw, raw.lower()):
+        if candidate in CANONICAL_MODEL_NAMES:
+            return CANONICAL_MODEL_NAMES[candidate]
+    raise ValueError(f"Unknown model name '{model_name}'. Available: {list(MODEL_REGISTRY.keys())}")
 
 
 def model_family(model_name: str) -> str:
@@ -138,20 +142,16 @@ def is_homography_model(model_name: str) -> bool:
 
 def build_model(model_name: str, **kwargs) -> nn.Module:
     """Builds a model instance by name."""
-    name = model_name.lower()
-    if name not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model name '{model_name}'. Available: {list(MODEL_REGISTRY.keys())}")
-    model_cls = MODEL_REGISTRY[name]
-    return model_cls(**kwargs)
+    name = canonical_model_name(model_name)
+    return MODEL_REGISTRY[name](**kwargs)
 
 
 def build_loss(model_name: str, **kwargs) -> nn.Module:
     """Builds the corresponding loss function for a model."""
-    name = model_name.lower()
+    name = canonical_model_name(model_name)
     if name not in LOSS_REGISTRY:
         raise ValueError(f"Unknown loss for model '{model_name}'. Available: {list(LOSS_REGISTRY.keys())}")
-    loss_cls = LOSS_REGISTRY[name]
-    return loss_cls(**kwargs)
+    return LOSS_REGISTRY[name](**kwargs)
 
 
 def get_available_models() -> list[str]:
@@ -184,6 +184,6 @@ __all__ = [
     "LineMatchPipeline",
     "SemanticLineMatcher",
     "SemanticLineMatchingLoss",
-    "HomoMatcher",
-    "HomoMatcherLoss",
+    "FCNField",
+    "FCNFieldLoss",
 ]

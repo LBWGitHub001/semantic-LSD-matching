@@ -37,23 +37,15 @@ class ModelFactory:
             "grid_size": 16,
         }
 
-        if any(k.startswith("coord_head.") for k in state_dict):
+        if any(k.startswith("velocity_head.") for k in state_dict):
             info["family"] = "homography"
-            info["model_type"] = "homo_matcher"
+            info["model_type"] = "FCN_field"
             info["use_pyramid"] = False
             info["with_geometry"] = False
-            if "proj.weight" in state_dict:
-                info["d_model"] = int(state_dict["proj.weight"].shape[0])
-                info["feat_dim"] = int(state_dict["proj.weight"].shape[1])
-            layer_indices = {
-                int(key.split("cross_attn.")[1].split(".")[0])
-                for key in state_dict
-                if key.startswith("cross_attn.")
-            }
-            if layer_indices:
-                info["num_layers"] = max(layer_indices) + 1
+            if "fcn.down1.0.weight" in state_dict:
+                info["feat_dim"] = int(state_dict["fcn.down1.0.weight"].shape[0])
             if config and "model" in config:
-                for key in ("d_model", "num_layers", "nhead", "feat_dim", "grid_size"):
+                for key in ("feat_dim", "grid_size"):
                     if key in config["model"]:
                         info[key] = config["model"][key]
             return info

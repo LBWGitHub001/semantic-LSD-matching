@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from models.homo_matcher.ridge import extract_ridge_lines, pack_input, resize_fields
+from models.FCN_field.ridge import extract_ridge_lines, pack_input, resize_fields
 
 TARGET_HEIGHT = 384
 TARGET_WIDTH = 640
