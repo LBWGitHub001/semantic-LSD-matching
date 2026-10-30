@@ -27,8 +27,11 @@ Usage:
   # 5. Build dataset directly from Structured3D with Ground-Truth 3D Wireframe Lines:
   python generate_dataset.py --task structured3d_lines --s3d-dir Structured3D_perspective_full_00/Structured3D --out-dir data/structured3d_gt_lines --max-scenes 50
 
-  # 6. DeepLSD distance/angle pairs for FCN_field:
-  python generate_dataset.py --task FCN_field --max-scenes 1 --max-pairs 4 --out-dir data/homo_matcher
+  # 7. Synthetic shapes with noisy backgrounds for descriptor training:
+  python generate_dataset.py --task descriptor_shapes --num-scenes 20 --views-per-scene 4 --out-dir data/synthetic_descriptors
+
+  # 8. Planar warps of letters A–Z:
+  python generate_dataset.py --task planar_letters --num-scenes 26 --views-per-scene 4 --out-dir data/planar_letters
 """
 
 from __future__ import annotations
@@ -1099,6 +1102,38 @@ class FCNFieldComponent(BaseDatasetComponent):
         return build_homo_matcher_dataset(out_dir=out_dir, s3d_dir=s3d_dir, **kwargs)
 
 
+class DescriptorShapesComponent(BaseDatasetComponent):
+    """Synthetic 3D shapes, noisy backgrounds, and cross-view corner matches."""
+
+    name = "descriptor_shapes"
+
+    def build_dataset(self, out_dir: Path | str, **kwargs: Any) -> dict[str, Any]:
+        from datasets.synthetic_shapes import build_descriptor_shapes_dataset
+
+        return build_descriptor_shapes_dataset(
+            out_dir=out_dir,
+            num_scenes=int(kwargs.get("num_scenes", 20)),
+            views_per_scene=int(kwargs.get("views_per_scene", 4)),
+            seed=int(kwargs.get("seed", 42)),
+        )
+
+
+class PlanarLettersComponent(BaseDatasetComponent):
+    """Letters A–Z warped by rotation, translation, scale, and a little perspective."""
+
+    name = "planar_letters"
+
+    def build_dataset(self, out_dir: Path | str, **kwargs: Any) -> dict[str, Any]:
+        from datasets.planar_letters import build_planar_letters_dataset
+
+        return build_planar_letters_dataset(
+            out_dir=out_dir,
+            num_scenes=int(kwargs.get("num_scenes", 26)),
+            views_per_scene=int(kwargs.get("views_per_scene", 4)),
+            seed=int(kwargs.get("seed", 42)),
+        )
+
+
 # ==============================================================================
 # 7. Dataset Generator Factory (工厂类核心)
 # ==============================================================================
@@ -1121,6 +1156,8 @@ class DatasetGeneratorFactory:
         "structured3d_lines": Structured3DLineRegionComponent,
         "structured3d": Structured3DLineRegionComponent,
         "FCN_field": FCNFieldComponent,
+        "descriptor_shapes": DescriptorShapesComponent,
+        "planar_letters": PlanarLettersComponent,
     }
 
     def __init__(self, components: List[BaseDatasetComponent], config: Dict[str, Any]) -> None:
@@ -1159,6 +1196,10 @@ class DatasetGeneratorFactory:
             selected_names = ["structured3d_lines"]
         elif task == "FCN_field":
             selected_names = ["FCN_field"]
+        elif task == "descriptor_shapes":
+            selected_names = ["descriptor_shapes"]
+        elif task == "planar_letters":
+            selected_names = ["planar_letters"]
         elif task == "semantic_line" or task == "all":
             selected_names = ["object", "lsd_line", "wireframe_3d"]
         elif task == "object":
@@ -1379,7 +1420,7 @@ class DatasetGeneratorFactory:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified Multi-Modal Dataset Generator Factory with Pluggable Components")
     parser.add_argument("--task", type=str, default="semantic_line",
-                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "FCN_field"],
+                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "FCN_field", "descriptor_shapes", "planar_letters"],
                         help="Generator task preset")
     parser.add_argument("--components", type=str, default=None,
                         help="Comma-separated custom components (e.g., 'object,lsd_line')")
@@ -1408,6 +1449,8 @@ def applicable_arguments(task: str) -> set[str]:
         return common | {"s3d_dir", "max_scenes", "num_workers", "min_matches", "min_area_ratio", "max_rotation"}
     if task == "FCN_field":
         return common | {"s3d_dir", "max_scenes", "num_workers", "max_pairs", "weight"}
+    if task in ("descriptor_shapes", "planar_letters"):
+        return common | {"num_scenes", "views_per_scene", "seed"}
     return common | {"num_scenes", "views_per_scene", "min_line_len", "random_colors", "seed"}
 
 
@@ -1420,6 +1463,10 @@ def main() -> None:
 
     if args.task == "FCN_field" and args.out_dir == "data/synthetic_semantic_lines":
         args.out_dir = "data/homo_matcher"
+    if args.task == "descriptor_shapes" and args.out_dir == "data/synthetic_semantic_lines":
+        args.out_dir = "data/synthetic_descriptors"
+    if args.task == "planar_letters" and args.out_dir == "data/synthetic_semantic_lines":
+        args.out_dir = "data/planar_letters"
 
     custom_comps = [c.strip() for c in args.components.split(",")] if args.components else None
     cfg = {
@@ -1459,6 +1506,22 @@ def main() -> None:
             num_workers=args.num_workers,
             **weight_kwargs,
         )
+    elif args.task == "descriptor_shapes":
+        component = factory.components[0]
+        component.build_dataset(
+            out_dir=args.out_dir,
+            num_scenes=args.num_scenes,
+            views_per_scene=args.views_per_scene,
+            seed=args.seed,
+        )
+    elif args.task == "planar_letters":
+        component = factory.components[0]
+        component.build_dataset(
+            out_dir=args.out_dir,
+            num_scenes=args.num_scenes,
+            views_per_scene=args.views_per_scene,
+            seed=args.seed,
+        )
     else:
         factory.generate(
             out_dir=args.out_dir,
@@ -1476,6 +1539,8 @@ __all__ = [
     "Wireframe3DLineComponent",
     "Structured3DLineRegionComponent",
     "FCNFieldComponent",
+    "DescriptorShapesComponent",
+    "PlanarLettersComponent",
     "DatasetGeneratorFactory",
     "UnifiedProceduralRoom",
     "render_indoor_view",

@@ -127,8 +127,11 @@ class FCNField(nn.Module):
     def forward(self, image0: torch.Tensor, image1: torch.Tensor) -> dict[str, torch.Tensor]:
         feat0 = self.fcn(image0)
         feat1 = self.fcn(image1)
+        # 同一套权重，特征顺序对调，得到相反方向的速度。
+        # velocity12[b, :, y, x] = (vx, vy)：图1像素 (x, y) 要往图2挪多少。
         velocity12 = self._velocity(feat0, feat1)
         velocity21 = self._velocity(feat1, feat0)
+        # 大小和方向由速度算出来，没有单独的预测头。
         magnitude12 = torch.linalg.vector_norm(velocity12, dim=1)
         magnitude21 = torch.linalg.vector_norm(velocity21, dim=1)
         return {

@@ -141,6 +141,7 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--line-sample-points", type=int, default=8, help="semantic_line_matcher: along-line sample count")
     parser.add_argument("--cycle-weight", type=float, default=1.0, help="FCN_field: weight of the velocity cycle")
     parser.add_argument("--depth-weight", type=float, default=1.0, help="FCN_field: weight of the ridge depth loss")
+    parser.add_argument("--flow-weight", type=float, default=1.0, help="FCN_field: weight of the geometric velocity loss")
     parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
     parser.add_argument("--data-ratio", "--data-fraction", dest="data_ratio", type=float, default=1.0, help="Fraction of training dataset to randomly sample (0.0 to 1.0, default: 1.0)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
@@ -161,9 +162,9 @@ def train_applicable_arguments(model_type: str) -> set[str]:
     }
     family = model_family(model_type)
     if family == "homography":
-        return (common - {"d_model", "num_layers"}) | {
-            "line_sample_points", "cycle_weight", "depth_weight",
-        }
+        return (common - {"d_model", "num_layers"}) | {"line_sample_points"}
+    if family == "point":
+        return common - {"d_model", "num_layers"}
     if family == "object" and is_semantic_line_model(model_type):
         return common | {
             "nhead", "grad_accum", "num_workers", "amp", "val_interval",
@@ -1169,11 +1170,7 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_homo_matcher, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_homo_matcher, num_workers=0)
     model = build_model(args.model_type).to(device)
-    loss_fn = build_loss(
-        args.model_type,
-        lambda1=args.cycle_weight,
-        lambda2=args.depth_weight,
-    ).to(device)
+    loss_fn = build_loss(args.model_type).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
     config_path = save_dir / "config.json"
     config_data = {
@@ -1193,8 +1190,7 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
         "hyperparameters": {
             "epochs": args.epochs,
             "learning_rate": lr,
-            "cycle_weight": args.cycle_weight,
-            "depth_weight": args.depth_weight,
+            "loss": "symmetry",
         },
     }
     save_config_json(config_path, config_data)
@@ -1204,7 +1200,17 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
         model.train()
         total = 0.0
         steps = 0
-        for batch in train_loader:
+        train_total = len(train_loader) if args.max_steps is None else min(len(train_loader), args.max_steps)
+        pbar = tqdm(
+            train_loader,
+            total=train_total,
+            desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]",
+            bar_format=TQDM_BAR_FORMAT,
+            dynamic_ncols=True,
+            leave=False,
+            unit="pair",
+        )
+        for batch in pbar:
             if args.max_steps is not None and steps >= args.max_steps:
                 break
             moved = _batch_to_device(batch, device)
@@ -1214,13 +1220,15 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
             out["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            total += float(out["loss"].detach())
+            step_loss = float(out["loss"].detach())
+            total += step_loss
             steps += 1
+            pbar.set_postfix_str(f"symmetry={step_loss:.4f} avg={total / steps:.4f}")
         val_metrics = _homography_validate(model, loss_fn, val_loader, device, args.max_steps)
-        score = val_metrics["l1"] + val_metrics["l2"]
+        score = val_metrics["loss"]
         print(
             f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
-            f"  val L1 {val_metrics['l1']:.4f}  L2 {val_metrics['l2']:.4f}"
+            f"  val symmetry {val_metrics['symmetry']:.4f}"
         )
         ckpt = {
             "epoch": epoch,
@@ -1247,19 +1255,29 @@ def _batch_to_device(batch: dict, device: torch.device) -> dict:
 
 def _homography_validate(model, loss_fn, loader, device, max_steps) -> dict[str, float]:
     model.eval()
-    totals = {"l1": 0.0, "l2": 0.0, "loss": 0.0}
+    totals = {"symmetry": 0.0, "loss": 0.0}
     steps = 0
+    val_total = len(loader) if max_steps is None else min(len(loader), max_steps)
+    pbar = tqdm(
+        loader,
+        total=val_total,
+        desc="Val",
+        bar_format=TQDM_BAR_FORMAT,
+        dynamic_ncols=True,
+        leave=False,
+        unit="pair",
+    )
     with torch.inference_mode():
-        for batch in loader:
+        for batch in pbar:
             if max_steps is not None and steps >= max_steps:
                 break
             moved = _batch_to_device(batch, device)
             pred = model(moved["image0"], moved["image1"])
             out = loss_fn(pred, moved)
-            totals["l1"] += float(out["l1"])
-            totals["l2"] += float(out["l2"])
+            totals["symmetry"] += float(out["symmetry"])
             totals["loss"] += float(out["loss"])
             steps += 1
+            pbar.set_postfix_str(f"symmetry={totals['symmetry'] / steps:.4f}")
     denom = max(steps, 1)
     return {key: value / denom for key, value in totals.items()} | {"total_pairs": steps}
 
@@ -1274,6 +1292,8 @@ def main() -> None:
         train_object_pipeline(args)
     elif family == "homography":
         train_homography_pipeline(args)
+    elif family == "point":
+        raise SystemExit("SuperPoint 已注册到模型工厂。训练循环还没有接上。")
     else:
         train_line_pipeline(args)
 

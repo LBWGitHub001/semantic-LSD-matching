@@ -47,9 +47,9 @@ class TestUnusedFactoryArguments(unittest.TestCase):
             parser,
             train_applicable_arguments("FCN_field"),
             "FCN_field",
-            ["--model", "FCN_field", "--dustbin-weight", "0.3", "--cycle-weight", "1"],
+            ["--model", "FCN_field", "--dustbin-weight", "0.3", "--cycle-weight", "1", "--flow-weight", "1"],
         )
-        self.assertEqual(ignored, ["--dustbin-weight"])
+        self.assertEqual(ignored, ["--dustbin-weight", "--cycle-weight", "--flow-weight"])
 
 
 if __name__ == "__main__":

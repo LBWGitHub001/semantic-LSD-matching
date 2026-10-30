@@ -19,6 +19,11 @@ from models.FCN_field.model import weighted_dlt
 from models.FCN_field.ridge import extract_ridge_lines, pack_input
 
 
+def _pinhole(batch: int) -> torch.Tensor:
+    intrinsics = torch.tensor([[100.0, 0.0, 32.0], [0.0, 100.0, 32.0], [0.0, 0.0, 1.0]])
+    return intrinsics.unsqueeze(0).expand(batch, -1, -1).contiguous()
+
+
 class TestFCNField(unittest.TestCase):
     def test_ridge_follows_distance_field(self) -> None:
         height, width = 80, 160
@@ -66,15 +71,46 @@ class TestFCNField(unittest.TestCase):
             "ridges0": ridges,
             "ridge_mask": torch.tensor([[True, False], [True, True]]),
             "depth0": torch.ones(2, 1, 64, 64),
-            "depth1": torch.ones(2, 1, 64, 64) * 2,
+            "depth1": torch.ones(2, 1, 64, 64),
+            "K0": _pinhole(2),
+            "K1": _pinhole(2),
+            "w2c0": torch.eye(4).unsqueeze(0).expand(2, -1, -1).contiguous(),
+            "w2c1": torch.eye(4).unsqueeze(0).expand(2, -1, -1).contiguous(),
         }
         out = loss_fn(pred, batch)
         out["loss"].backward()
+        self.assertIn("symmetry", out)
         self.assertTrue(out["loss"].requires_grad)
         self.assertEqual(tuple(pred["velocity12"].shape), image0.shape[:1] + (2,) + image0.shape[-2:])
         self.assertIsNotNone(model.velocity_head.weight.grad)
         self.assertTrue(torch.isfinite(out["loss"]))
         self.assertEqual(model_family("FCN_field"), "homography")
+
+    def test_symmetry_is_zero_for_inverse_fields(self) -> None:
+        from models.FCN_field.loss import FCNFieldLoss
+
+        loss_fn = FCNFieldLoss()
+        forward = torch.zeros(1, 2, 32, 32)
+        forward[:, 0] = 3.0
+        backward = -forward
+        inverse = loss_fn.symmetry_loss(forward, backward)
+        self.assertLess(float(inverse), 1e-4)
+        broken = loss_fn.symmetry_loss(forward, torch.zeros_like(forward))
+        self.assertGreater(float(broken), 1.0)
+
+    def test_geometric_flow_shifts_with_baseline(self) -> None:
+        from models.FCN_field.loss import geometric_flow
+
+        depth = torch.full((1, 1, 64, 64), 2.0)
+        intrinsics = _pinhole(1)
+        source = torch.eye(4).unsqueeze(0)
+        destination = torch.eye(4).unsqueeze(0).clone()
+        destination[0, 0, 3] = -0.5
+        flow, valid = geometric_flow(depth, depth, intrinsics, intrinsics, source, destination)
+        self.assertLess(float(flow[0, 0, 32, 32]), -10.0)
+        self.assertTrue(bool(valid[0, 0, 32, 32]))
+        same, _ = geometric_flow(depth, depth, intrinsics, intrinsics, source, source)
+        self.assertLess(float(same[0, :, 32, 32].abs().max()), 1e-3)
 
     def test_dataset_factory_registration(self) -> None:
         factory = DatasetGeneratorFactory.create(task="FCN_field")

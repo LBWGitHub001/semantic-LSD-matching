@@ -197,6 +197,20 @@ class Camera:
             scale=scale,
         )
 
+    def for_image_size(self, width: int, height: int) -> "Camera":
+        """Same pose and field of view, with intrinsics rebuilt for another image size."""
+        return Camera(
+            position=np.array(self.position, copy=True),
+            look=np.array(self.look, copy=True),
+            up=np.array(self.up, copy=True),
+            right=np.array(self.right, copy=True),
+            xfov=float(self.xfov),
+            yfov=float(self.yfov),
+            width=int(width),
+            height=int(height),
+            scale=float(self.scale),
+        )
+
     def world_to_cam(self, pts_3d_world: np.ndarray) -> np.ndarray:
         """Transform 3D world points (N, 3) to camera frame (N, 3)."""
         pts = np.asarray(pts_3d_world, dtype=np.float64)

@@ -329,15 +329,15 @@ loader, use_region_ds = DatasetFactory.create(
 
 ![Dual Pair Visualization](images/eval_dual_pair_vis.jpg)
 
-## 附、DeepLSD 单应数据组件
+## 附、FCN_field 数据
 
-`DatasetGeneratorFactory` 注册了 `FCN_field`。它不写 LSD 线段，只保存两张图的 RGB、深度，以及 DeepLSD 直出的距离场和角度场。已有样本仍放在 `data/homo_matcher`。
+`DatasetGeneratorFactory` 的任务名是 `FCN_field`。它保存两张图的 RGB、深度，以及 DeepLSD 的距离场和角度场。内外参不写进样本，训练时按场景名回到原始 `camera_pose.txt`。已有样本仍放在 `data/homo_matcher`。
 
 ```bash
 python generate_dataset.py --task FCN_field --max-scenes 1 --max-pairs 4 --out-dir data/homo_matcher
 ```
 
-模型、验证和直线端点图见 [`models/FCN_field/README.md`](../models/FCN_field/README.md)。
+模型、速度场监督和配图见 [`docs/FCN_field.md`](FCN_field.md)。
 
 ---
 

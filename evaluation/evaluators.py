@@ -220,7 +220,7 @@ class LineMatchingEvaluator(BaseEvaluator):
 
 
 class HomographyEvaluator(BaseEvaluator):
-    """Reports the cycle loss and the ridge depth loss, and draws warped ridges."""
+    """Reports the symmetry loss and draws ridges moved by v12."""
 
     def evaluate(
         self,
@@ -234,15 +234,14 @@ class HomographyEvaluator(BaseEvaluator):
         del min_area_ratio
         criterion = build_loss("FCN_field")
         model.eval()
-        totals = {"l1": 0.0, "l2": 0.0, "loss": 0.0}
+        totals = {"symmetry": 0.0, "loss": 0.0}
         steps = 0
         with torch.inference_mode():
             for batch in loader:
                 moved = {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
                 pred = model(moved["image0"], moved["image1"])
                 out = criterion(pred, moved)
-                totals["l1"] += float(out["l1"])
-                totals["l2"] += float(out["l2"])
+                totals["symmetry"] += float(out["symmetry"])
                 totals["loss"] += float(out["loss"])
                 steps += 1
         denom = max(steps, 1)
@@ -393,8 +392,7 @@ def evaluate(
     print("---------------------------------------------------------------------------")
     if model_info.get("family") == "homography":
         print(f"HOMOGRAPHY EVALUATION ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
-        print(f"  L1 cycle           : {metrics['l1']:.4f}")
-        print(f"  L2 depth profiles  : {metrics['l2']:.4f}")
+        print(f"  Symmetry T12/T21   : {metrics['symmetry']:.4f}")
         print(f"  Total loss         : {metrics['loss']:.4f}")
     else:
         print(f"BENCHMARK EVALUATION RESULTS ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
@@ -441,8 +439,7 @@ def evaluate(
         if model_info.get("family") == "homography":
             f.write("| 评测指标 | 结果数值 |\n")
             f.write("| :--- | :---: |\n")
-            f.write(f"| **L1 cycle** | **{metrics['l1']:.4f}** |\n")
-            f.write(f"| **L2 depth** | **{metrics['l2']:.4f}** |\n")
+            f.write(f"| **Symmetry T12/T21** | **{metrics['symmetry']:.4f}** |\n")
             f.write(f"| **Total** | **{metrics['loss']:.4f}** |\n\n")
         else:
             f.write("| 评测指标 | 结果数值 | 说明 |\n")

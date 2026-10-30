@@ -45,6 +45,12 @@ from models.FCN_field import (
     FCNFieldLoss,
 )
 
+# 6. SuperPoint interest points and descriptors
+from models.superpoint import (
+    SuperPoint,
+    SuperPointLoss,
+)
+
 MODEL_REGISTRY = {
     # Model 1: Object Bipartite Matchers ("连连看")
     "xfeat_object": XFeatObjectMatcher,
@@ -65,6 +71,8 @@ MODEL_REGISTRY = {
     "linefeat": LineMatcherNet,
     "FCN_field": FCNField,
     "fcn_field": FCNField,
+    "SuperPoint": SuperPoint,
+    "superpoint": SuperPoint,
 }
 
 LOSS_REGISTRY = {
@@ -82,6 +90,8 @@ LOSS_REGISTRY = {
     "linefeat": LineMatchingLoss,
     "FCN_field": FCNFieldLoss,
     "fcn_field": FCNFieldLoss,
+    "SuperPoint": SuperPointLoss,
+    "superpoint": SuperPointLoss,
 }
 
 CANONICAL_MODEL_NAMES = {
@@ -99,11 +109,14 @@ CANONICAL_MODEL_NAMES = {
     "linefeat": "line_transformer",
     "FCN_field": "FCN_field",
     "fcn_field": "FCN_field",
+    "SuperPoint": "SuperPoint",
+    "superpoint": "SuperPoint",
 }
 
 OBJECT_FAMILY_MODELS = {"xfeat_object", "xfeat_line_matcher", "semantic_line_matcher"}
 LINE_FEATURE_MODELS = {"xfeat_line_matcher", "semantic_line_matcher"}
 HOMOGRAPHY_MODELS = {"FCN_field"}
+POINT_MODELS = {"SuperPoint"}
 
 
 def canonical_model_name(model_name: str) -> str:
@@ -116,10 +129,12 @@ def canonical_model_name(model_name: str) -> str:
 
 
 def model_family(model_name: str) -> str:
-    """Return 'object', 'homography', or 'line'."""
+    """Return 'object', 'homography', 'point', or 'line'."""
     name = canonical_model_name(model_name)
     if name in HOMOGRAPHY_MODELS:
         return "homography"
+    if name in POINT_MODELS:
+        return "point"
     if name in OBJECT_FAMILY_MODELS:
         return "object"
     return "line"
@@ -186,4 +201,6 @@ __all__ = [
     "SemanticLineMatchingLoss",
     "FCNField",
     "FCNFieldLoss",
+    "SuperPoint",
+    "SuperPointLoss",
 ]

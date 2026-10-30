@@ -6,17 +6,15 @@
 |------|------|
 | 注册名 | `FCN_field` |
 | 包路径 | `models/FCN_field/` |
-| 损失 | `FCNFieldLoss`，\(\lambda_1 L_1+\lambda_2 L_2\) |
+| 损失 | 目前只有 `symmetry_loss`：\(T_{12}\) 与 \(T_{21}\) 互逆 |
 | 家族 | `homography` |
 | 数据目录 | 仍是 `data/homo_matcher`，不用重新生成 |
 
-数据侧索引见 [`docs/homo_matcher.md`](../../docs/homo_matcher.md)。
+数据侧索引见 [`docs/FCN_field.md`](../../docs/FCN_field.md)。
 
 ## 数据流
 
-![从五通道到损失](../../docs/images/homo_matcher/flow.jpg)
-
-共享 FCN 把特征上采样回原图大小。两侧特征拼在一起，预测两张速度图。
+共享 FCN 把特征上采样回原图大小。两侧特征拼在一起，预测 \(v_{12}\)；对调后再预测 \(v_{21}\)。
 
 ## 五个通道
 
@@ -30,24 +28,14 @@
 
 ## 损失
 
-\(L_1\)：两个速度场互为反向。从一点走出 \(v_{12}\)，再走 \(v_{21}\)，应当回到原点。反方向同样要求。
+现在只训练 `symmetry_loss`。速度场定义两张图之间的映射：
 
-\(L_2\)：距离场亮脊上的深度序列，用 \(v_{12}\) 把采样点移到图 2，各自归一化后做 L2。
+\[
+T_{12}(x)=x+v_{12}(x),\qquad T_{21}(x)=x+v_{21}(x)
+\]
 
-![亮脊端点画在原图上](../../docs/images/homo_matcher/ridges.jpg)
-
-![一条亮脊和两条深度序列](../../docs/images/homo_matcher/ridges_l2.jpg)
-
-总损失 \(\lambda_1 L_1+\lambda_2 L_2\)。
-
-## 参数
-
-| 参数 | 默认 | 含义 |
-|------|------|------|
-| `--cycle-weight` | 1 | \(\lambda_1\) |
-| `--depth-weight` | 1 | \(\lambda_2\) |
-| `--line-sample-points` | 8 | 每条脊上的深度采样数 |
+互逆就是 \(T_{21}(T_{12}(x))=x\)，并且 \(T_{12}(T_{21}(x))=x\)。每个像素都参与，两段位移相加后平方再求平均。落到画面外的像素不计入。
 
 ```bash
-python train.py --model FCN_field --data-dir data/homo_matcher --cycle-weight 1 --depth-weight 1
+python train.py --model FCN_field --data-dir data/homo_matcher
 ```
