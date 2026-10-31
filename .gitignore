@@ -29,5 +29,9 @@ outputs/
 # OS
 .DS_Store
 
-# Vendored official repos (clone locally; see third_party/README.md)
+# Vendored official repos and research references
 third_party/accelerated_features/
+third_party/DeepLSD/
+third_party/GlueStick/
+third_party/*.pdf
+*.pdf

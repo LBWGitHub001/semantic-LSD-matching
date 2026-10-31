@@ -30,6 +30,31 @@ def _clean_fields(distance: np.ndarray, angle: np.ndarray) -> tuple[np.ndarray, 
     return distance, angle
 
 
+def transform_distance_field(
+    distance: np.ndarray,
+    max_dist: float = 5.0,
+    invert: bool = True,
+) -> np.ndarray:
+    """Transform physical distance field x into normalized log field in [0, 1].
+
+    Formula:
+        y = -log(x + 1)
+        Min-Max normalization to [0, 1] with y_min = -log(max_dist + 1), y_max = 0:
+        y_norm = 1.0 - log(x + 1) / log(max_dist + 1)  (when invert=True)
+
+    Mapping (when max_dist=5.0, invert=True):
+        x = 0.0 (on line)    -> 1.0 (peak / bright ridge)
+        x = 1.0 (1px away)   -> ~0.6131
+        x = 5.0 (background) -> 0.0 (valley / dark background)
+    """
+    x = np.clip(np.nan_to_num(distance, nan=max_dist), 0.0, max_dist).astype(np.float32)
+    log_denom = float(np.log(max_dist + 1.0))
+    norm = 1.0 - np.log(x + 1.0) / log_denom
+    if not invert:
+        norm = 1.0 - norm
+    return np.clip(norm, 0.0, 1.0).astype(np.float32)
+
+
 def infer_fields_batch(net, bgrs: list[np.ndarray], device) -> list[tuple[np.ndarray, np.ndarray]]:
     """Run the distance and angle heads on a batch. OOM splits the batch."""
     import cv2

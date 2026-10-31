@@ -37,6 +37,13 @@ class ModelFactory:
             "grid_size": 16,
         }
 
+        if any(k.startswith("convDb.") or k.startswith("convDa.") for k in state_dict):
+            info["family"] = "point"
+            info["model_type"] = "SuperPoint"
+            if "convDb.weight" in state_dict:
+                info["descriptor_dim"] = int(state_dict["convDb.weight"].shape[0])
+            return info
+
         if any(k.startswith("velocity_head.") for k in state_dict):
             info["family"] = "homography"
             info["model_type"] = "FCN_field"
@@ -193,7 +200,9 @@ class ModelFactory:
             num_layers=info["num_layers"],
             nhead=info["nhead"],
         )
-        if info.get("family") == "homography":
+        if info.get("family") == "point":
+            model_kwargs["descriptor_dim"] = info.get("descriptor_dim", 256)
+        elif info.get("family") == "homography":
             model_kwargs["feat_dim"] = info.get("feat_dim", 64)
             model_kwargs["grid_size"] = info.get("grid_size", 16)
         elif info.get("family") == "object":

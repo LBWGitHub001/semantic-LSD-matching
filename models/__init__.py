@@ -49,6 +49,7 @@ from models.FCN_field import (
 from models.superpoint import (
     SuperPoint,
     SuperPointLoss,
+    SuperPointLineLoss,
 )
 
 MODEL_REGISTRY = {
@@ -203,4 +204,5 @@ __all__ = [
     "FCNFieldLoss",
     "SuperPoint",
     "SuperPointLoss",
+    "SuperPointLineLoss",
 ]

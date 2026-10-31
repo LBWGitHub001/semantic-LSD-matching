@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from datasets.homo_matcher_dataset import TARGET_HEIGHT, TARGET_WIDTH
-from models.FCN_field.fields import DEFAULT_WEIGHT, infer_fields_batch, load_deeplsd
+from models.FCN_field.fields import DEFAULT_WEIGHT, infer_fields_batch, load_deeplsd, transform_distance_field
 from models.FCN_field.ridge import resize_fields
 
 _PAIR_FILES = (
@@ -67,8 +67,10 @@ def _write_pair(destination: Path, record: dict[str, Any], left, right, image_he
     cv2.imwrite(str(pair_dir / "image1.png"), bgr1)
     np.save(pair_dir / "depth0.npy", depth0)
     np.save(pair_dir / "depth1.npy", depth1)
-    np.savez_compressed(pair_dir / "fields0.npz", df=df0, angle=angle0)
-    np.savez_compressed(pair_dir / "fields1.npz", df=df1, angle=angle1)
+    df0_norm = transform_distance_field(df0, max_dist=5.0)
+    df1_norm = transform_distance_field(df1, max_dist=5.0)
+    np.savez_compressed(pair_dir / "fields0.npz", df=df0_norm, angle=angle0)
+    np.savez_compressed(pair_dir / "fields1.npz", df=df1_norm, angle=angle1)
     meta = {
         "pair_id": pair_id,
         "scene": record["scene"],

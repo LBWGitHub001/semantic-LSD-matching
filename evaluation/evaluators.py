@@ -306,6 +306,93 @@ class HomographyEvaluator(BaseEvaluator):
         return paths
 
 
+class PointMatchingEvaluator(BaseEvaluator):
+    """Evaluates SuperPoint descriptor loss and nearest-neighbor matching accuracy."""
+
+    def evaluate(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        min_area_ratio: float = 0.50,
+    ) -> Dict[str, Any]:
+        from models import build_loss
+        from visualization.point_matches import match_accuracy
+
+        del min_area_ratio
+        criterion = build_loss("SuperPoint").to(device)
+        model.eval()
+        total_loss = 0.0
+        total_acc = 0.0
+        steps = 0
+        with torch.inference_mode():
+            for batch in loader:
+                moved = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+                pred0 = model(moved["image0"])
+                pred1 = model(moved["image1"])
+                out = criterion(pred0, pred1, moved["homography"])
+                acc, _ = match_accuracy(
+                    pred0["descriptor"], pred1["descriptor"], moved["points0"], moved["points1"]
+                )
+                total_loss += float(out["loss"])
+                total_acc += acc
+                steps += 1
+        denom = max(steps, 1)
+        mean_acc = total_acc / denom
+        metrics = {
+            "loss": total_loss / denom,
+            "match_acc": mean_acc,
+            "total_pairs": steps,
+            "precision": mean_acc * 100.0,
+            "recall": mean_acc * 100.0,
+            "f1": mean_acc * 100.0,
+            "dustbin_acc": 0.0,
+            "tp": int(total_acc * 100),
+            "fp": 0,
+            "fn": 0,
+        }
+        return metrics
+
+    def visualize(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        out_dir: Path,
+        num_vis: int = 5,
+        min_area_ratio: float = 0.50,
+        data_dir: Optional[Path] = None,
+        use_region_ds: bool = True,
+    ) -> List[Path]:
+        from visualization.point_matches import match_accuracy, save_point_match_figure
+
+        del min_area_ratio, data_dir, use_region_ds
+        out_dir.mkdir(parents=True, exist_ok=True)
+        paths: List[Path] = []
+        model.eval()
+        with torch.inference_mode():
+            for batch in loader:
+                if len(paths) >= num_vis:
+                    break
+                moved = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+                pred0 = model(moved["image0"])
+                pred1 = model(moved["image1"])
+                _, choice = match_accuracy(
+                    pred0["descriptor"], pred1["descriptor"], moved["points0"], moved["points1"]
+                )
+                dest = out_dir / f"{batch['pair_id']}.jpg"
+                save_point_match_figure(
+                    dest,
+                    batch["bgr0"].numpy(),
+                    batch["bgr1"].numpy(),
+                    moved["points0"].detach().cpu().numpy(),
+                    moved["points1"].detach().cpu().numpy(),
+                    choice.detach().cpu().numpy(),
+                )
+                paths.append(dest)
+        return paths
+
+
 class EvaluatorFactory:
     """Factory creating task-specific evaluators."""
 
@@ -313,6 +400,7 @@ class EvaluatorFactory:
         "object": ObjectMatchingEvaluator,
         "line": LineMatchingEvaluator,
         "homography": HomographyEvaluator,
+        "point": PointMatchingEvaluator,
     }
 
     @classmethod
@@ -349,6 +437,11 @@ def evaluate(
     p_out = Path(out_dir).resolve()
 
     model, model_info, ckpt_path = ModelFactory.create_from_checkpoint(checkpoint, dev, model_type_hint=model_type)
+
+    if model_info.get("family") == "point" and str(data_dir) == "data/structured3d_semantic_regions":
+        p_data = Path("data/planar_letters").resolve()
+    elif model_info.get("family") == "homography" and str(data_dir) == "data/structured3d_semantic_regions":
+        p_data = Path("data/homo_matcher").resolve()
 
     arch_desc = []
     if model_info.get("use_pyramid"):
@@ -441,6 +534,11 @@ def evaluate(
             f.write("| :--- | :---: |\n")
             f.write(f"| **Symmetry T12/T21** | **{metrics['symmetry']:.4f}** |\n")
             f.write(f"| **Total** | **{metrics['loss']:.4f}** |\n\n")
+        elif model_info.get("family") == "point":
+            f.write("| 评测指标 | 结果数值 |\n")
+            f.write("| :--- | :---: |\n")
+            f.write(f"| **Descriptor Loss** | **{metrics['loss']:.4f}** |\n")
+            f.write(f"| **Nearest-Neighbor Match Accuracy** | **{metrics['match_acc'] * 100:.2f}%** |\n\n")
         else:
             f.write("| 评测指标 | 结果数值 | 说明 |\n")
             f.write("| :--- | :---: | :--- |\n")

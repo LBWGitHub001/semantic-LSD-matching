@@ -8,10 +8,15 @@ term. Point ids stay fixed, so the same id in two views is a match.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 LETTERS = tuple(chr(ord("A") + index) for index in range(26))
 IMAGE_HEIGHT = 240
@@ -31,6 +36,7 @@ def build_planar_letters_dataset(
     seed: int = 42,
     preview_scenes: int = 6,
     infer_batch=None,
+    overwrite: bool = False,
 ) -> dict[str, int]:
     """Write warped letters, homographies, line fields, pair splits, and a preview."""
     out = Path(out_dir)
@@ -48,16 +54,27 @@ def build_planar_letters_dataset(
         scene_dir = out / scene_name
         scene_dir.mkdir(parents=True, exist_ok=True)
         _write_scene(scene_dir, scene)
-        _save_line_fields(scene_dir, scene, infer_batch)
+        _save_line_fields(scene_dir, scene, infer_batch, overwrite=overwrite)
         for pair in scene["pairs"]:
             pair_ids.append(f"{scene_name}_v{pair['view0']}_v{pair['view1']}")
-        if scene_idx < preview_scenes and scene["views"]:
-            shown = scene["views"][min(1, len(scene["views"]) - 1)]
-            preview_tiles.append(_draw_keypoints(shown["image"], shown["keypoints"]))
+        # 每个字母选取一张代表视角，提取其直线场 (Line Field) 加入大图
+        if scene["views"]:
+            rep_idx = min(1, len(scene["views"]) - 1)
+            shown = scene["views"][rep_idx]
+            npz_file = scene_dir / f"view_{rep_idx:02d}.npz"
+            if npz_file.is_file():
+                fields = np.load(npz_file)
+                df = np.asarray(fields["df"], dtype=np.float32)
+            else:
+                df = np.zeros(shown["image"].shape[:2], dtype=np.float32)
+            preview_tiles.append(_draw_line_field_tile(df, letter=letter))
 
     _write_splits(out, pair_ids)
     if preview_tiles:
-        cv2.imwrite(str(out / "preview.jpg"), _tile(preview_tiles))
+        sheet = _tile(preview_tiles, columns=6)
+        preview_path = out / "preview.jpg"
+        cv2.imwrite(str(preview_path), sheet)
+        print(f"[✓] Generated single composite line field preview: {preview_path} ({sheet.shape[1]}x{sheet.shape[0]})")
     print(
         f"[*] planar_letters scenes={num_scenes} views={views_per_scene} "
         f"pairs={len(pair_ids)} -> {out}"
@@ -245,13 +262,15 @@ def _write_scene(scene_dir: Path, scene: dict) -> None:
     (scene_dir / "pairs.json").write_text(json.dumps(pairs), encoding="utf-8")
 
 
-def _save_line_fields(scene_dir: Path, scene: dict, infer_batch) -> None:
-    """Write view_XX.npz beside view_XX.png. An existing file is left alone."""
+def _save_line_fields(scene_dir: Path, scene: dict, infer_batch, overwrite: bool = False) -> None:
+    """Write view_XX.npz beside view_XX.png. An existing file is left alone unless overwrite=True."""
+    from models.FCN_field.fields import transform_distance_field
+
     pending_paths: list[Path] = []
     pending_bgr: list[np.ndarray] = []
     for view in scene["views"]:
         dest = scene_dir / f"view_{view['view']:02d}.npz"
-        if dest.is_file():
+        if dest.is_file() and not overwrite:
             continue
         pending_paths.append(dest)
         pending_bgr.append(_as_bgr(view["image"]))
@@ -259,7 +278,12 @@ def _save_line_fields(scene_dir: Path, scene: dict, infer_batch) -> None:
         return
     fields = infer_batch(pending_bgr)
     for dest, (distance, angle) in zip(pending_paths, fields):
-        np.savez_compressed(dest, df=np.asarray(distance, dtype=np.float32), angle=np.asarray(angle, dtype=np.float32))
+        df_norm = transform_distance_field(distance, max_dist=5.0)
+        np.savez_compressed(
+            dest,
+            df=df_norm,
+            angle=np.asarray(angle, dtype=np.float32),
+        )
 
 
 def _as_bgr(image: np.ndarray) -> np.ndarray:
@@ -297,20 +321,104 @@ def _write_splits(out: Path, pair_ids: list[str]) -> None:
         (out / name).write_text(json.dumps({"pairs": rows, "count": len(rows)}, indent=2), encoding="utf-8")
 
 
-def _draw_keypoints(image: np.ndarray, keypoints: list[dict]) -> np.ndarray:
-    canvas = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    for point in keypoints:
-        center = (int(round(point["x"])), int(round(point["y"])))
-        cv2.circle(canvas, center, 2, (0, 255, 0), -1, lineType=cv2.LINE_AA)
+def _draw_line_field_tile(df: np.ndarray, letter: str = "") -> np.ndarray:
+    """Render the normalized distance field as a high-contrast line field heatmap."""
+    df_norm = np.clip(np.nan_to_num(df, nan=0.0), 0.0, 1.0)
+    df_u8 = (df_norm * 255.0).astype(np.uint8)
+    canvas = cv2.applyColorMap(df_u8, cv2.COLORMAP_MAGMA)
+    if letter:
+        cv2.rectangle(canvas, (8, 8), (48, 36), (15, 15, 15), -1)
+        cv2.putText(canvas, letter, (16, 30), cv2.FONT_HERSHEY_DUPLEX, 0.75, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.rectangle(canvas, (0, 0), (canvas.shape[1] - 1, canvas.shape[0] - 1), (60, 60, 60), 1)
     return canvas
 
 
-def _tile(tiles: list[np.ndarray]) -> np.ndarray:
-    columns = 3
+def _draw_keypoints(image: np.ndarray, keypoints: list[dict], letter: str = "") -> np.ndarray:
+    canvas = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
+    for point in keypoints:
+        center = (int(round(point["x"])), int(round(point["y"])))
+        cv2.circle(canvas, center, 3, (0, 0, 0), -1, lineType=cv2.LINE_AA)
+        cv2.circle(canvas, center, 2, (0, 230, 0), -1, lineType=cv2.LINE_AA)
+    if letter:
+        cv2.rectangle(canvas, (8, 8), (48, 36), (15, 15, 15), -1)
+        cv2.putText(canvas, letter, (16, 30), cv2.FONT_HERSHEY_DUPLEX, 0.75, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.rectangle(canvas, (0, 0), (canvas.shape[1] - 1, canvas.shape[0] - 1), (60, 60, 60), 1)
+    return canvas
+
+
+def _tile(tiles: list[np.ndarray], columns: int = 6) -> np.ndarray:
+    """Composite letter tiles into a single grid sheet (default 6 columns)."""
+    if not tiles:
+        return np.zeros((0, 0, 3), dtype=np.uint8)
+    columns = min(columns, max(len(tiles), 1))
     height, width = tiles[0].shape[:2]
     rows = int(np.ceil(len(tiles) / columns))
     canvas = np.zeros((rows * height, columns * width, 3), dtype=np.uint8)
     for index, tile in enumerate(tiles):
         row, col = divmod(index, columns)
         canvas[row * height : (row + 1) * height, col * width : (col + 1) * width] = tile
+
+    # 若有多余空格（例如 26 个字母放在 6 列 5 行中会有 4 个多余格子），填充精美的数据集信息横幅
+    empty_slots = rows * columns - len(tiles)
+    if empty_slots > 0:
+        r, c_start = divmod(len(tiles), columns)
+        bx0 = c_start * width
+        bx1 = columns * width
+        by0 = r * height
+        by1 = (r + 1) * height
+        canvas[by0:by1, bx0:bx1] = (25, 25, 25)
+        cv2.rectangle(canvas, (bx0, by0), (bx1 - 1, by1 - 1), (60, 60, 60), 1)
+
+        cv2.putText(
+            canvas,
+            "Planar Letters - Line Field Preview (A - Z)",
+            (bx0 + 40, by0 + int(height * 0.35)),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            f"{len(tiles)} Letters | DeepLSD Line Distance Field (-log(x+1)) [0.0 ~ 1.0]",
+            (bx0 + 40, by0 + int(height * 0.58)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (180, 210, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            "Ridge / Line Center: 1.0 (Bright Yellow-White) | Background: 0.0 (Dark)",
+            (bx0 + 40, by0 + int(height * 0.75)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (160, 160, 160),
+            1,
+            cv2.LINE_AA,
+        )
     return canvas
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate planar letters dataset with DeepLSD fields.")
+    parser.add_argument("--out", type=str, default="data/planar_letters", help="Output directory")
+    parser.add_argument("--scenes", type=int, default=26, help="Number of letter scenes (default: 26)")
+    parser.add_argument("--views", type=int, default=4, help="Views per scene (default: 4)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing .npz files")
+    args = parser.parse_args()
+
+    print(f"[*] Building planar letters dataset in {args.out} (scenes={args.scenes}, views={args.views}, overwrite={args.overwrite})...")
+    build_planar_letters_dataset(
+        out_dir=args.out,
+        num_scenes=args.scenes,
+        views_per_scene=args.views,
+        seed=args.seed,
+        overwrite=args.overwrite,
+    )
+    print("[+] Done!")

@@ -10,6 +10,9 @@ Usage:
 
   # 3. Train Baseline Line-Transformer (LineMatcherNet):
   python train.py --model line_transformer --epochs 8 --lr 2e-4
+
+  # 4. Train descriptor-only SuperPoint on planar letters:
+  python train.py --model SuperPoint
 """
 
 from __future__ import annotations
@@ -1282,6 +1285,154 @@ def _homography_validate(model, loss_fn, loader, device, max_steps) -> dict[str,
     return {key: value / denom for key, value in totals.items()} | {"total_pairs": steps}
 
 
+def train_point_pipeline(args: argparse.Namespace) -> None:
+    """Train the descriptor-only SuperPoint on planar letter pairs."""
+    from datasets.point_match_dataset import PointMatchDataset, collate_point_matches
+
+    data_dir = Path(args.data_dir or "data/planar_letters")
+    base_save_dir = Path(args.save_dir or "checkpoints/SuperPoint")
+    start_time = datetime.now()
+    start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
+    run_name = args.run_name or f"{args.model_type}+{data_dir.name}+【{start_time_str}】"
+    save_dir = base_save_dir if args.no_timestamp else base_save_dir / run_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    vis_dir = save_dir / "visualizations"
+    device = torch.device(args.device)
+    lr = args.lr if args.lr is not None else 1e-3
+    train_ds = PointMatchDataset(data_dir, split="train")
+    val_ds = PointMatchDataset(data_dir, split="val")
+    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_point_matches, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_point_matches, num_workers=0)
+    model = build_model(args.model_type).to(device)
+    loss_fn = build_loss(args.model_type).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
+    config_path = save_dir / "config.json"
+    config_data = {
+        "experiment_info": {
+            "run_name": run_name,
+            "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time": None,
+            "git_commit": get_git_commit(),
+            "command": " ".join(sys.argv),
+        },
+        "model": {"model_type": "SuperPoint", "family": "point"},
+        "hyperparameters": {"epochs": args.epochs, "learning_rate": lr, "loss": "superpoint_line_joint"},
+    }
+    save_config_json(config_path, config_data)
+    print(f"[*] point matching  pairs={len(train_ds)} val={len(val_ds)}  device={device}")
+    best_score = float("inf")
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        total = 0.0
+        steps = 0
+        train_total = len(train_loader) if args.max_steps is None else min(len(train_loader), args.max_steps)
+        pbar = tqdm(
+            train_loader,
+            total=train_total,
+            desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]",
+            bar_format=TQDM_BAR_FORMAT,
+            dynamic_ncols=True,
+            leave=False,
+            unit="pair",
+        )
+        for batch in pbar:
+            if args.max_steps is not None and steps >= args.max_steps:
+                break
+            moved = _batch_to_device(batch, device)
+            pred0 = model(moved["image0"])
+            pred1 = model(moved["image1"])
+            out = loss_fn(
+                pred0,
+                pred1,
+                moved["homography"],
+                image0=moved["image0"],
+                image1=moved["image1"],
+                points0=moved.get("points0"),
+                points1=moved.get("points1"),
+            )
+            optimizer.zero_grad(set_to_none=True)
+            out["loss"].backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            step_loss = float(out["loss"].detach())
+            total += step_loss
+            steps += 1
+            pbar.set_postfix_str(
+                f"loss={step_loss:.4f} desc={float(out['ld']):.3f} orph={float(out['l_orphan']):.3f} len={float(out['l_len']):.3f}"
+            )
+        val_metrics = _point_validate(model, loss_fn, val_loader, device, args.max_steps, vis_dir, epoch)
+        score = val_metrics["loss"]
+        print(
+            f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
+            f"  val desc {val_metrics['loss']:.4f}  match {val_metrics['match_acc'] * 100:.1f}%"
+        )
+        ckpt = {
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "args": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+            "val_metrics": val_metrics,
+        }
+        torch.save(ckpt, save_dir / "last_model.pth")
+        if score <= best_score:
+            best_score = score
+            torch.save(ckpt, save_dir / "best_model.pth")
+    config_data["experiment_info"]["end_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_config_json(config_path, config_data)
+    print(f"[+] saved {save_dir}")
+
+
+def _point_validate(model, loss_fn, loader, device, max_steps, vis_dir: Path, epoch: int) -> dict[str, float]:
+    from visualization.point_matches import match_accuracy, save_point_match_figure
+
+    model.eval()
+    total_loss = 0.0
+    total_acc = 0.0
+    steps = 0
+    val_total = len(loader) if max_steps is None else min(len(loader), max_steps)
+    pbar = tqdm(
+        loader,
+        total=val_total,
+        desc="Val",
+        bar_format=TQDM_BAR_FORMAT,
+        dynamic_ncols=True,
+        leave=False,
+        unit="pair",
+    )
+    with torch.inference_mode():
+        for batch in pbar:
+            if max_steps is not None and steps >= max_steps:
+                break
+            moved = _batch_to_device(batch, device)
+            pred0 = model(moved["image0"])
+            pred1 = model(moved["image1"])
+            out = loss_fn(
+                pred0,
+                pred1,
+                moved["homography"],
+                image0=moved["image0"],
+                image1=moved["image1"],
+                points0=moved.get("points0"),
+                points1=moved.get("points1"),
+            )
+            accuracy, choice = match_accuracy(pred0["descriptor"], pred1["descriptor"], moved["points0"], moved["points1"])
+            total_loss += float(out["loss"])
+            total_acc += accuracy
+            steps += 1
+            pbar.set_postfix_str(f"desc={total_loss / steps:.4f} match={100 * total_acc / steps:.1f}%")
+            if steps <= 4:
+                save_point_match_figure(
+                    vis_dir / f"epoch_{epoch:02d}_{batch['pair_id']}.jpg",
+                    batch["bgr0"].numpy(),
+                    batch["bgr1"].numpy(),
+                    moved["points0"].detach().cpu().numpy(),
+                    moved["points1"].detach().cpu().numpy(),
+                    choice.detach().cpu().numpy(),
+                )
+    denom = max(steps, 1)
+    return {"loss": total_loss / denom, "match_acc": total_acc / denom, "total_pairs": steps}
+
+
 def main() -> None:
     from factory_args import warn_unused_arguments
 
@@ -1293,7 +1444,7 @@ def main() -> None:
     elif family == "homography":
         train_homography_pipeline(args)
     elif family == "point":
-        raise SystemExit("SuperPoint 已注册到模型工厂。训练循环还没有接上。")
+        train_point_pipeline(args)
     else:
         train_line_pipeline(args)
 
