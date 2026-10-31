@@ -40,6 +40,10 @@ class ModelFactory:
         if any(k.startswith("convDb.") or k.startswith("convDa.") for k in state_dict):
             info["family"] = "point"
             info["model_type"] = "SuperPoint"
+            info["use_pyramid"] = False
+            info["with_geometry"] = False
+            info["d_model"] = 256
+            info["feat_dim"] = 256
             if "convDb.weight" in state_dict:
                 info["descriptor_dim"] = int(state_dict["convDb.weight"].shape[0])
             return info

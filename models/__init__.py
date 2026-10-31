@@ -50,6 +50,8 @@ from models.superpoint import (
     SuperPoint,
     SuperPointLoss,
     SuperPointLineLoss,
+    SuperPointDescriptorLoss,
+    SuperPointDetectorLoss,
 )
 
 MODEL_REGISTRY = {
@@ -167,6 +169,13 @@ def build_loss(model_name: str, **kwargs) -> nn.Module:
     name = canonical_model_name(model_name)
     if name not in LOSS_REGISTRY:
         raise ValueError(f"Unknown loss for model '{model_name}'. Available: {list(LOSS_REGISTRY.keys())}")
+    if name == "SuperPoint":
+        stage = kwargs.pop("stage", None)
+        if stage == "descriptor":
+            return SuperPointDescriptorLoss(**kwargs)
+        elif stage == "detector":
+            return SuperPointDetectorLoss(**kwargs)
+        return SuperPointLoss(**kwargs)
     return LOSS_REGISTRY[name](**kwargs)
 
 
@@ -205,4 +214,6 @@ __all__ = [
     "SuperPoint",
     "SuperPointLoss",
     "SuperPointLineLoss",
+    "SuperPointDescriptorLoss",
+    "SuperPointDetectorLoss",
 ]

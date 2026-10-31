@@ -146,6 +146,8 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--depth-weight", type=float, default=1.0, help="FCN_field: weight of the ridge depth loss")
     parser.add_argument("--flow-weight", type=float, default=1.0, help="FCN_field: weight of the geometric velocity loss")
     parser.add_argument("--min-area-ratio", type=float, default=0.50, help="Minimum mutually matched region area ratio to allow matching (default: 0.50)")
+    parser.add_argument("--train-stage", type=str, default="joint", choices=["joint", "descriptor", "detector"],
+                        help="Training stage for SuperPoint: 'joint' (default), 'descriptor' (freeze detector), or 'detector' (freeze descriptor)")
     parser.add_argument("--data-ratio", "--data-fraction", dest="data_ratio", type=float, default=1.0, help="Fraction of training dataset to randomly sample (0.0 to 1.0, default: 1.0)")
     parser.add_argument("--pyramid", dest="use_pyramid", action="store_true", default=True, help="Enable multi-scale feature pyramid in ObjectMatcher (default: True)")
     parser.add_argument("--no-pyramid", dest="use_pyramid", action="store_false", help="Disable multi-scale feature pyramid (use single-scale legacy backbone)")
@@ -167,7 +169,7 @@ def train_applicable_arguments(model_type: str) -> set[str]:
     if family == "homography":
         return (common - {"d_model", "num_layers"}) | {"line_sample_points"}
     if family == "point":
-        return common - {"d_model", "num_layers"}
+        return (common - {"d_model", "num_layers"}) | {"train_stage"}
     if family == "object" and is_semantic_line_model(model_type):
         return common | {
             "nhead", "grad_accum", "num_workers", "amp", "val_interval",
@@ -1286,14 +1288,15 @@ def _homography_validate(model, loss_fn, loader, device, max_steps) -> dict[str,
 
 
 def train_point_pipeline(args: argparse.Namespace) -> None:
-    """Train the descriptor-only SuperPoint on planar letter pairs."""
+    """Train SuperPoint with decoupled descriptor, detector, or joint stages."""
     from datasets.point_match_dataset import PointMatchDataset, collate_point_matches
 
     data_dir = Path(args.data_dir or "data/planar_letters")
     base_save_dir = Path(args.save_dir or "checkpoints/SuperPoint")
     start_time = datetime.now()
     start_time_str = start_time.strftime("%Y%m%d_%H%M%S")
-    run_name = args.run_name or f"{args.model_type}+{data_dir.name}+【{start_time_str}】"
+    train_stage = getattr(args, "train_stage", "joint").lower()
+    run_name = args.run_name or f"{args.model_type}_{train_stage}+{data_dir.name}+【{start_time_str}】"
     save_dir = base_save_dir if args.no_timestamp else base_save_dir / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
     vis_dir = save_dir / "visualizations"
@@ -1303,9 +1306,18 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
     val_ds = PointMatchDataset(data_dir, split="val")
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_point_matches, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_point_matches, num_workers=0)
+    
     model = build_model(args.model_type).to(device)
-    loss_fn = build_loss(args.model_type).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=args.weight_decay)
+    loss_fn = build_loss(args.model_type, stage=train_stage).to(device)
+    
+    # 按照阶段自适应配置梯度冻结，优化器仅绑定可训练参数
+    if hasattr(model, "set_train_stage"):
+        model.set_train_stage(train_stage)
+        trainable_params = model.get_trainable_parameters(train_stage)
+    else:
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=args.weight_decay)
+
     config_path = save_dir / "config.json"
     config_data = {
         "experiment_info": {
@@ -1315,11 +1327,16 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
             "git_commit": get_git_commit(),
             "command": " ".join(sys.argv),
         },
-        "model": {"model_type": "SuperPoint", "family": "point"},
-        "hyperparameters": {"epochs": args.epochs, "learning_rate": lr, "loss": "superpoint_line_joint"},
+        "model": {"model_type": "SuperPoint", "family": "point", "train_stage": train_stage},
+        "hyperparameters": {
+            "epochs": args.epochs,
+            "learning_rate": lr,
+            "loss": f"superpoint_{train_stage}",
+            "trainable_param_groups": len(trainable_params),
+        },
     }
     save_config_json(config_path, config_data)
-    print(f"[*] point matching  pairs={len(train_ds)} val={len(val_ds)}  device={device}")
+    print(f"[*] SuperPoint stage: '{train_stage}' | pairs={len(train_ds)} val={len(val_ds)} | trainable params: {len(trainable_params)} tensors | device={device}")
     best_score = float("inf")
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -1329,7 +1346,7 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
         pbar = tqdm(
             train_loader,
             total=train_total,
-            desc=f"Epoch {epoch:02d}/{args.epochs:02d} [Train]",
+            desc=f"Epoch {epoch:02d}/{args.epochs:02d} [{train_stage.capitalize()}]",
             bar_format=TQDM_BAR_FORMAT,
             dynamic_ncols=True,
             leave=False,
@@ -1352,22 +1369,41 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
             )
             optimizer.zero_grad(set_to_none=True)
             out["loss"].backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
             optimizer.step()
             step_loss = float(out["loss"].detach())
             total += step_loss
             steps += 1
-            pbar.set_postfix_str(
-                f"loss={step_loss:.4f} desc={float(out['ld']):.3f} orph={float(out['l_orphan']):.3f} len={float(out['l_len']):.3f}"
-            )
-        val_metrics = _point_validate(model, loss_fn, val_loader, device, args.max_steps, vis_dir, epoch)
+            if train_stage == "descriptor":
+                pbar.set_postfix_str(f"loss={step_loss:.4f} ld={float(out['ld']):.3f}")
+            elif train_stage == "detector":
+                pbar.set_postfix_str(
+                    f"loss={step_loss:.4f} det={float(out['l_det']):.3f} orph={float(out['l_orphan']):.3f} len={float(out['l_len']):.3f}"
+                )
+            else:
+                pbar.set_postfix_str(
+                    f"loss={step_loss:.4f} desc={float(out.get('ld', 0.0)):.3f} orph={float(out.get('l_orphan', 0.0)):.3f} len={float(out.get('l_len', 0.0)):.3f}"
+                )
+        val_metrics = _point_validate(model, loss_fn, val_loader, device, args.max_steps, vis_dir, epoch, train_stage=train_stage)
         score = val_metrics["loss"]
-        print(
-            f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
-            f"  val desc {val_metrics['loss']:.4f}  match {val_metrics['match_acc'] * 100:.1f}%"
-        )
+        if train_stage == "detector":
+            print(
+                f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
+                f"  val det {val_metrics['loss']:.4f}  lines {val_metrics.get('num_lines', 0.0):.1f}  orphan {val_metrics.get('orphan_rate', 0.0)*100:.1f}%"
+            )
+        elif train_stage == "descriptor":
+            print(
+                f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
+                f"  val desc {val_metrics['loss']:.4f}  match {val_metrics.get('match_acc', 0.0) * 100:.1f}%"
+            )
+        else:
+            print(
+                f"Epoch [{epoch:02d}/{args.epochs:02d}] loss {total / max(steps, 1):.4f}"
+                f"  val loss {val_metrics['loss']:.4f}  match {val_metrics.get('match_acc', 0.0) * 100:.1f}%  lines {val_metrics.get('num_lines', 0.0):.1f}"
+            )
         ckpt = {
             "epoch": epoch,
+            "train_stage": train_stage,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "args": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
@@ -1382,18 +1418,34 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
     print(f"[+] saved {save_dir}")
 
 
-def _point_validate(model, loss_fn, loader, device, max_steps, vis_dir: Path, epoch: int) -> dict[str, float]:
-    from visualization.point_matches import match_accuracy, save_point_match_figure
+def _point_validate(
+    model,
+    loss_fn,
+    loader,
+    device,
+    max_steps,
+    vis_dir: Path,
+    epoch: int,
+    train_stage: str = "joint",
+) -> dict[str, float]:
+    from visualization.point_matches import (
+        match_accuracy,
+        extract_detected_lines,
+        save_detection_mask_lines_figure,
+        save_descriptor_matching_figure,
+    )
 
     model.eval()
     total_loss = 0.0
     total_acc = 0.0
+    total_lines = 0.0
+    total_orphan_rate = 0.0
     steps = 0
     val_total = len(loader) if max_steps is None else min(len(loader), max_steps)
     pbar = tqdm(
         loader,
         total=val_total,
-        desc="Val",
+        desc=f"Val [{train_stage.capitalize()}]",
         bar_format=TQDM_BAR_FORMAT,
         dynamic_ncols=True,
         leave=False,
@@ -1415,22 +1467,74 @@ def _point_validate(model, loss_fn, loader, device, max_steps, vis_dir: Path, ep
                 points0=moved.get("points0"),
                 points1=moved.get("points1"),
             )
-            accuracy, choice = match_accuracy(pred0["descriptor"], pred1["descriptor"], moved["points0"], moved["points1"])
-            total_loss += float(out["loss"])
-            total_acc += accuracy
+            step_loss = float(out["loss"])
+            total_loss += step_loss
+
+            accuracy = 0.0
+            if "descriptor" in pred0 and moved.get("points0") is not None and moved.get("points1") is not None:
+                accuracy, _ = match_accuracy(pred0["descriptor"], pred1["descriptor"], moved["points0"], moved["points1"])
+                total_acc += accuracy
+
+            pair_lines = 0.0
+            pair_orphan = 0.0
+            if train_stage in ("detector", "joint") and "heatmap" in pred0 and moved.get("image0") is not None:
+                geom0 = extract_detected_lines(pred0["heatmap"], moved["image0"][:, 3:4], moved["image0"][:, 4:5], loss_fn)
+                pair_lines = float(geom0["num_lines"])
+                pair_orphan = float(geom0["orphan_rate"])
+                total_lines += pair_lines
+                total_orphan_rate += pair_orphan
+
             steps += 1
-            pbar.set_postfix_str(f"desc={total_loss / steps:.4f} match={100 * total_acc / steps:.1f}%")
+            if train_stage == "detector":
+                pbar.set_postfix_str(f"det={total_loss / steps:.4f} lines={total_lines / steps:.1f}")
+            elif train_stage == "descriptor":
+                pbar.set_postfix_str(f"desc={total_loss / steps:.4f} match={100 * total_acc / steps:.1f}%")
+            else:
+                pbar.set_postfix_str(f"loss={total_loss / steps:.4f} match={100 * total_acc / steps:.1f}% lines={total_lines / steps:.1f}")
+
+            # 验证可视化 (前 4 对样本分别保存对应图像)
             if steps <= 4:
-                save_point_match_figure(
-                    vis_dir / f"epoch_{epoch:02d}_{batch['pair_id']}.jpg",
-                    batch["bgr0"].numpy(),
-                    batch["bgr1"].numpy(),
-                    moved["points0"].detach().cpu().numpy(),
-                    moved["points1"].detach().cpu().numpy(),
-                    choice.detach().cpu().numpy(),
-                )
+                pair_id = batch["pair_id"]
+                # 1. 检测验证: 原始掩膜 + 直线 (*_detection.jpg)
+                if train_stage in ("detector", "joint"):
+                    save_detection_mask_lines_figure(
+                        vis_dir / f"epoch_{epoch:02d}_{pair_id}_detection.jpg",
+                        batch["bgr0"].numpy(),
+                        batch["bgr1"].numpy(),
+                        pred0,
+                        pred1,
+                        moved["image0"][:, 3:4],
+                        moved["image1"][:, 3:4],
+                        moved["image0"][:, 4:5],
+                        moved["image1"][:, 4:5],
+                        loss_fn,
+                        pair_id=pair_id,
+                        metrics_summary={"loss": step_loss},
+                    )
+
+                # 2. 描述验证: 配对情况 (*_matching.jpg)
+                if train_stage in ("descriptor", "joint") and moved.get("points0") is not None and moved.get("points1") is not None:
+                    save_descriptor_matching_figure(
+                        vis_dir / f"epoch_{epoch:02d}_{pair_id}_matching.jpg",
+                        batch["bgr0"].numpy(),
+                        batch["bgr1"].numpy(),
+                        pred0["descriptor"],
+                        pred1["descriptor"],
+                        moved["points0"],
+                        moved["points1"],
+                        moved["homography"],
+                        pair_id=pair_id,
+                        metrics_summary={"ld": float(out.get("ld", step_loss))},
+                    )
+
     denom = max(steps, 1)
-    return {"loss": total_loss / denom, "match_acc": total_acc / denom, "total_pairs": steps}
+    return {
+        "loss": total_loss / denom,
+        "match_acc": total_acc / denom,
+        "num_lines": total_lines / denom,
+        "orphan_rate": total_orphan_rate / denom,
+        "total_pairs": steps,
+    }
 
 
 def main() -> None:

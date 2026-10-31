@@ -46,6 +46,44 @@ class SuperPoint(nn.Module):
         self.convPa = nn.Conv2d(c4, c5, kernel_size=3, stride=1, padding=1)
         self.convPb = nn.Conv2d(c5, 65, kernel_size=1, stride=1, padding=0)
 
+    def set_train_stage(self, stage: str = "joint") -> None:
+        """根据训练阶段自适应配置模型参数的梯度需求 (requires_grad)。
+
+        参数:
+            stage: 'descriptor' (仅更新主干与描述头，冻结端点检测头);
+                   'detector'   (仅更新主干与端点检测头，冻结描述子头);
+                   'joint'      (联合优化所有参数)。
+        """
+        stage = stage.lower()
+        if stage not in ("joint", "descriptor", "detector"):
+            raise ValueError(f"未知的训练阶段 '{stage}'. 请从 'joint', 'descriptor', 'detector' 中选择。")
+
+        # 1. 主干特征编码器 (在所有阶段均保持参与训练与特征提取)
+        backbone_convs = [
+            self.conv1a, self.conv1b, self.conv2a, self.conv2b,
+            self.conv3a, self.conv3b, self.conv4a, self.conv4b,
+        ]
+        for conv in backbone_convs:
+            for param in conv.parameters():
+                param.requires_grad = True
+
+        # 2. 描述子分支
+        desc_active = stage in ("joint", "descriptor")
+        for conv in [self.convDa, self.convDb]:
+            for param in conv.parameters():
+                param.requires_grad = desc_active
+
+        # 3. 端点检测分支
+        det_active = stage in ("joint", "detector")
+        for conv in [self.convPa, self.convPb]:
+            for param in conv.parameters():
+                param.requires_grad = det_active
+
+    def get_trainable_parameters(self, stage: str = "joint") -> list[nn.Parameter]:
+        """设置对应训练阶段并返回当前需要梯度反向传播的可训练参数列表。"""
+        self.set_train_stage(stage)
+        return [p for p in self.parameters() if p.requires_grad]
+
     def forward(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
         if image.dim() == 3:
             image = image.unsqueeze(0)

@@ -6,7 +6,10 @@ Usage:
   # 1. Evaluate any object matcher checkpoint (auto-detects architecture):
   python eval.py --checkpoint checkpoints/xfeat_object_matcher/best_model.pth --data-dir data/structured3d_semantic_regions --out-dir outputs/semantic_matching_vis --num-vis 50
 
-  # 2. Evaluate latest training run automatically:
+  # 2. Evaluate SuperPoint line & corner matcher:
+  python eval.py --checkpoint checkpoints/SuperPoint/SuperPoint+planar_letters+【...】/best_model.pth --split val --num-vis 5
+
+  # 3. Evaluate latest training run automatically:
   python eval.py --checkpoint checkpoints/xfeat_object_matcher/latest --split test
 
   # 3. Call as a Python factory function:
@@ -65,7 +68,9 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--min-area-ratio", type=float, default=0.50,
                         help="Mutual co-visible area ratio threshold (default: 0.50)")
     parser.add_argument("--model-type", type=str, default=None,
-                        help="Optional model override (xfeat_object, xfeat_line_matcher, mask_line, line_transformer)")
+                        help="Optional model override (xfeat_object, xfeat_line_matcher, mask_line, line_transformer, SuperPoint)")
+    parser.add_argument("--eval-stage", type=str, default="all", choices=["all", "detector", "descriptor"],
+                        help="Stage-specific evaluation for SuperPoint: 'all' (default), 'detector' (mask+lines), or 'descriptor' (feature matching)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to run evaluation on")
     parser.add_argument("--num-workers", type=int, default=2,
@@ -83,6 +88,7 @@ def main() -> None:
         num_vis=args.num_vis,
         min_area_ratio=args.min_area_ratio,
         model_type=args.model_type,
+        eval_stage=args.eval_stage,
         device=args.device,
         num_workers=args.num_workers,
     )
