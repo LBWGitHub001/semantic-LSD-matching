@@ -158,6 +158,24 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argpa
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
+    # SuperPoint specific loss weights & geometric hyperparameters
+    parser.add_argument("--weight-desc", type=float, default=1.0, help="SuperPoint: descriptor loss weight (lambda_desc)")
+    parser.add_argument("--positive-weight", type=float, default=250.0, help="SuperPoint: descriptor positive pair hinge weight")
+    parser.add_argument("--positive-margin", type=float, default=1.0, help="SuperPoint: descriptor positive pair hinge margin")
+    parser.add_argument("--negative-margin", type=float, default=0.2, help="SuperPoint: descriptor negative pair hinge margin")
+    parser.add_argument("--weight-det", type=float, default=1.0, help="SuperPoint: detector loss weight (lambda_det)")
+    parser.add_argument("--det-pos-weight", type=float, default=50.0, help="SuperPoint: detector positive keypoint cell weight")
+    parser.add_argument("--weight-orphan", type=float, default=1.0, help="SuperPoint: orphan endpoint penalty weight (lambda_orphan)")
+    parser.add_argument("--weight-len", type=float, default=0.5, help="SuperPoint: max line length reward weight (lambda_len)")
+    parser.add_argument("--length-exponent", type=float, default=1.5, help="SuperPoint: super-linear max line length reward exponent")
+    parser.add_argument("--weight-premature", type=float, default=0.5, help="SuperPoint: premature ray probing penalty weight (lambda_premature)")
+    parser.add_argument("--probe-dist", type=float, default=4.0, help="SuperPoint: premature ray probing extrapolation distance in px")
+    parser.add_argument("--tau-df", type=float, default=0.55, help="SuperPoint: distance field line ridge threshold")
+    parser.add_argument("--tau-ang", type=float, default=0.10, help="SuperPoint: angle field tangent alignment threshold")
+    parser.add_argument("--min-length", type=float, default=8.0, help="SuperPoint: minimum valid line length in pixels")
+    parser.add_argument("--num-candidates", type=int, default=16, help="SuperPoint: number of candidate endpoints extracted")
+    parser.add_argument("--num-line-samples", type=int, default=10, help="SuperPoint: number of interpolation samples along line")
+
     from configs import load_config, apply_config_to_parser, pre_parse_config_path
 
     cfg_path = pre_parse_config_path(argv)
@@ -181,7 +199,11 @@ def train_applicable_arguments(model_type: str) -> set[str]:
     if family == "homography":
         return (common - {"d_model", "num_layers"}) | {"line_sample_points"}
     if family == "point":
-        return (common - {"d_model", "num_layers"}) | {"train_stage"}
+        return (common - {"d_model", "num_layers"}) | {
+            "train_stage", "weight_desc", "positive_weight", "positive_margin", "negative_margin",
+            "weight_det", "det_pos_weight", "weight_orphan", "weight_len", "length_exponent",
+            "weight_premature", "probe_dist", "tau_df", "tau_ang", "min_length", "num_candidates", "num_line_samples",
+        }
     if family == "object" and is_semantic_line_model(model_type):
         return common | {
             "nhead", "grad_accum", "num_workers", "amp", "val_interval",
@@ -1320,9 +1342,28 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
     val_ds = PointMatchDataset(data_dir, split="val")
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, collate_fn=collate_point_matches, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=collate_point_matches, num_workers=0)
-    
+
+    loss_kwargs = {
+        "weight_desc": getattr(args, "weight_desc", 1.0),
+        "positive_weight": getattr(args, "positive_weight", 250.0),
+        "positive_margin": getattr(args, "positive_margin", 1.0),
+        "negative_margin": getattr(args, "negative_margin", 0.2),
+        "weight_det": getattr(args, "weight_det", 1.0),
+        "det_pos_weight": getattr(args, "det_pos_weight", 50.0),
+        "weight_orphan": getattr(args, "weight_orphan", 1.0),
+        "weight_len": getattr(args, "weight_len", 0.5),
+        "length_exponent": getattr(args, "length_exponent", 1.5),
+        "weight_premature": getattr(args, "weight_premature", 0.5),
+        "probe_dist": getattr(args, "probe_dist", 4.0),
+        "tau_df": getattr(args, "tau_df", 0.55),
+        "tau_ang": getattr(args, "tau_ang", 0.10),
+        "min_length": getattr(args, "min_length", 8.0),
+        "num_candidates": getattr(args, "num_candidates", 16),
+        "num_line_samples": getattr(args, "num_line_samples", 10),
+    }
+
     model = build_model(args.model_type).to(device)
-    loss_fn = build_loss(args.model_type, stage=train_stage).to(device)
+    loss_fn = build_loss(args.model_type, stage=train_stage, **loss_kwargs).to(device)
     
     # 按照阶段自适应配置梯度冻结，优化器仅绑定可训练参数
     if hasattr(model, "set_train_stage"):
@@ -1347,6 +1388,7 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
             "learning_rate": lr,
             "loss": f"superpoint_{train_stage}",
             "trainable_param_groups": len(trainable_params),
+            "loss_weights": loss_kwargs,
         },
     }
     save_config_json(config_path, config_data)

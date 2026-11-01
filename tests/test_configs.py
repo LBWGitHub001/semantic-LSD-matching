@@ -162,6 +162,60 @@ class TestYamlConfigurationSuite(unittest.TestCase):
         args_override, _ = parse_args(["--config", "configs/superpoint.yaml", "--split", "test"])
         self.assertEqual(args_override.split, "test")
 
+    def test_superpoint_lambdas_in_config_and_parsers(self) -> None:
+        """Verify that all SuperPoint loss lambdas and geometric thresholds are present in YAML and parsed correctly."""
+        from train import parse_args as train_parse_args
+        from eval import parse_args as eval_parse_args
+        from models import build_loss
+
+        cfg = load_config(get_model_config_path("superpoint"))
+        expected_keys = [
+            "weight_desc", "positive_weight", "positive_margin", "negative_margin",
+            "weight_det", "det_pos_weight", "weight_orphan", "weight_len",
+            "length_exponent", "weight_premature", "probe_dist",
+            "tau_df", "tau_ang", "min_length", "num_candidates", "num_line_samples",
+        ]
+        for key in expected_keys:
+            self.assertIn(key, cfg["train"], f"Missing {key} in configs/superpoint.yaml under train:")
+
+        # Test train parser injection from YAML
+        t_args, _ = train_parse_args(["--config", "configs/superpoint.yaml"])
+        self.assertEqual(t_args.weight_desc, 1.0)
+        self.assertEqual(t_args.positive_weight, 250.0)
+        self.assertEqual(t_args.weight_orphan, 1.0)
+        self.assertEqual(t_args.weight_len, 0.5)
+        self.assertEqual(t_args.length_exponent, 1.5)
+        self.assertEqual(t_args.tau_df, 0.55)
+        self.assertEqual(t_args.tau_ang, 0.10)
+        self.assertEqual(t_args.min_length, 8.0)
+
+        # Test train CLI override
+        t_over, _ = train_parse_args([
+            "--config", "configs/superpoint.yaml",
+            "--weight-orphan", "3.0",
+            "--tau-df", "0.65",
+            "--length-exponent", "2.0",
+        ])
+        self.assertEqual(t_over.weight_orphan, 3.0)
+        self.assertEqual(t_over.tau_df, 0.65)
+        self.assertEqual(t_over.length_exponent, 2.0)
+        self.assertEqual(t_over.positive_weight, 250.0)  # Untouched YAML default
+
+        # Test eval parser injection from YAML
+        e_args, _ = eval_parse_args(["--config", "configs/superpoint.yaml"])
+        self.assertEqual(e_args.tau_df, 0.55)
+        self.assertEqual(e_args.tau_ang, 0.10)
+        self.assertEqual(e_args.min_length, 8.0)
+        self.assertEqual(e_args.num_candidates, 16)
+
+        # Verify build_loss works with these parsed parameters
+        loss_kwargs = {k: getattr(t_over, k) for k in expected_keys}
+        loss_fn = build_loss("SuperPoint", stage="joint", **loss_kwargs)
+        self.assertEqual(loss_fn.weight_orphan, 3.0)
+        self.assertEqual(loss_fn.tau_df, 0.65)
+        self.assertEqual(loss_fn.length_exponent, 2.0)
+        self.assertEqual(loss_fn.positive_weight, 250.0)
+
     def test_save_and_reload_config(self) -> None:
         """Test saving and re-loading config YAML."""
         import tempfile

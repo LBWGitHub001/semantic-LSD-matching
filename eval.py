@@ -78,6 +78,40 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argpa
     parser.add_argument("--num-workers", type=int, default=2,
                         help="DataLoader worker count (default: 2)")
 
+    # SuperPoint geometric & loss threshold arguments
+    parser.add_argument("--tau-df", type=float, default=None,
+                        help="Distance field alignment threshold (SuperPoint)")
+    parser.add_argument("--tau-ang", type=float, default=None,
+                        help="Angle field direction consistency threshold (SuperPoint)")
+    parser.add_argument("--min-length", type=float, default=None,
+                        help="Minimum line length threshold (SuperPoint)")
+    parser.add_argument("--num-candidates", type=int, default=None,
+                        help="Number of candidate endpoints to sample (SuperPoint)")
+    parser.add_argument("--num-line-samples", type=int, default=None,
+                        help="Number of intermediate samples along candidate lines (SuperPoint)")
+    parser.add_argument("--weight-desc", type=float, default=None,
+                        help="Weight for descriptor matching hinge loss (lambda_desc, SuperPoint)")
+    parser.add_argument("--positive-weight", type=float, default=None,
+                        help="Positive pair weight in descriptor hinge loss (SuperPoint)")
+    parser.add_argument("--positive-margin", type=float, default=None,
+                        help="Positive margin m_p in descriptor hinge loss (SuperPoint)")
+    parser.add_argument("--negative-margin", type=float, default=None,
+                        help="Negative margin m_n in descriptor hinge loss (SuperPoint)")
+    parser.add_argument("--weight-det", type=float, default=None,
+                        help="Weight for endpoint detector loss (lambda_det, SuperPoint)")
+    parser.add_argument("--det-pos-weight", type=float, default=None,
+                        help="Endpoint detector positive class cross-entropy weight (SuperPoint)")
+    parser.add_argument("--weight-orphan", type=float, default=None,
+                        help="Weight for orphan endpoint penalty (lambda_orphan, SuperPoint)")
+    parser.add_argument("--weight-len", type=float, default=None,
+                        help="Weight for line length reward (lambda_len, SuperPoint)")
+    parser.add_argument("--length-exponent", type=float, default=None,
+                        help="Exponent for sublinear/superlinear line length reward (SuperPoint)")
+    parser.add_argument("--weight-premature", type=float, default=None,
+                        help="Weight for premature ray termination penalty (lambda_premature, SuperPoint)")
+    parser.add_argument("--probe-dist", type=float, default=None,
+                        help="Distance in pixels to probe beyond endpoints along ray (SuperPoint)")
+
     from configs import load_config, apply_config_to_parser, pre_parse_config_path
 
     cfg_path = pre_parse_config_path(argv)
@@ -93,6 +127,15 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argpa
 
 def main(argv: list[str] | None = None) -> None:
     args, _parser = parse_args(argv)
+    standard_keys = {
+        "config", "checkpoint", "data_dir", "split", "out_dir",
+        "num_vis", "min_area_ratio", "model_type", "model", "family", "eval_stage",
+        "device", "num_workers",
+    }
+    extra_kwargs = {
+        k: v for k, v in vars(args).items()
+        if k not in standard_keys and v is not None
+    }
     evaluate(
         checkpoint=args.checkpoint,
         data_dir=args.data_dir,
@@ -104,6 +147,7 @@ def main(argv: list[str] | None = None) -> None:
         eval_stage=args.eval_stage,
         device=args.device,
         num_workers=args.num_workers,
+        **extra_kwargs,
     )
 
 

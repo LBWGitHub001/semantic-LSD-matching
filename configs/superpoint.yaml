@@ -31,6 +31,33 @@ train:
   save_interval: 5
   max_steps: null                     # null for full epoch; set integer for dry run
 
+  # ============================================================================
+  # SuperPoint Loss Weights (各损失项 Lambda 权重与几何拓扑超参数)
+  # ============================================================================
+  # 1. 描述子分支度量损失 (Descriptor Metric Hinge Loss)
+  weight_desc: 1.0                    # lambda_desc: 描述子总体损失加权系数
+  positive_weight: 250.0              # 正样本点对在 Hinge Loss 中的加权系数 (拉近同名点)
+  positive_margin: 1.0                # 正样本重投影距离内的截断边缘 (m_p)
+  negative_margin: 0.2                # 负样本点对的截断边缘 (m_n)
+
+  # 2. 端点检测分支损失 (Endpoint Detector Cross-Entropy Loss)
+  weight_det: 1.0                     # lambda_det: 关键点/端点检测网格分类交叉熵损失权重
+  det_pos_weight: 50.0                # 65 通道网格中端点正样本类的加权系数
+
+  # 3. 直线几何拓扑辅助损失 (Line Geometric Losses)
+  weight_orphan: 1.0                  # lambda_orphan: 孤立未连线端点几何惩罚权重
+  weight_len: 0.5                     # lambda_len: 超线性长线收益奖励权重
+  length_exponent: 1.5                # 超线性长线收益指数幂 (指数越大，超长线收益越陡峭)
+  weight_premature: 0.5               # lambda_premature: 端点外推射线探针早退惩罚权重
+  probe_dist: 4.0                     # 外推射线探针像素距离 (px)
+
+  # 4. 直线几何拓扑合法性判定阈值与采样
+  tau_df: 0.55                        # 距离场脊线对齐阈值 (>= 此值判定为在线上)
+  tau_ang: 0.10                       # 角度场切线方向一致性阈值
+  min_length: 8.0                     # 最短成线长度阈值 (px)
+  num_candidates: 16                  # 候选端点提取 Top-K 数量
+  num_line_samples: 10                # 两点间插值采样点数
+
 eval:
   checkpoint: "checkpoints/SuperPoint/latest"
   data_dir: "data/planar_letters"
@@ -40,3 +67,10 @@ eval:
   num_vis: 5
   device: "cuda"
   num_workers: 2
+
+  # 评测与可视化几何线段提取阈值
+  tau_df: 0.55
+  tau_ang: 0.10
+  min_length: 8.0
+  num_candidates: 16
+  num_line_samples: 10

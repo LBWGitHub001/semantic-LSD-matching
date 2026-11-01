@@ -326,9 +326,18 @@ class PointMatchingEvaluator(BaseEvaluator):
             extract_detected_lines,
         )
 
-        del min_area_ratio, kwargs
+        del min_area_ratio
         eval_stage = eval_stage.lower()
-        criterion = build_loss("SuperPoint", stage=eval_stage).to(device)
+        loss_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k in (
+                "weight_desc", "positive_weight", "positive_margin", "negative_margin",
+                "weight_det", "det_pos_weight", "weight_orphan", "weight_len",
+                "length_exponent", "weight_premature", "probe_dist",
+                "tau_df", "tau_ang", "min_length", "num_candidates", "num_line_samples",
+            ) and v is not None
+        }
+        criterion = build_loss("SuperPoint", stage=eval_stage, **loss_kwargs).to(device)
         model.eval()
 
         total_loss = 0.0
@@ -497,9 +506,18 @@ class PointMatchingEvaluator(BaseEvaluator):
             save_superpoint_diagnostic_sheet,
         )
 
-        del min_area_ratio, data_dir, use_region_ds, kwargs
+        del min_area_ratio, data_dir, use_region_ds
         eval_stage = eval_stage.lower()
-        criterion = build_loss("SuperPoint", stage=eval_stage).to(device)
+        loss_kwargs = {
+            k: v for k, v in kwargs.items()
+            if k in (
+                "weight_desc", "positive_weight", "positive_margin", "negative_margin",
+                "weight_det", "det_pos_weight", "weight_orphan", "weight_len",
+                "length_exponent", "weight_premature", "probe_dist",
+                "tau_df", "tau_ang", "min_length", "num_candidates", "num_line_samples",
+            ) and v is not None
+        }
+        criterion = build_loss("SuperPoint", stage=eval_stage, **loss_kwargs).to(device)
         out_dir.mkdir(parents=True, exist_ok=True)
         paths: List[Path] = []
         model.eval()
@@ -634,6 +652,7 @@ def evaluate(
     eval_stage: str = "all",
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     num_workers: int = 4,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Main Factory Function for Unified Evaluation across all models and checkpoints.
@@ -686,10 +705,11 @@ def evaluate(
     evaluator = EvaluatorFactory.create(model_info)
 
     t0 = time.time()
+    call_kwargs = {k: v for k, v in kwargs.items() if k not in {"model", "loader", "device", "min_area_ratio", "eval_stage"}}
     if model_info.get("family") == "point":
-        metrics = evaluator.evaluate(model, loader, dev, min_area_ratio=min_area_ratio, eval_stage=eval_stage)
+        metrics = evaluator.evaluate(model, loader, dev, min_area_ratio=min_area_ratio, eval_stage=eval_stage, **call_kwargs)
     else:
-        metrics = evaluator.evaluate(model, loader, dev, min_area_ratio=min_area_ratio)
+        metrics = evaluator.evaluate(model, loader, dev, min_area_ratio=min_area_ratio, **call_kwargs)
     elapsed = time.time() - t0
 
     print("---------------------------------------------------------------------------")
@@ -733,6 +753,7 @@ def evaluate(
         }
         if model_info.get("family") == "point":
             vis_kwargs["eval_stage"] = eval_stage
+            vis_kwargs.update(call_kwargs)
         vis_paths = evaluator.visualize(**vis_kwargs)
         metrics["visualizations"] = [str(p) for p in vis_paths]
 
