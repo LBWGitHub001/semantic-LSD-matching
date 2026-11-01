@@ -146,15 +146,15 @@ class SuperPointDetectorLoss(nn.Module):
 
     def detector_loss(
         self,
-        heatmap: torch.Tensor,
+        semi_or_heatmap: torch.Tensor,
         points_gt: Any,
     ) -> torch.Tensor:
-        """【类成员损失项 1】端点检测加权二值交叉熵损失 (Detector BCE Loss)."""
+        """【类成员损失项 1】端点检测损失。若传入 65 维 Logits (semi)，使用 SuperPoint 经典网格多分类交叉熵；若为单通道 heatmap，降级为加权 BCE。"""
         if points_gt is None:
-            return torch.tensor(0.0, device=heatmap.device, dtype=heatmap.dtype)
+            return torch.tensor(0.0, device=semi_or_heatmap.device, dtype=semi_or_heatmap.dtype)
 
-        batch_size, _, height, width = heatmap.shape
-        target = torch.zeros_like(heatmap)
+        batch_size = semi_or_heatmap.shape[0]
+        device = semi_or_heatmap.device
 
         if isinstance(points_gt, torch.Tensor):
             if points_gt.dim() == 2:
@@ -168,11 +168,37 @@ class SuperPointDetectorLoss(nn.Module):
         else:
             pts_list = []
 
-        has_any_gt = False
+        has_any_gt = any(pts is not None and len(pts) > 0 for pts in pts_list)
+        if not has_any_gt:
+            return torch.tensor(0.0, device=device, dtype=semi_or_heatmap.dtype)
+
+        # 1. 经典 SuperPoint 65 维 Logits 网格交叉熵 (8x8 cell 分类)
+        if semi_or_heatmap.shape[1] == 65:
+            _, _, hc, wc = semi_or_heatmap.shape
+            labels = torch.full((batch_size, hc, wc), 64, dtype=torch.long, device=device)
+            for b, pts in enumerate(pts_list):
+                if b >= batch_size or pts is None or len(pts) == 0:
+                    continue
+                coords = pts.round().long()
+                for pt in coords:
+                    px = int(pt[0].item())
+                    py = int(pt[1].item())
+                    cx, cy = px // 8, py // 8
+                    dx, dy = px % 8, py % 8
+                    if 0 <= cx < wc and 0 <= cy < hc:
+                        labels[b, cy, cx] = dy * 8 + dx
+
+            weights = torch.ones(65, device=device, dtype=semi_or_heatmap.dtype)
+            weights[:-1] = self.det_pos_weight
+            return F.cross_entropy(semi_or_heatmap, labels, weight=weights)
+
+        # 2. 单通道 Heatmap 加权 BCE 降级方案
+        _, _, height, width = semi_or_heatmap.shape
+        heatmap = semi_or_heatmap
+        target = torch.zeros_like(heatmap)
         for b, pts in enumerate(pts_list):
             if b >= batch_size or pts is None or len(pts) == 0:
                 continue
-            has_any_gt = True
             coords = pts.round().long()
             for pt in coords:
                 px = int(pt[0].clamp(0, width - 1).item())
@@ -184,9 +210,6 @@ class SuperPointDetectorLoss(nn.Module):
                             val = 1.0 if (dy == 0 and dx == 0) else 0.5
                             if val > target[b, 0, ny, nx]:
                                 target[b, 0, ny, nx] = val
-
-        if not has_any_gt:
-            return torch.tensor(0.0, device=heatmap.device, dtype=heatmap.dtype)
 
         bce = -(
             self.det_pos_weight * target * torch.log(heatmap.clamp(min=1e-6))
@@ -348,6 +371,7 @@ class SuperPointDetectorLoss(nn.Module):
         df_map: torch.Tensor,
         af_map: torch.Tensor,
         points_gt: Any = None,
+        semi: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """单视角端点与长线几何联合损失调度。"""
         _, _, height, width = heatmap.shape
@@ -361,7 +385,7 @@ class SuperPointDetectorLoss(nn.Module):
         l_orphan = self.orphan_endpoint_loss(scores, v_matrix)
         l_len = self.max_length_line_loss(scores, dist, v_matrix, height, width)
         l_prem = self.premature_ray_probing_loss(scores, dist, diff, p1, p2, v_matrix, df_map)
-        l_det = self.detector_loss(heatmap, points_gt)
+        l_det = self.detector_loss(semi if semi is not None else heatmap, points_gt)
 
         return {
             "l_orphan": l_orphan,
@@ -398,8 +422,10 @@ class SuperPointDetectorLoss(nn.Module):
             df0, af0 = image0[:, 3:4], image0[:, 4:5]
             df1, af1 = image1[:, 3:4], image1[:, 4:5]
 
-            geom0 = self.line_geometric_loss(pred0["heatmap"], df0, af0, points0)
-            geom1 = self.line_geometric_loss(pred1["heatmap"], df1, af1, points1)
+            semi0 = pred0.get("semi")
+            semi1 = pred1.get("semi")
+            geom0 = self.line_geometric_loss(pred0["heatmap"], df0, af0, points0, semi=semi0)
+            geom1 = self.line_geometric_loss(pred1["heatmap"], df1, af1, points1, semi=semi1)
 
             l_det = 0.5 * (geom0["l_det"] + geom1["l_det"])
             l_orphan = 0.5 * (geom0["l_orphan"] + geom1["l_orphan"])
@@ -580,9 +606,9 @@ class SuperPointJointLoss(nn.Module):
         return self.det_loss_module.compute_line_validity_matrix(sampled_df, sampled_af, dist)
 
     def line_geometric_loss(
-        self, heatmap: torch.Tensor, df_map: torch.Tensor, af_map: torch.Tensor, points_gt: Any = None
+        self, heatmap: torch.Tensor, df_map: torch.Tensor, af_map: torch.Tensor, points_gt: Any = None, semi: torch.Tensor | None = None
     ) -> dict[str, torch.Tensor]:
-        return self.det_loss_module.line_geometric_loss(heatmap, df_map, af_map, points_gt)
+        return self.det_loss_module.line_geometric_loss(heatmap, df_map, af_map, points_gt, semi=semi)
 
     # 别名映射
     loss_descriptor = descriptor_loss

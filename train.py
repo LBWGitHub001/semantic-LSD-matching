@@ -1510,6 +1510,8 @@ def _point_validate(
                         loss_fn,
                         pair_id=pair_id,
                         metrics_summary={"loss": step_loss},
+                        points0=moved.get("points0"),
+                        points1=moved.get("points1"),
                     )
 
                 # 2. 描述验证: 配对情况 (*_matching.jpg)

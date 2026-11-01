@@ -221,14 +221,15 @@ def save_detection_mask_lines_figure(
     loss_module: Any,
     pair_id: str = "",
     metrics_summary: dict[str, Any] | None = None,
+    points0: torch.Tensor | np.ndarray | None = None,
+    points1: torch.Tensor | np.ndarray | None = None,
 ) -> None:
-    """渲染【检测验证: 原始掩膜 + 直线】图 (*_detection.jpg)。
+    """渲染【检测验证: 原始端点与重构直线 + 预测热力图】图 (*_detection.jpg)。
 
     核心元素:
-    1. 底图: 原始图像与归一化对数距离场掩膜 (df_map) 高保真半透明融合，高亮显示字符笔画骨架线脊;
-    2. 预测直线: 绿色实线标注两端点连接的合法直线段，在线段中心标注像素长度 (px);
-    3. 端点标记: 黄色实心点标注成线端点，红色倾斜叉号标注未连线的孤立端点;
-    4. 底部横幅: 标注直线条数、平均线长、距离场对齐度与孤立率。
+    1. 上排主图: 原始图像上清晰绘制真实端点 (绿色圆环)、预测端点 (黄色成线/红色孤立/青色候选) 与重构直线 (亮绿实线);
+    2. 下排副图: 模型实际输出的高分辨率端点概率热力图 (pred['heatmap']) TURBO 伪彩色叠加显示;
+    3. 底部状态栏: 标注直线条数、平均线长、端点最大置信度、孤立率与图例。
     """
     left_raw = np.ascontiguousarray(bgr0)
     right_raw = np.ascontiguousarray(bgr1)
@@ -241,25 +242,30 @@ def save_detection_mask_lines_figure(
     geom0 = extract_detected_lines(pred0["heatmap"], df0, af0, loss_module)
     geom1 = extract_detected_lines(pred1["heatmap"], df1, af1, loss_module)
 
-    def _render_mask_lines(raw: np.ndarray, df: torch.Tensor, geom: dict[str, Any]) -> np.ndarray:
-        if df.dim() == 4 and df.shape[1] == 1:
-            df_np = df[0, 0].detach().cpu().numpy()
-        elif df.dim() == 3:
-            df_np = df[0].detach().cpu().numpy()
-        else:
-            df_np = df.detach().cpu().numpy()
+    def _render_reconstructed_lines(
+        raw: np.ndarray,
+        geom: dict[str, Any],
+        pts_gt: Any,
+        view_idx: int,
+    ) -> np.ndarray:
+        canvas = raw.copy()
 
-        df_u8 = (np.clip(df_np, 0.0, 1.0) * 255).astype(np.uint8)
-        mask_colored = cv2.applyColorMap(df_u8, cv2.COLORMAP_VIRIDIS)
-        canvas = cv2.addWeighted(raw, 0.55, mask_colored, 0.45, 0)
+        # 1. 绘制真实 GT 角点 (绿色空心圆环)
+        if pts_gt is not None:
+            gt_arr = pts_gt.detach().cpu().numpy() if torch.is_tensor(pts_gt) else np.asarray(pts_gt)
+            if gt_arr.ndim == 3:
+                gt_arr = gt_arr[0]
+            for pt in gt_arr:
+                gx, gy = int(round(float(pt[0]))), int(round(float(pt[1])))
+                cv2.circle(canvas, (gx, gy), 4, (0, 255, 0), 1, cv2.LINE_AA)
 
-        # 绘制合法长直线
+        # 2. 绘制合法长直线
         for line in geom["lines"]:
             p1 = (int(round(float(line["p1"][0]))), int(round(float(line["p1"][1]))))
             p2 = (int(round(float(line["p2"][0]))), int(round(float(line["p2"][1]))))
             cv2.line(canvas, p1, p2, (0, 255, 60), 2, cv2.LINE_AA)
-            cv2.circle(canvas, p1, 3, (0, 255, 255), -1, cv2.LINE_AA)
-            cv2.circle(canvas, p2, 3, (0, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(canvas, p1, 4, (0, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(canvas, p2, 4, (0, 255, 255), -1, cv2.LINE_AA)
             mid_x = (p1[0] + p2[0]) // 2
             mid_y = (p1[1] + p2[1]) // 2
             cv2.putText(
@@ -273,45 +279,86 @@ def save_detection_mask_lines_figure(
                 cv2.LINE_AA,
             )
 
-        # 标注孤立端点为红色叉号
-        for i, pt in enumerate(geom["endpoints"]):
-            if i in np.where(geom["scores"] >= 0.05)[0]:
-                is_orphan = not any(
-                    np.allclose(line["p1"], pt, atol=1.0) or np.allclose(line["p2"], pt, atol=1.0)
-                    for line in geom["lines"]
-                )
-                if is_orphan:
-                    cx, cy = int(round(float(pt[0]))), int(round(float(pt[1])))
-                    cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 6, 1, cv2.LINE_AA)
+        # 3. 标注候选与孤立端点
+        sc = geom["scores"]
+        pts = geom["endpoints"]
+        for i, pt in enumerate(pts):
+            cx, cy = int(round(float(pt[0]))), int(round(float(pt[1])))
+            score_val = float(sc[i])
+            is_line_pt = any(
+                np.allclose(line["p1"], pt, atol=1.0) or np.allclose(line["p2"], pt, atol=1.0)
+                for line in geom["lines"]
+            )
+            if is_line_pt:
+                continue
 
+            # 孤立端点
+            if score_val >= 0.05:
+                cv2.drawMarker(canvas, (cx, cy), (0, 0, 255), cv2.MARKER_TILTED_CROSS, 7, 2, cv2.LINE_AA)
+                cv2.putText(
+                    canvas, f"{score_val:.2f}", (cx + 4, cy - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 165, 255), 1, cv2.LINE_AA
+                )
+            elif i < 8:
+                # 初始阶段低分候选点 (前 8 个)
+                cv2.drawMarker(canvas, (cx, cy), (255, 200, 0), cv2.MARKER_TILTED_CROSS, 5, 1, cv2.LINE_AA)
+                cv2.putText(
+                    canvas, f"{score_val:.2f}", (cx + 3, cy - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.28, (200, 200, 200), 1, cv2.LINE_AA
+                )
+
+        _draw_panel_title(canvas, f"[View {view_idx}] Reconstructed Lines ({geom['num_lines']}) & Endpoints")
         return canvas
 
-    view0_vis = _render_mask_lines(left_raw, df0, geom0)
-    view1_vis = _render_mask_lines(right_raw, df1, geom1)
-    _draw_panel_title(view0_vis, f"[View 0] Mask + Detected Lines ({geom0['num_lines']})")
-    _draw_panel_title(view1_vis, f"[View 1] Mask + Detected Lines ({geom1['num_lines']})")
+    def _render_heatmap(raw: np.ndarray, heatmap: torch.Tensor, view_idx: int) -> np.ndarray:
+        if heatmap.dim() == 4 and heatmap.shape[1] == 1:
+            h_np = heatmap[0, 0].detach().cpu().numpy()
+        elif heatmap.dim() == 3:
+            h_np = heatmap[0].detach().cpu().numpy()
+        else:
+            h_np = heatmap.detach().cpu().numpy()
 
-    main_canvas = np.concatenate([view0_vis, view1_vis], axis=1)
+        h_min, h_max = float(h_np.min()), float(h_np.max())
+        h_norm = (h_np - h_min) / max(h_max - h_min, 1e-6)
+        h_u8 = (np.clip(h_norm, 0.0, 1.0) * 255).astype(np.uint8)
+        h_color = cv2.applyColorMap(h_u8, cv2.COLORMAP_TURBO)
+        vis = cv2.addWeighted(raw, 0.38, h_color, 0.62, 0)
+        _draw_panel_title(vis, f"[View {view_idx}] Predicted Heatmap (max: {h_max:.4f}, mean: {h_np.mean():.4f})")
+        return vis
+
+    view0_vis = _render_reconstructed_lines(left_raw, geom0, points0, 0)
+    view1_vis = _render_reconstructed_lines(right_raw, geom1, points1, 1)
+    heat0_vis = _render_heatmap(left_raw, pred0["heatmap"], 0)
+    heat1_vis = _render_heatmap(right_raw, pred1["heatmap"], 1)
+
+    top_row = np.concatenate([view0_vis, view1_vis], axis=1)
+    bottom_row = np.concatenate([heat0_vis, heat1_vis], axis=1)
+    main_canvas = np.vstack([top_row, bottom_row])
 
     # 底部状态栏
-    banner_h = 48
+    banner_h = 56
     banner = np.zeros((banner_h, img_w * 2, 3), dtype=np.uint8) + 24
     cv2.rectangle(banner, (0, 0), (img_w * 2 - 1, banner_h - 1), (60, 60, 60), 1)
 
+    gt_info0 = f"GT: {len(points0)}" if points0 is not None else ""
+    gt_info1 = f"GT: {len(points1)}" if points1 is not None else ""
     title_str = (
-        f"Detection Validation: {pair_id} | Lines: V0={geom0['num_lines']} (avg {geom0['mean_length']:.1f}px), "
-        f"V1={geom1['num_lines']} (avg {geom1['mean_length']:.1f}px)"
+        f"Detection & Heatmap: {pair_id} | Lines: V0={geom0['num_lines']} (avg {geom0['mean_length']:.1f}px), "
+        f"V1={geom1['num_lines']} (avg {geom1['mean_length']:.1f}px) | {gt_info0} {gt_info1}".strip()
     )
+    max_s0 = float(geom0['scores'].max()) if len(geom0['scores']) > 0 else 0.0
+    max_s1 = float(geom1['scores'].max()) if len(geom1['scores']) > 0 else 0.0
     sub_str = (
-        f"Orphan Endpoints: V0={geom0['orphan_count']} ({geom0['orphan_rate']*100:.1f}%), "
-        f"V1={geom1['orphan_count']} ({geom1['orphan_rate']*100:.1f}%) | "
-        f"Line Ridge Alignment: V0={geom0['mean_df']:.2f}, V1={geom1['mean_df']:.2f}"
+        f"Endpoints MaxScore: V0={max_s0:.3f}, V1={max_s1:.3f} | "
+        f"Orphans: V0={geom0['orphan_count']} ({geom0['orphan_rate']*100:.1f}%), "
+        f"V1={geom1['orphan_count']} ({geom1['orphan_rate']*100:.1f}%)"
     )
     if metrics_summary and "loss" in metrics_summary:
         sub_str += f" | Loss={metrics_summary['loss']:.4f}"
 
-    cv2.putText(banner, title_str, (16, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (230, 230, 230), 1, cv2.LINE_AA)
-    cv2.putText(banner, sub_str, (16, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (150, 230, 255), 1, cv2.LINE_AA)
+    legend_str = "Legend: [Green Ring]=GT Corner | [Yellow Dot]=Line Endpoint | [Red/Cyan Cross]=Orphan | [Green Line]=Valid Line"
+
+    cv2.putText(banner, title_str, (16, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (230, 230, 230), 1, cv2.LINE_AA)
+    cv2.putText(banner, sub_str, (16, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (150, 230, 255), 1, cv2.LINE_AA)
+    cv2.putText(banner, legend_str, (16, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (180, 220, 180), 1, cv2.LINE_AA)
 
     combined = np.vstack([main_canvas, banner])
     destination = Path(path)

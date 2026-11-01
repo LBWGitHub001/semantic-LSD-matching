@@ -552,6 +552,8 @@ class PointMatchingEvaluator(BaseEvaluator):
                         criterion,
                         pair_id=pair_id,
                         metrics_summary=metrics_summary,
+                        points0=pts0_gt,
+                        points1=pts1_gt,
                     )
                     paths.append(det_dest)
 
