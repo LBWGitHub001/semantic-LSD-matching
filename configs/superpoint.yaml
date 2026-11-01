@@ -1,0 +1,42 @@
+# ==============================================================================
+# Model Configuration: SuperPoint (Interest Points & Line Geometry)
+# ==============================================================================
+
+model:
+  model_type: "SuperPoint"
+  family: "point"
+  in_channels: 5
+  d_model: 256
+  descriptor_dim: 256
+
+data_generation:
+  task: "planar_letters"              # Options: planar_letters, descriptor_shapes
+  out_dir: "data/planar_letters"      # Output dataset path
+  num_scenes: 26                      # Alphabet letters A through Z
+  views_per_scene: 4                  # Views per character scene
+  seed: 42
+
+train:
+  data_dir: "data/planar_letters"
+  train_stage: "joint"                # Options: joint, detector, descriptor
+  epochs: 15
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_size: 1
+  grad_accum: 1
+  amp: true
+  device: "cuda"
+  save_dir: "checkpoints/SuperPoint"
+  val_interval: 1
+  save_interval: 5
+  max_steps: null                     # null for full epoch; set integer for dry run
+
+eval:
+  checkpoint: "checkpoints/SuperPoint/latest"
+  data_dir: "data/planar_letters"
+  split: "val"                        # Options: train, val, test
+  eval_stage: "all"                   # Options: all, detector, descriptor
+  out_dir: "outputs/superpoint_eval"
+  num_vis: 5
+  device: "cuda"
+  num_workers: 2

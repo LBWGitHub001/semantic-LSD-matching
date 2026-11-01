@@ -81,10 +81,12 @@ def get_git_commit() -> str:
 
 
 def save_config_json(config_path: Path, config_data: dict) -> None:
-    """Atomically writes an explanatory configuration and experiment metadata JSON."""
+    """Atomically writes an explanatory configuration and experiment metadata JSON and YAML."""
     try:
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=2, ensure_ascii=False)
+        from configs import save_config
+        save_config(config_data, config_path.with_suffix(".yaml"))
     except Exception as e:
         print(f"[!] Warning: Failed to write {config_path.name}: {e}")
 
@@ -109,8 +111,10 @@ def worker_init_fn(worker_id: int) -> None:
     cv2.setNumThreads(0)
 
 
-def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
+def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(description="Unified Trainer for Line & Object Matching Networks")
+    parser.add_argument("--config", "-c", type=str, default=None,
+                        help="Path to YAML configuration file (e.g., configs/superpoint.yaml)")
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
                         choices=get_available_models(),
                         help="Model architecture: 'xfeat_object', 'xfeat_line_matcher', 'semantic_line_matcher', 'mask_line', 'line_transformer'")
@@ -153,7 +157,15 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser.add_argument("--no-pyramid", dest="use_pyramid", action="store_false", help="Disable multi-scale feature pyramid (use single-scale legacy backbone)")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per epoch for quick dry-run")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    return parser.parse_args(), parser
+
+    from configs import load_config, apply_config_to_parser, pre_parse_config_path
+
+    cfg_path = pre_parse_config_path(argv)
+    if cfg_path:
+        cfg_dict = load_config(cfg_path)
+        apply_config_to_parser(parser, cfg_dict, section="train")
+
+    return parser.parse_args(argv), parser
 
 
 def train_applicable_arguments(model_type: str) -> set[str]:
@@ -1168,6 +1180,7 @@ def train_homography_pipeline(args: argparse.Namespace) -> None:
     run_name = args.run_name or f"{args.model_type}+{data_dir.name}+【{start_time_str}】"
     save_dir = base_save_dir if args.no_timestamp else base_save_dir / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
+    update_latest_symlink(base_save_dir, save_dir)
     device = torch.device(args.device)
     lr = args.lr if args.lr is not None else 1e-4
     train_ds = HomoMatcherDataset(data_dir, split="train", sample_points=args.line_sample_points)
@@ -1299,6 +1312,7 @@ def train_point_pipeline(args: argparse.Namespace) -> None:
     run_name = args.run_name or f"{args.model_type}_{train_stage}+{data_dir.name}+【{start_time_str}】"
     save_dir = base_save_dir if args.no_timestamp else base_save_dir / run_name
     save_dir.mkdir(parents=True, exist_ok=True)
+    update_latest_symlink(base_save_dir, save_dir)
     vis_dir = save_dir / "visualizations"
     device = torch.device(args.device)
     lr = args.lr if args.lr is not None else 1e-3

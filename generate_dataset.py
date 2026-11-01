@@ -1419,6 +1419,8 @@ class DatasetGeneratorFactory:
 # ==============================================================================
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified Multi-Modal Dataset Generator Factory with Pluggable Components")
+    parser.add_argument("--config", "-c", type=str, default=None,
+                        help="Path to YAML configuration file (e.g., configs/superpoint.yaml)")
     parser.add_argument("--task", type=str, default="semantic_line",
                         choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "FCN_field", "descriptor_shapes", "planar_letters"],
                         help="Generator task preset")
@@ -1454,12 +1456,18 @@ def applicable_arguments(task: str) -> set[str]:
     return common | {"num_scenes", "views_per_scene", "min_line_len", "random_colors", "seed"}
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     from factory_args import warn_unused_arguments
+    from configs import load_config, apply_config_to_parser, pre_parse_config_path
 
     parser = build_parser()
-    args = parser.parse_args()
-    warn_unused_arguments(parser, applicable_arguments(args.task), args.task)
+    cfg_path = pre_parse_config_path(argv)
+    if cfg_path:
+        cfg_dict = load_config(cfg_path)
+        apply_config_to_parser(parser, cfg_dict, section="data_generation")
+
+    args = parser.parse_args(argv)
+    warn_unused_arguments(parser, applicable_arguments(args.task), args.task, argv=argv)
 
     if args.task == "FCN_field" and args.out_dir == "data/synthetic_semantic_lines":
         args.out_dir = "data/homo_matcher"

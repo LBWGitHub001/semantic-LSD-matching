@@ -19,6 +19,9 @@ def explicit_flags(parser: argparse.ArgumentParser, argv: list[str] | None = Non
     return found
 
 
+GLOBAL_EXEMPT_DESTS = {"config", "help"}
+
+
 def warn_unused_arguments(
     parser: argparse.ArgumentParser,
     applicable: set[str],
@@ -34,7 +37,7 @@ def warn_unused_arguments(
     for token in tokens:
         name = token.split("=", 1)[0]
         for action in parser._actions:
-            if name in action.option_strings and action.dest not in applicable:
+            if name in action.option_strings and action.dest not in applicable and action.dest not in GLOBAL_EXEMPT_DESTS:
                 ignored.append(name)
                 break
     if ignored:

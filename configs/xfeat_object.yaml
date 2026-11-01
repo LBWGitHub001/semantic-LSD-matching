@@ -1,0 +1,46 @@
+# ==============================================================================
+# Model Configuration: xfeat_object (Object Bipartite Matcher "连连看")
+# ==============================================================================
+
+model:
+  model_type: "xfeat_object"
+  family: "object"
+  d_model: 128
+  num_layers: 2
+  nhead: 4
+  use_pyramid: true
+  sinkhorn_iters: 20
+
+data_generation:
+  task: "object"
+  out_dir: "data/synthetic_object_matching_scenes"
+  num_scenes: 50
+  views_per_scene: 8
+  seed: 42
+
+train:
+  data_dir: "data/structured3d_semantic_regions"
+  epochs: 12
+  lr: 0.0005
+  weight_decay: 0.0001
+  dustbin_weight: 0.3
+  motion_weight: 0.2
+  motion_margin: 0.15
+  min_area_ratio: 0.50
+  grad_accum: 1
+  amp: true
+  device: "cuda"
+  save_dir: "checkpoints/xfeat_object_matcher"
+  val_interval: 1
+  save_interval: 5
+  max_steps: null
+
+eval:
+  checkpoint: "checkpoints/xfeat_object_matcher/latest"
+  data_dir: "data/structured3d_semantic_regions"
+  split: "test"
+  out_dir: "outputs/semantic_matching_vis"
+  min_area_ratio: 0.50
+  num_vis: 10
+  device: "cuda"
+  num_workers: 2

@@ -49,6 +49,12 @@ def resolve_checkpoint_path(ckpt_path: Path | str) -> Tuple[Path, Optional[dict]
             else:
                 raise FileNotFoundError(f"No .pth checkpoint files found in directory: {path}")
 
+    if not path.exists() and path.name == "latest" and path.parent.is_dir():
+        # Fallback to the latest modified run directory in path.parent
+        runs = sorted([d for d in path.parent.iterdir() if d.is_dir() and not d.is_symlink()], key=lambda d: d.stat().st_mtime)
+        if runs:
+            return resolve_checkpoint_path(runs[-1])
+
     if not path.is_file():
         raise FileNotFoundError(f"Checkpoint file not found: {path}")
 

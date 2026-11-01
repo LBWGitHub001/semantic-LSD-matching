@@ -53,9 +53,11 @@ __all__ = [
 ]
 
 
-def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
+def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(description="Unified Evaluator for Line & Object Matchers")
-    parser.add_argument("--checkpoint", type=str, required=True,
+    parser.add_argument("--config", "-c", type=str, default=None,
+                        help="Path to YAML configuration file (e.g., configs/superpoint.yaml)")
+    parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to .pth checkpoint file or run directory (containing best_model.pth / last_model.pth / latest)")
     parser.add_argument("--data-dir", type=str, default="data/structured3d_semantic_regions",
                         help="Path to dataset directory (defaults to semantic regions)")
@@ -75,11 +77,22 @@ def parse_args() -> tuple[argparse.Namespace, argparse.ArgumentParser]:
                         help="Device to run evaluation on")
     parser.add_argument("--num-workers", type=int, default=2,
                         help="DataLoader worker count (default: 2)")
-    return parser.parse_args(), parser
+
+    from configs import load_config, apply_config_to_parser, pre_parse_config_path
+
+    cfg_path = pre_parse_config_path(argv)
+    if cfg_path:
+        cfg_dict = load_config(cfg_path)
+        apply_config_to_parser(parser, cfg_dict, section="eval")
+
+    args = parser.parse_args(argv)
+    if not args.checkpoint:
+        parser.error("the following arguments are required: --checkpoint (or specify in --config)")
+    return args, parser
 
 
-def main() -> None:
-    args, _parser = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args, _parser = parse_args(argv)
     evaluate(
         checkpoint=args.checkpoint,
         data_dir=args.data_dir,

@@ -1,0 +1,38 @@
+# ==============================================================================
+# Model Configuration: FCN_field (DeepLSD Continuous Geometry Field Homography)
+# ==============================================================================
+
+model:
+  model_type: "FCN_field"
+  family: "homography"
+  in_channels: 2
+  feat_dim: 64
+  grid_size: 16
+
+data_generation:
+  task: "FCN_field"
+  out_dir: "data/homo_matcher"
+  s3d_dir: "Structured3D_perspective_full_00/Structured3D"
+  max_scenes: null
+  num_workers: 8
+  max_pairs: null
+
+train:
+  data_dir: "data/homo_matcher"
+  epochs: 10
+  lr: 0.0001
+  weight_decay: 0.0001
+  save_dir: "checkpoints/FCN_field"
+  device: "cuda"
+  val_interval: 1
+  save_interval: 5
+  max_steps: null
+
+eval:
+  checkpoint: "checkpoints/FCN_field/latest"
+  data_dir: "data/homo_matcher"
+  split: "test"
+  out_dir: "outputs/fcn_field_eval"
+  num_vis: 5
+  device: "cuda"
+  num_workers: 2
