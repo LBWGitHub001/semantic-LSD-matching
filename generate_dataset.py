@@ -1089,19 +1089,8 @@ class Structured3DLineRegionComponent(BaseDatasetComponent):
 
 
 # ==============================================================================
-# 6b. Component: DeepLSD homography pairs
+# 6b. Component: Descriptor Shapes
 # ==============================================================================
-class FCNFieldComponent(BaseDatasetComponent):
-    """Structured3D pairs with RGB, depth, and DeepLSD distance/angle fields."""
-
-    name = "FCN_field"
-
-    def build_dataset(self, out_dir: Path | str, s3d_dir: Path | str, **kwargs: Any) -> dict[str, Any]:
-        from datasets.homo_matcher_generate import build_homo_matcher_dataset
-
-        return build_homo_matcher_dataset(out_dir=out_dir, s3d_dir=s3d_dir, **kwargs)
-
-
 class DescriptorShapesComponent(BaseDatasetComponent):
     """Synthetic 3D shapes, noisy backgrounds, and cross-view corner matches."""
 
@@ -1155,7 +1144,6 @@ class DatasetGeneratorFactory:
         "wireframe_3d": Wireframe3DLineComponent,
         "structured3d_lines": Structured3DLineRegionComponent,
         "structured3d": Structured3DLineRegionComponent,
-        "FCN_field": FCNFieldComponent,
         "descriptor_shapes": DescriptorShapesComponent,
         "planar_letters": PlanarLettersComponent,
     }
@@ -1194,8 +1182,6 @@ class DatasetGeneratorFactory:
             selected_names = list(component_names)
         elif task in ("structured3d_lines", "structured3d"):
             selected_names = ["structured3d_lines"]
-        elif task == "FCN_field":
-            selected_names = ["FCN_field"]
         elif task == "descriptor_shapes":
             selected_names = ["descriptor_shapes"]
         elif task == "planar_letters":
@@ -1422,7 +1408,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-c", type=str, default=None,
                         help="Path to YAML configuration file (e.g., configs/superpoint.yaml)")
     parser.add_argument("--task", type=str, default="semantic_line",
-                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "FCN_field", "descriptor_shapes", "planar_letters"],
+                        choices=["semantic_line", "object", "line", "all", "structured3d_lines", "structured3d", "descriptor_shapes", "planar_letters"],
                         help="Generator task preset")
     parser.add_argument("--components", type=str, default=None,
                         help="Comma-separated custom components (e.g., 'object,lsd_line')")
@@ -1433,14 +1419,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--random-colors", action="store_true", default=True, help="Synthetic tasks only. Enable Dimension 2 randomized material palettes & shading")
     parser.add_argument("--seed", type=int, default=42, help="Synthetic tasks only. Random seed")
 
-    parser.add_argument("--s3d-dir", type=str, default="Structured3D_perspective_full_00/Structured3D", help="structured3d / FCN_field. Structured3D raw directory")
-    parser.add_argument("--max-scenes", type=int, default=None, help="structured3d / FCN_field. Max scenes (default: all available)")
-    parser.add_argument("--num-workers", type=int, default=os.cpu_count() or 8, help="structured3d: processes. FCN_field: read/write threads. GPU inference stays on one device")
+    parser.add_argument("--s3d-dir", type=str, default="Structured3D_perspective_full_00/Structured3D", help="structured3d raw directory")
+    parser.add_argument("--max-scenes", type=int, default=None, help="structured3d max scenes (default: all available)")
+    parser.add_argument("--num-workers", type=int, default=os.cpu_count() or 8, help="structured3d worker processes")
     parser.add_argument("--min-matches", type=int, default=3, help="structured3d only. Minimum matching regions per viewpoint pair")
     parser.add_argument("--min-area-ratio", type=float, default=0.40, help="structured3d only. Minimum mutually matched co-visible area ratio (default: 0.40)")
     parser.add_argument("--max-rotation", type=float, default=85.0, help="structured3d only. Maximum camera rotation in degrees (default: 85.0)")
-    parser.add_argument("--max-pairs", type=int, default=None, help="FCN_field only. Stop after this many pairs")
-    parser.add_argument("--weight", type=str, default=None, help="FCN_field only. DeepLSD weight path")
     return parser
 
 
@@ -1449,8 +1433,6 @@ def applicable_arguments(task: str) -> set[str]:
     common = {"task", "components", "out_dir"}
     if task in ("structured3d_lines", "structured3d"):
         return common | {"s3d_dir", "max_scenes", "num_workers", "min_matches", "min_area_ratio", "max_rotation"}
-    if task == "FCN_field":
-        return common | {"s3d_dir", "max_scenes", "num_workers", "max_pairs", "weight"}
     if task in ("descriptor_shapes", "planar_letters"):
         return common | {"num_scenes", "views_per_scene", "seed"}
     return common | {"num_scenes", "views_per_scene", "min_line_len", "random_colors", "seed"}
@@ -1469,8 +1451,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     warn_unused_arguments(parser, applicable_arguments(args.task), args.task, argv=argv)
 
-    if args.task == "FCN_field" and args.out_dir == "data/synthetic_semantic_lines":
-        args.out_dir = "data/homo_matcher"
     if args.task == "descriptor_shapes" and args.out_dir == "data/synthetic_semantic_lines":
         args.out_dir = "data/synthetic_descriptors"
     if args.task == "planar_letters" and args.out_dir == "data/synthetic_semantic_lines":
@@ -1502,17 +1482,6 @@ def main(argv: list[str] | None = None) -> None:
             min_matches=args.min_matches,
             min_area_ratio=args.min_area_ratio,
             max_rotation_deg=args.max_rotation,
-        )
-    elif args.task == "FCN_field":
-        component = factory.components[0]
-        weight_kwargs = {"weight": args.weight} if args.weight else {}
-        component.build_dataset(
-            out_dir=args.out_dir,
-            s3d_dir=args.s3d_dir,
-            max_scenes=args.max_scenes,
-            max_pairs=args.max_pairs,
-            num_workers=args.num_workers,
-            **weight_kwargs,
         )
     elif args.task == "descriptor_shapes":
         component = factory.components[0]

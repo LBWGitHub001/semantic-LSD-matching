@@ -384,6 +384,140 @@ class TestSuperPoint(unittest.TestCase):
             self.assertTrue(pca_path.is_file())
             self.assertGreater(pca_path.stat().st_size, 500)
 
+    def test_progressive_stages_and_weights(self) -> None:
+        """测试 5 阶段逐步损失训练架构与其动态权重切换。"""
+        from models.superpoint.loss import STAGE_LOSS_WEIGHTS
+
+        loss_fn = SuperPointLoss()
+        expected_stages = [
+            "stage1_det_warmup",
+            "stage2_det_geom",
+            "stage3_desc_intra",
+            "stage4_desc_cross",
+            "stage5_joint",
+        ]
+        for s in expected_stages:
+            self.assertIn(s, STAGE_LOSS_WEIGHTS)
+
+        # 1. 验证 stage1_det_warmup
+        loss_fn.set_stage("stage1_det_warmup")
+        self.assertEqual(loss_fn.weight_det, 1.0)
+        self.assertEqual(loss_fn.weight_orphan, 0.0)
+        self.assertEqual(loss_fn.weight_intra, 0.0)
+
+        # 2. 验证 stage2_det_geom
+        loss_fn.set_stage("stage2_det_geom")
+        self.assertEqual(loss_fn.weight_det, 1.0)
+        self.assertEqual(loss_fn.weight_orphan, 1.0)
+        self.assertEqual(loss_fn.weight_len, 0.5)
+        self.assertEqual(loss_fn.weight_premature, 0.5)
+        self.assertEqual(loss_fn.weight_intra, 0.0)
+
+        # 3. 验证 stage3_desc_intra
+        loss_fn.set_stage("stage3_desc_intra")
+        self.assertEqual(loss_fn.weight_det, 0.0)
+        self.assertEqual(loss_fn.weight_intra, 1.0)
+        self.assertEqual(loss_fn.weight_bg, 0.3)
+        self.assertEqual(loss_fn.weight_cross, 0.0)
+
+        # 4. 验证 stage5_joint
+        loss_fn.set_stage("stage5_joint")
+        self.assertEqual(loss_fn.weight_det, 1.0)
+        self.assertEqual(loss_fn.weight_intra, 1.0)
+        self.assertEqual(loss_fn.weight_cross, 1.5)
+
+    def test_trainer_and_eval_helpers(self) -> None:
+        """测试解耦后的 SuperPointTrainerHelper 与 SuperPointEvalHelper。"""
+        import tempfile
+        from models.superpoint.utils import SuperPointTrainerHelper, SuperPointEvalHelper
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            p_tmp = Path(tmp_dir)
+            trainer_helper = SuperPointTrainerHelper(
+                data_dir="data/planar_letters",
+                save_dir=str(p_tmp / "ckpt"),
+                epochs=1,
+                device="cpu",
+                train_stage="stage2_det_geom",
+                progressive=True,
+                curriculum=[
+                    {"epochs": [1, 1], "stage": "stage1_det_warmup"},
+                ],
+            )
+            model, loss_fn, optimizer, train_loader, val_loader = trainer_helper.setup()
+            stage = trainer_helper.update_stage(model, loss_fn, epoch=1)
+            self.assertEqual(stage, "stage1_det_warmup")
+            self.assertEqual(loss_fn.weight_det, 1.0)
+            self.assertEqual(loss_fn.weight_orphan, 0.0)
+
+            eval_helper = SuperPointEvalHelper(
+                data_dir="data/planar_letters",
+                checkpoint=str(p_tmp / "non_existent.pth"),
+                out_dir=str(p_tmp / "eval_out"),
+                num_vis=0,
+                device="cpu",
+                eval_stage="all",
+            )
+            e_model, criterion, loader = eval_helper.setup()
+            self.assertIsNotNone(e_model)
+            self.assertIsNotNone(criterion)
+
+    def test_pure_line_detector_loss(self) -> None:
+        """测试纯直线场找线检测层: 仅保留距离场像素比较与角度场极差比较，其余全部锁定。"""
+        from models.superpoint.loss import SuperPointLoss, loss_line_distance, loss_line_angle
+
+        # 1. 验证 detector 阶段权重
+        loss_fn = SuperPointLoss(stage="detector")
+        self.assertEqual(loss_fn.weight_dist, 1.0)
+        self.assertEqual(loss_fn.weight_ang, 1.0)
+        self.assertEqual(loss_fn.weight_det, 0.0)
+        self.assertEqual(loss_fn.weight_orphan, 0.0)
+        self.assertEqual(loss_fn.weight_len, 0.0)
+        self.assertEqual(loss_fn.weight_premature, 0.0)
+        self.assertEqual(loss_fn.weight_intra, 0.0)
+        self.assertEqual(loss_fn.weight_cross, 0.0)
+        self.assertEqual(loss_fn.weight_desc, 0.0)
+
+        # 2. 验证模型分支参数锁定
+        model = build_model("SuperPoint")
+        model.set_train_stage("detector")
+        self.assertTrue(model.convPa.weight.requires_grad)
+        self.assertTrue(model.convPb.weight.requires_grad)
+        self.assertFalse(model.convDa.weight.requires_grad)
+        self.assertFalse(model.convDb.weight.requires_grad)
+
+        # 3. 前向计算与反向梯度验证
+        img0 = torch.rand(1, 5, 64, 64)
+        img1 = torch.rand(1, 5, 64, 64)
+        pred0 = model(img0)
+        pred1 = model(img1)
+        homo = torch.eye(3).unsqueeze(0)
+
+        out = loss_fn(pred0, pred1, homo, image0=img0, image1=img1)
+        self.assertIn("l_dist", out)
+        self.assertIn("l_ang", out)
+        self.assertTrue(torch.isfinite(out["l_dist"]))
+        self.assertTrue(torch.isfinite(out["l_ang"]))
+        self.assertTrue(torch.isfinite(out["loss"]))
+
+        out["loss"].backward()
+        # 检测头具有梯度，描述子头无梯度
+        self.assertIsNotNone(model.convPb.weight.grad)
+        self.assertTrue(torch.isfinite(model.convPb.weight.grad).all())
+        self.assertIsNone(model.convDb.weight.grad)
+
+        # 4. 独立测试数学算子
+        sampled_df = torch.ones(1, 4, 4, 10)  # 完全在距离脊线上 (1.0)
+        sampled_af = torch.full((1, 4, 4, 10), 0.5)  # 角度恒定
+        pair_scores = torch.full((1, 4, 4), 0.8)
+
+        l_dist = loss_line_distance(sampled_df, pair_scores, tau_df=0.55)
+        l_ang = loss_line_angle(sampled_af, pair_scores, tau_ang=0.10)
+        self.assertTrue(torch.isfinite(l_dist))
+        self.assertTrue(torch.isfinite(l_ang))
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

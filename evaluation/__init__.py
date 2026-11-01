@@ -11,7 +11,6 @@ from evaluation.evaluators import (
     BaseEvaluator,
     ObjectMatchingEvaluator,
     LineMatchingEvaluator,
-    HomographyEvaluator,
     EvaluatorFactory,
     evaluate,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "BaseEvaluator",
     "ObjectMatchingEvaluator",
     "LineMatchingEvaluator",
-    "HomographyEvaluator",
     "EvaluatorFactory",
     "evaluate",
 ]

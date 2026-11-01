@@ -744,8 +744,6 @@ VISUALIZER_REGISTRY = {
     "object": XFeatObjectMatcherVisualizer,
     "mask_line": MaskLineMatcherVisualizer,
     "mask": MaskLineMatcherVisualizer,
-    "line_transformer": LineTransformerVisualizer,
-    "linefeat": LineTransformerVisualizer,
 }
 
 
@@ -764,7 +762,7 @@ def render_model_architecture(model_name: str, out_path: Optional[Path | str] = 
     if out_path is None:
         static_dir = Path(__file__).resolve().parent.parent / "web" / "static" / "img"
         canonical_name = "xfeat_line_matcher" if "line_matcher" in name or "xfeat_line" in name else (
-            "xfeat_object" if "object" in name else ("mask_line" if "mask" in name else "line_transformer")
+            "xfeat_object" if "object" in name else "mask_line"
         )
         out_path = static_dir / f"{canonical_name}_architecture.png"
 
@@ -773,7 +771,7 @@ def render_model_architecture(model_name: str, out_path: Optional[Path | str] = 
 
 def render_all_models(output_dir: Optional[Path | str] = None) -> dict[str, Path]:
     """Renders all model architecture diagrams into the specified directory."""
-    models = ["xfeat_line_matcher", "xfeat_object", "mask_line", "line_transformer"]
+    models = ["xfeat_line_matcher", "xfeat_object", "mask_line"]
     results = {}
     for m in models:
         path = render_model_architecture(m, out_path=None if output_dir is None else Path(output_dir) / f"{m}_architecture.png")

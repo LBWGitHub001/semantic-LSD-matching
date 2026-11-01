@@ -128,7 +128,7 @@ def _load_view(scene_dir: Path, view: int) -> tuple[np.ndarray, np.ndarray, np.n
 
 def _pack_input(image: np.ndarray, distance: np.ndarray, angle: np.ndarray) -> np.ndarray:
     """RGB/255, distance in [0, 1] (-log(x+1) normalized), angle/π. A gray letter is copied into three color channels."""
-    from models.FCN_field.fields import transform_distance_field
+    from datasets.fields import transform_distance_field
 
     if image.ndim == 2:
         color = np.stack([image, image, image], axis=0)

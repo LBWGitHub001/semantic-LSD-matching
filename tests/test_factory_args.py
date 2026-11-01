@@ -16,40 +16,35 @@ from train import parse_args, train_applicable_arguments
 
 
 class TestUnusedFactoryArguments(unittest.TestCase):
-    def test_homo_matcher_ignores_synthetic_and_cad_flags(self) -> None:
+    def test_planar_letters_ignores_cad_flags(self) -> None:
         parser = build_parser()
         ignored = warn_unused_arguments(
             parser,
-            applicable_arguments("FCN_field"),
-            "FCN_field",
-            ["--task", "FCN_field", "--num-scenes", "10", "--min-matches", "3", "--num-workers", "20"],
+            applicable_arguments("planar_letters"),
+            "planar_letters",
+            ["--task", "planar_letters", "--s3d-dir", "foo", "--min-matches", "3", "--num-scenes", "10"],
         )
-        self.assertEqual(ignored, ["--num-scenes", "--min-matches"])
+        self.assertEqual(ignored, ["--s3d-dir", "--min-matches"])
 
-    def test_structured3d_ignores_homo_only_flags(self) -> None:
+    def test_structured3d_ignores_synthetic_flags(self) -> None:
         parser = build_parser()
         ignored = warn_unused_arguments(
             parser,
             applicable_arguments("structured3d"),
             "structured3d",
-            ["--task", "structured3d", "--max-pairs", "4", "--weight", "w.tar", "--num-workers", "8"],
+            ["--task", "structured3d", "--num-scenes", "10", "--random-colors", "--num-workers", "8"],
         )
-        self.assertEqual(ignored, ["--max-pairs", "--weight"])
+        self.assertEqual(ignored, ["--num-scenes", "--random-colors"])
 
-    def test_train_homo_matcher_ignores_object_loss_flags(self) -> None:
-        old = sys.argv
-        sys.argv = ["train.py", "--model", "FCN_field"]
-        try:
-            _args, parser = parse_args()
-        finally:
-            sys.argv = old
+    def test_train_superpoint_ignores_object_loss_flags(self) -> None:
+        _args, parser = parse_args(["--model", "SuperPoint"])
         ignored = warn_unused_arguments(
             parser,
-            train_applicable_arguments("FCN_field"),
-            "FCN_field",
-            ["--model", "FCN_field", "--dustbin-weight", "0.3", "--cycle-weight", "1", "--flow-weight", "1"],
+            train_applicable_arguments("SuperPoint"),
+            "SuperPoint",
+            ["--model", "SuperPoint", "--dustbin-weight", "0.3", "--motion-weight", "0.5"],
         )
-        self.assertEqual(ignored, ["--dustbin-weight", "--cycle-weight", "--flow-weight"])
+        self.assertEqual(ignored, ["--dustbin-weight", "--motion-weight"])
 
 
 if __name__ == "__main__":

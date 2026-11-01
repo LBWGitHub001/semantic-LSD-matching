@@ -48,52 +48,10 @@ class ModelFactory:
                 info["descriptor_dim"] = int(state_dict["convDb.weight"].shape[0])
             return info
 
-        if any(k.startswith("velocity_head.") for k in state_dict):
-            info["family"] = "homography"
-            info["model_type"] = "FCN_field"
-            info["use_pyramid"] = False
-            info["with_geometry"] = False
-            if "fcn.down1.0.weight" in state_dict:
-                info["feat_dim"] = int(state_dict["fcn.down1.0.weight"].shape[0])
-            if config and "model" in config:
-                for key in ("feat_dim", "grid_size"):
-                    if key in config["model"]:
-                        info[key] = config["model"][key]
-            return info
-
         # 1. Line Matchers detection
         if any("conv_6ch" in k or ("backbone.conv1.weight" in k and state_dict[k].shape[1] == 6) for k in state_dict):
             info["family"] = "line"
             info["model_type"] = "mask_line"
-            return info
-        if any("line_geom_encoder" in k or "line_extractor" in k for k in state_dict):
-            info["family"] = "line"
-            info["model_type"] = "line_transformer"
-            return info
-
-        # 1.5 Dual region + texture-line matcher (SemanticLineMatcher)
-        if any(k.startswith("line_desc_proj.") or k.startswith("region_matcher.") for k in state_dict):
-            info["family"] = "object"
-            info["model_type"] = "semantic_line_matcher"
-            info["use_pyramid"] = any("visual_backbone.lat3" in k or "visual_backbone.smooth2" in k for k in state_dict)
-            info["with_geometry"] = any("geo_encoder" in k for k in state_dict)
-            if "region_fusion.0.weight" in state_dict:
-                info["d_model"] = int(state_dict["region_fusion.0.weight"].shape[0])
-            layer_indices = set()
-            for k in state_dict:
-                if "transformer.layers." in k:
-                    try:
-                        idx = int(k.split("transformer.layers.")[1].split(".")[0])
-                        layer_indices.add(idx)
-                    except ValueError:
-                        pass
-            if layer_indices:
-                info["num_layers"] = max(layer_indices) + 1
-            if config and "model" in config:
-                m_cfg = config["model"]
-                for key in ("d_model", "num_layers", "nhead", "line_dim"):
-                    if key in m_cfg:
-                        info[key] = m_cfg[key]
             return info
 
         # 1.6 Multi-Modal Object + Straight Line Hybrid Matcher (XFeatLineMatcher)
@@ -206,9 +164,6 @@ class ModelFactory:
         )
         if info.get("family") == "point":
             model_kwargs["descriptor_dim"] = info.get("descriptor_dim", 256)
-        elif info.get("family") == "homography":
-            model_kwargs["feat_dim"] = info.get("feat_dim", 64)
-            model_kwargs["grid_size"] = info.get("grid_size", 16)
         elif info.get("family") == "object":
             model_kwargs.update(
                 feat_dim=info.get("feat_dim", 64),
@@ -218,8 +173,6 @@ class ModelFactory:
             )
             if uses_patch_lines(model_name):
                 model_kwargs["line_dim"] = info.get("line_dim", 64)
-            if model_name == "semantic_line_matcher":
-                model_kwargs["enable_line_head"] = True
         model = build_model(model_name, **model_kwargs)
 
         model = model.to(device)

@@ -1651,7 +1651,7 @@ def _resnet_until_layer2(
             weight=f"W 64×{in_channels}×7×7",
             params=_conv_params(in_channels, 64, 7, bias=False),
             formula="Y = W ∗ X，stride=2，padding=3",
-            source="models/line_transformer/line_transformer.py:236",
+            source="models/mask_line_matcher/mask_line_matcher.py:236",
             meaning=stem_meaning,
             frozen=stem_frozen,
         ),
@@ -1666,7 +1666,7 @@ def _resnet_until_layer2(
             weight="γ, β 各 64",
             params=_bn_params(64),
             formula="(X − μ) / √(σ²+ε) · γ + β",
-            source="models/line_transformer/line_transformer.py:237",
+            source="models/mask_line_matcher/mask_line_matcher.py:237",
             meaning="ResNet stem 的 BatchNorm，接在 7×7 卷积后面。",
             frozen=stem_frozen,
         ),
@@ -1679,7 +1679,7 @@ def _resnet_until_layer2(
             shape_in=f"(B, 64, {h1}×{w1})",
             shape_out=f"(B, 64, {h1}×{w1})",
             formula="max(0, X)",
-            source="models/line_transformer/line_transformer.py:238",
+            source="models/mask_line_matcher/mask_line_matcher.py:238",
             meaning="Stem 的 ReLU。MaxPool 在它后面，不在卷积前面。",
             frozen=stem_frozen,
         ),
@@ -1692,7 +1692,7 @@ def _resnet_until_layer2(
             shape_in=f"(B, 64, {h1}×{w1})",
             shape_out=f"(B, 64, {h2}×{w2})",
             formula="窗口 3×3，stride 2，padding 1",
-            source="models/line_transformer/line_transformer.py:239",
+            source="models/mask_line_matcher/mask_line_matcher.py:239",
             meaning=(
                 "Stem 的第二次下采样，无参数。到这里总步长已经是 4。"
                 "后面的 layer1 不再下采样，layer2 的第一块才把步长变成 8。"
@@ -1765,7 +1765,7 @@ def _postnorm_layer(
         weight=f"in_proj {3 * d_model}×{d_model} + out_proj {d_model}×{d_model}",
         params=_mha_params(d_model),
         formula=f"softmax(QKᵀ / √{head_dim}) V，Q=K=V=本视角",
-        source="models/line_transformer/line_transformer.py:188",
+        source="models/mask_line_matcher/mask_line_matcher.py:188",
         meaning=(
             "同一层里，view 0 和 view 1 调用的是同一个 self_attn 模块，权重共享。"
             "这和物体网络里 self0/self1 两套独立权重不同。自注意力只看本图的线段之间谁平行、谁相邻。"
@@ -1782,7 +1782,7 @@ def _postnorm_layer(
         weight=f"γ, β 各 {d_model}",
         params=_ln_params(d_model),
         formula="LN(X + SelfAttn(X))",
-        source="models/line_transformer/line_transformer.py:189",
+        source="models/mask_line_matcher/mask_line_matcher.py:189",
         meaning=(
             "Post-Norm：先残差相加，再归一化。代码是 `norm1(desc + attn_out)`，归一化包住了残差和。"
             "物体网络的 AttentionBlock 相反，是先 Norm 再注意力。"
@@ -1799,7 +1799,7 @@ def _postnorm_layer(
         weight=f"in_proj {3 * d_model}×{d_model} + out_proj {d_model}×{d_model}",
         params=_mha_params(d_model),
         formula="view0 以 view1 为 K/V，随即对调再算一次",
-        source="models/line_transformer/line_transformer.py:200",
+        source="models/mask_line_matcher/mask_line_matcher.py:200",
         meaning=(
             "同一个 cross_attn 先算 view0←view1，再算 view1←view0。两次调用共享权重。"
             "这是两条线段第一次互相看见的地方。若某一侧没有线段，代码会跳过这一步。"
@@ -1816,7 +1816,7 @@ def _postnorm_layer(
         weight=f"γ, β 各 {d_model}",
         params=_ln_params(d_model),
         formula="LN(X + CrossAttn(X))",
-        source="models/line_transformer/line_transformer.py:202",
+        source="models/mask_line_matcher/mask_line_matcher.py:202",
         meaning="交叉注意力的残差之后做 LayerNorm。norm2 与 norm1、norm3 是三个独立模块。",
     )
     fc1 = graph.node(
@@ -1830,7 +1830,7 @@ def _postnorm_layer(
         weight=f"W {ff}×{d_model} + bias",
         params=_linear_params(d_model, ff),
         formula="Y = XWᵀ + b",
-        source="models/line_transformer/line_transformer.py:207",
+        source="models/mask_line_matcher/mask_line_matcher.py:207",
         meaning="逐线段的前馈扩展。两个视角再次共用这一层线性，不各备一套。",
     )
     relu = graph.node(
@@ -1842,7 +1842,7 @@ def _postnorm_layer(
         shape_in=f"(B, N, {ff})",
         shape_out=f"(B, N, {ff})",
         formula="max(0, X)",
-        source="models/line_transformer/line_transformer.py:207",
+        source="models/mask_line_matcher/mask_line_matcher.py:207",
         meaning="前馈中间的 ReLU，用的是函数式 F.relu，不是一个带参数的模块。",
     )
     drop = graph.node(
@@ -1854,7 +1854,7 @@ def _postnorm_layer(
         shape_in=f"(B, N, {ff})",
         shape_out=f"(B, N, {ff})",
         formula="训练时按 0.1 丢弃",
-        source="models/line_transformer/line_transformer.py:171",
+        source="models/mask_line_matcher/mask_line_matcher.py:171",
         meaning="只作用在前馈隐藏层，注意力权重上的 dropout 用的是 MultiheadAttention 自己的默认值。推理时这一层是恒等。",
     )
     fc2 = graph.node(
@@ -1868,7 +1868,7 @@ def _postnorm_layer(
         weight=f"W {d_model}×{ff} + bias",
         params=_linear_params(ff, d_model),
         formula="Y = XWᵀ + b",
-        source="models/line_transformer/line_transformer.py:207",
+        source="models/mask_line_matcher/mask_line_matcher.py:207",
         meaning="前馈压回 d_model，才能和残差相加。",
     )
     norm3 = graph.node(
@@ -1882,7 +1882,7 @@ def _postnorm_layer(
         weight=f"γ, β 各 {d_model}",
         params=_ln_params(d_model),
         formula="LN(X + FFN(X))",
-        source="models/line_transformer/line_transformer.py:208",
+        source="models/mask_line_matcher/mask_line_matcher.py:208",
         meaning="这一层块的输出。两个视角都写成这个形状，下一层继续用同一结构、但是新的一套权重。",
     )
     ids = [self_attn, norm1, cross, norm2, fc1, relu, drop, fc2, norm3]
@@ -1904,7 +1904,7 @@ def _line_geometry(graph: _Graph, d_model: int, col: int, row: int) -> str:
             shape_in="(B, N, 4)",
             shape_out="(B, N, 4)",
             formula="[x1, y1, x2, y2]",
-            source="models/line_transformer/line_transformer.py:78",
+            source="models/mask_line_matcher/mask_line_matcher.py:78",
             meaning="线段坐标是原图像素，还不是描述子。编码器内部会除以图像宽高和对角线。",
         ),
         graph.node(
@@ -1916,7 +1916,7 @@ def _line_geometry(graph: _Graph, d_model: int, col: int, row: int) -> str:
             shape_in="(B, N, 4)",
             shape_out="(B, N, 5)",
             formula="[cx/W, cy/H, ‖Δ‖/diag, sin 2θ, cos 2θ]",
-            source="models/line_transformer/line_transformer.py:103",
+            source="models/mask_line_matcher/mask_line_matcher.py:103",
             meaning=(
                 "和切片直线编码器同一个二倍角，但归一化基准不同：中心除以宽高，长度除以图像对角线。"
                 "端点对调不改变这 5 个数，所以匹配不会因为 LSD 端点顺序而翻号。"
@@ -1933,7 +1933,7 @@ def _line_geometry(graph: _Graph, d_model: int, col: int, row: int) -> str:
             weight="W 64×5 + bias",
             params=_linear_params(5, 64),
             formula="Y = XWᵀ + b",
-            source="models/line_transformer/line_transformer.py:72",
+            source="models/mask_line_matcher/mask_line_matcher.py:72",
             meaning="几何 MLP 的第一层，每条线段独立。",
         ),
         graph.node(
@@ -1945,7 +1945,7 @@ def _line_geometry(graph: _Graph, d_model: int, col: int, row: int) -> str:
             shape_in="(B, N, 64)",
             shape_out="(B, N, 64)",
             formula="max(0, X)",
-            source="models/line_transformer/line_transformer.py:73",
+            source="models/mask_line_matcher/mask_line_matcher.py:73",
             meaning="几何分支中间的 ReLU。后面一层线性直接接到 d_model，再加 LayerNorm。",
         ),
         graph.node(
@@ -1959,7 +1959,7 @@ def _line_geometry(graph: _Graph, d_model: int, col: int, row: int) -> str:
             weight=f"W {d_model}×64 + bias",
             params=_linear_params(64, d_model),
             formula="Y = XWᵀ + b",
-            source="models/line_transformer/line_transformer.py:74",
+            source="models/mask_line_matcher/mask_line_matcher.py:74",
             meaning=f"几何向量对齐到 {d_model}，才能和视觉采样向量逐元素相加，而不是拼接。",
         ),
         graph.node(
@@ -1973,7 +1973,7 @@ def _line_geometry(graph: _Graph, d_model: int, col: int, row: int) -> str:
             weight=f"γ, β 各 {d_model}",
             params=_ln_params(d_model),
             formula="对几何 token 归一化",
-            source="models/line_transformer/line_transformer.py:75",
+            source="models/mask_line_matcher/mask_line_matcher.py:75",
             meaning="相加之前的归一化。视觉支路的投影末尾也有 LayerNorm，两边幅度才加得起来。",
         ),
     ]
@@ -1993,7 +1993,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             shape_in="(B, N, 4)",
             shape_out="(B, N, 7, 2)",
             formula="(1−t)·p1 + t·p2，t=0,1/6,…,1",
-            source="models/line_transformer/line_transformer.py:142",
+            source="models/mask_line_matcher/mask_line_matcher.py:142",
             meaning="沿每条线段均匀取 7 个点，包含两个端点。采样是几何插值，还没有读特征图。",
         ),
         graph.node(
@@ -2005,7 +2005,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             shape_in=f"(B, {in_channels}, H/8, W/8)",
             shape_out=f"(B, N, 7, {in_channels})",
             formula="像素坐标线性映射到 [−1, 1]，align_corners=True",
-            source="models/line_transformer/line_transformer.py:151",
+            source="models/mask_line_matcher/mask_line_matcher.py:151",
             meaning=(
                 "在骨干特征图上双线性取值。坐标先除以原图宽高再映射到 grid_sample 的 [−1, 1]，"
                 "所以特征图是 stride 8 时，点会落在对应的粗网格上。越界使用边界值，不补零。"
@@ -2020,7 +2020,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             shape_in=f"(B, N, 7, {in_channels})",
             shape_out=f"(B, N, {in_channels})",
             formula="mean over 7 samples",
-            source="models/line_transformer/line_transformer.py:156",
+            source="models/mask_line_matcher/mask_line_matcher.py:156",
             meaning="7 个采样点做平均，使线段描述与点的顺序无关。端点对调不会改变这 7 个点的集合平均。",
         ),
         graph.node(
@@ -2034,7 +2034,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             weight=f"W {d_model}×{in_channels} + bias",
             params=_linear_params(in_channels, d_model),
             formula="Y = XWᵀ + b",
-            source="models/line_transformer/line_transformer.py:116",
+            source="models/mask_line_matcher/mask_line_matcher.py:116",
             meaning=f"把采样到的 {in_channels} 维外观压到 d_model。这一层是可训练的，即使骨干被冻结，线段外观仍能适配匹配任务。",
         ),
         graph.node(
@@ -2046,7 +2046,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             shape_in=f"(B, N, {d_model})",
             shape_out=f"(B, N, {d_model})",
             formula="max(0, X)",
-            source="models/line_transformer/line_transformer.py:117",
+            source="models/mask_line_matcher/mask_line_matcher.py:117",
             meaning="视觉投影中间的 ReLU。",
         ),
         graph.node(
@@ -2060,7 +2060,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             weight=f"W {d_model}×{d_model} + bias",
             params=_linear_params(d_model, d_model),
             formula="Y = XWᵀ + b",
-            source="models/line_transformer/line_transformer.py:118",
+            source="models/mask_line_matcher/mask_line_matcher.py:118",
             meaning="第二层线性保持宽度，准备和几何向量相加。",
         ),
         graph.node(
@@ -2074,7 +2074,7 @@ def _sampler(graph: _Graph, in_channels: int, d_model: int, col: int, row: int, 
             weight=f"γ, β 各 {d_model}",
             params=_ln_params(d_model),
             formula="对视觉 token 归一化",
-            source="models/line_transformer/line_transformer.py:119",
+            source="models/mask_line_matcher/mask_line_matcher.py:119",
             meaning="视觉支路的末尾归一化。下一步是和几何 token 逐元素相加，不是拼接。",
         ),
     ]
@@ -2095,7 +2095,7 @@ def _add_tokens(graph: _Graph, d_model: int, col: int, row: int, vis_id: str, ge
         shape_in=f"(B, N, {d_model})",
         shape_out=f"(B, N, {d_model})",
         formula="token = vis + geom",
-        source="models/line_transformer/line_transformer.py:275",
+        source="models/mask_line_matcher/mask_line_matcher.py:275",
         meaning=(
             "视觉采样和几何编码逐元素相加，而不是像 XFeatLineMatcher 那样拼接后再投影。"
             "相加要求两边已经对齐到同一宽度，也意味着网络不能把某一维专门留给直线长度。"
@@ -2128,7 +2128,7 @@ def _line_match_head(
         weight=f"两套 W {d_model}×{d_model} + bias",
         params=_linear_params(d_model, d_model) * 2,
         formula="desc = proj(token)",
-        source="models/line_transformer/line_transformer.py:258",
+        source="models/mask_line_matcher/mask_line_matcher.py:258",
         meaning="proj0 和 proj1 是两个独立线性层，分别作用在两个视角。图中画成一个节点，参数按两套计算。",
     )
     norm = graph.node(
@@ -2152,7 +2152,7 @@ def _line_match_head(
         shape_in=shape,
         shape_out="(B, N0, N1)",
         formula="S = desc0 · desc1ᵀ",
-        source="models/line_transformer/line_transformer.py:309",
+        source="models/mask_line_matcher/mask_line_matcher.py:309",
         meaning="每条线段对每条线段一个分数。这里还没有互斥约束。",
     )
     dust = graph.node(
@@ -2164,7 +2164,7 @@ def _line_match_head(
         shape_in="(B, N0, N1)",
         shape_out="(B, N0+1, N1+1)",
         formula="新增的行、列、角点填 0",
-        source="models/line_transformer/line_transformer.py:43",
+        source="models/mask_line_matcher/mask_line_matcher.py:43",
         meaning=(
             "线段网络的垃圾桶是常数 0，不是 XFeat 里那个可学习的 dustbin_score。"
             "拒绝匹配的强度因此不能单独训练，只能靠 Sinkhorn 的边际分布间接体现。"
@@ -2179,7 +2179,7 @@ def _line_match_head(
         shape_in="(B, N0+1, N1+1)",
         shape_out="(B, N0+1, N1+1)",
         formula="对数空间行列归一化",
-        source="models/line_transformer/line_transformer.py:23",
+        source="models/mask_line_matcher/mask_line_matcher.py:23",
         meaning=(
             "与物体网络相同的对数 Sinkhorn，但边际分布的构造不同：普通行先减去 log(N)，"
             "垃圾桶位置再用两侧线段数量的比例。迭代 20 次，输出仍是对数分配。"
@@ -2218,55 +2218,6 @@ def _line_match_head(
     graph.place(ids, col, row)
     graph.edge(src, proj, "data", shape)
     graph.chain(ids)
-
-
-def build_line_transformer_graph(d_model: int = 128, num_layers: int = 4, nhead: int = 4) -> dict[str, Any]:
-    height, width = 480, 640
-    graph = _Graph()
-    feat, _h, _w = _resnet_until_layer2(
-        graph,
-        in_channels=3,
-        height=height,
-        width=width,
-        frozen_through_layer1=True,
-        freeze_all=True,
-        stem_meaning=(
-            "LineMatcherNet 的入口是 RGB 整图，不是切片。7×7 卷积来自 ImageNet 预训练的 ResNet-50，"
-            "并且 freeze_backbone=True 时，从这一层到 layer2 的全部权重都不更新。"
-        ),
-    )
-    geom = _line_geometry(graph, d_model, col=1, row=0)
-    vis = _sampler(graph, 512, d_model, col=2, row=0, feat_id=feat)
-    token = _add_tokens(graph, d_model, col=3, row=max(graph.get(geom)["row"], graph.get(vis)["row"]) + 1, vis_id=vis, geom_id=geom)
-    src0 = src1 = token
-    row = graph.get(token)["row"] + 2
-    last = token
-    for index in range(num_layers):
-        out0, out1 = _postnorm_layer(
-            graph, f"layers.{index}", d_model, nhead, row, 3, src0, src1,
-        )
-        src0 = src1 = out0
-        last = out0
-        row = graph.get(out0)["row"] + 2
-    _line_match_head(graph, d_model, 3, row, last, canonical_255=False, exponentiate=False)
-    return _pack(
-        graph,
-        title="LineMatcherNet · ResNet-50 至 layer2",
-        assumption=(
-            f"形状按 480×640 的输入计算，特征图到 layer2 为 512×60×80（总步长 8）。"
-            f"d_model={d_model}，Transformer {num_layers} 层。骨干默认全部冻结，采样投影和注意力仍训练。"
-        ),
-        jumps=_jumps(graph, [
-            ("Stem", "stem_conv"),
-            ("Layer1", "l1b0_conv1"),
-            ("Layer2", "l2b0_conv2"),
-            ("沿线采样", "grid_sample"),
-            ("二倍角", "geom_5d"),
-            ("相加", "tok_add"),
-            ("自注意力", "layers.0_self"),
-            ("Sinkhorn", "sinkhorn"),
-        ]),
-    )
 
 
 def build_mask_line_graph(d_model: int = 128, num_layers: int = 4, nhead: int = 4) -> dict[str, Any]:
@@ -2342,117 +2293,13 @@ def _pack(graph: _Graph, title: str, assumption: str, jumps: list[dict[str, str]
     }
 
 
-def build_semantic_line_graph(use_pyramid: bool = True, d_model: int = 128, num_layers: int = 2, nhead: int = 4) -> dict[str, Any]:
-    """Compact interactive layer graph for SemanticLineMatcher dual outputs."""
-    feat_dim = 64
-    line_dim = 64
-    graph = _Graph()
-    vis = _visual_tower(graph, use_pyramid=use_pyramid, feat_dim=feat_dim)
-    geos = _geo_encoder(graph, feat_dim)
-    vis_row = graph.get(vis)["row"]
-    graph.place(geos, 2, vis_row - len(geos) + 1)
-
-    along0 = graph.node(
-        id="along_sample",
-        op="GridSample",
-        kind="op",
-        module="line_encoder.sample_along_lines",
-        spec="T=8 along-line",
-        shape_in="fmap + lines(B,M,K,5)",
-        shape_out="(N, K, T, C)",
-        formula="p(t)=(1-t)p1+t p2",
-        source="models/semantic_line_matcher/line_encoder.py",
-        meaning="在区域特征图上沿每条直线均匀取 T 个点（默认 8），得到纹理序列。",
-    )
-    along1 = graph.node(
-        id="along_conv1d",
-        op="Conv1d",
-        kind="conv",
-        module="line_encoder.conv1d",
-        spec=f"C → {line_dim}",
-        shape_in="(N·K, C, T)",
-        shape_out=f"(B, M, K, {line_dim})",
-        formula="mean_t Conv1d(x)",
-        source="models/semantic_line_matcher/line_encoder.py",
-        meaning="一维卷积 + 均值池化，把沿线纹理压成直线向量 f_ℓ。",
-    )
-    graph.place([along0, along1], 3, vis_row - 1)
-    graph.edge(vis, along0, "data", graph.get(vis)["shape_out"])
-    graph.edge(along0, along1, "data", graph.get(along0)["shape_out"])
-
-    vis_dim = 3 * feat_dim if use_pyramid else feat_dim
-    _fuse_and_match(
-        graph,
-        [(vis, f"视觉 {vis_dim}D"), (geos[-1], f"布局 {feat_dim}D")],
-        in_dim=vis_dim + feat_dim,
-        d_model=d_model,
-        num_layers=num_layers,
-        nhead=nhead,
-        fuse_module="region_fusion",
-        fuse_meaning="区域向量 f_r 与 bbox 几何融合，进入区域 Transformer + Sinkhorn，输出 P_region。",
-    )
-
-    cat = graph.node(
-        id="line_cat",
-        op="ConcatProj",
-        kind="merge",
-        module="line_desc_proj",
-        spec=f"[f_ℓ ‖ f_r] → {d_model}",
-        shape_in=f"({line_dim}+{vis_dim})",
-        shape_out=f"(N_flat, {d_model})",
-        formula="Proj([f_line || f_r])",
-        source="models/semantic_line_matcher/model.py",
-        meaning="同一区域的 f_r 广播到各条线，与沿线纹理拼接后投影为直线匹配描述子。",
-    )
-    line_sink = graph.node(
-        id="line_sinkhorn",
-        op="LogSinkhorn",
-        kind="match",
-        module="line_matcher",
-        spec="dustbin OT",
-        shape_in=f"(N0,{d_model})×(N1,{d_model})",
-        shape_out="(N0+1, N1+1)",
-        formula="Sinkhorn(S/τ)",
-        source="models/semantic_line_matcher/model.py",
-        meaning="对展平有效直线做最优传输；损失另含线→语义 JSD 与区域邻接保持。",
-    )
-    sink_row = max(n["row"] for n in graph.nodes) + 2
-    graph.place([cat, line_sink], 4, sink_row)
-    graph.edge(along1, cat, "data", graph.get(along1)["shape_out"])
-    graph.edge(vis, cat, "data", graph.get(vis)["shape_out"])
-    graph.edge(cat, line_sink, "data", graph.get(cat)["shape_out"])
-
-    mode = "FPN" if use_pyramid else "单尺度"
-    return _pack(
-        graph,
-        title=f"SemanticLineMatcher · {mode} · 双输出",
-        assumption=(
-            f"区域与直线并行：d_model={d_model}，注意力 {num_layers}×{nhead}。"
-            "直线描述子=沿线纹理‖区域特征；邻接几何只在损失中，不进打分。"
-        ),
-        jumps=_jumps(graph, [
-            ("输入切片", "vis_in"),
-            ("视觉骨干", "s1_conv"),
-            ("沿线采样", "along_sample"),
-            ("区域融合", "fuse_cat"),
-            ("区域 Sinkhorn", "sinkhorn"),
-            ("直线拼接", "line_cat"),
-            ("直线 Sinkhorn", "line_sinkhorn"),
-        ]),
-    )
-
-
 def build_layer_graph(model_name: str, use_pyramid: bool = True, d_model: int = 128) -> dict[str, Any]:
     """Return the concrete layer graph for a model alias."""
     name = model_name.lower()
-    if name in {"semantic_line_matcher", "semantic_line"}:
-        return build_semantic_line_graph(use_pyramid=use_pyramid, d_model=d_model)
     if name in {"xfeat_line_matcher", "xfeat_line", "line_object", "line_matcher"}:
         return build_xfeat_line_graph(use_pyramid=use_pyramid, d_model=d_model)
     if name in {"xfeat_object", "xfeat", "object"}:
         return build_xfeat_object_graph(use_pyramid=use_pyramid, d_model=d_model)
     if name in {"mask_line", "mask"}:
         return build_mask_line_graph(d_model=d_model)
-    if name in {"line_transformer", "linefeat"}:
-        return build_line_transformer_graph(d_model=d_model)
     raise ValueError(f"Unknown model for layer graph: {model_name}")

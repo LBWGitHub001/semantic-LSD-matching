@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 DEEPLSD_ROOT = ROOT / "third_party" / "DeepLSD"
 DEFAULT_WEIGHT = DEEPLSD_ROOT / "weights" / "deeplsd_wireframe.tar"
 

@@ -153,7 +153,7 @@ class TestQueueApi(tornado.testing.AsyncHTTPTestCase):
         self.fetch(
             "/api/queue?action=add",
             method="POST",
-            body=json.dumps({"model": "line_transformer", "label": "task_to_clear"}),
+            body=json.dumps({"model": "mask_line", "label": "task_to_clear"}),
             headers={"Content-Type": "application/json"},
         )
         res_clear = self.fetch(

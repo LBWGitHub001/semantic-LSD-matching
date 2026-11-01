@@ -55,15 +55,6 @@ class LayerGraphTests(unittest.TestCase):
         self.assertIn("matrix_255", by_id)
         self.assertEqual(by_id["dustbin"]["params"], 0)
 
-    def test_line_transformer_freezes_entire_backbone(self) -> None:
-        graph = build_layer_graph("line_transformer")
-        self._assert_well_formed(graph)
-        by_id = {node["id"]: node for node in graph["nodes"]}
-        self.assertTrue(by_id["l2b3_relu3"]["frozen"])
-        self.assertNotIn("matrix_255", by_id)
-        self.assertNotIn("exp", by_id)
-        self.assertIn("grid_sample", by_id)
-
 
 if __name__ == "__main__":
     unittest.main()

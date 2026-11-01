@@ -661,7 +661,7 @@ def collate_region_pairs(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _collate_flat_line_gt(item: dict[str, Any]) -> dict[str, Any]:
-    """Build flattened line GT indices for semantic_line_matcher training."""
+    """Build flattened line GT indices for line matching training."""
     ids0 = item.get("line_ids0")
     ids1 = item.get("line_ids1")
     mask0 = item.get("line_mask0")

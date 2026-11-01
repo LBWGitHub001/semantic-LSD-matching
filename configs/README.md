@@ -7,12 +7,9 @@
 | 模型名称 | 配置文件 | 任务类型 | 默认数据集 | 默认保存路径 |
 |---|---|---|---|---|
 | **SuperPoint** | [`superpoint.yaml`](superpoint.yaml) | 平面字母端点与长线几何匹配 | `data/planar_letters` | `checkpoints/SuperPoint` |
-| **FCN_field** | [`fcn_field.yaml`](fcn_field.yaml) | DeepLSD 几何距离场单应速度估计 | `data/homo_matcher` | `checkpoints/FCN_field` |
 | **xfeat_object** | [`xfeat_object.yaml`](xfeat_object.yaml) | 纯目标级二部图“连连看”匹配 | `data/structured3d_semantic_regions` | `checkpoints/xfeat_object_matcher` |
 | **xfeat_line_matcher** | [`xfeat_line_matcher.yaml`](xfeat_line_matcher.yaml) | 目标语义区域 + 直线几何特征混合匹配 | `data/synthetic_semantic_lines` | `checkpoints/xfeat_line_matcher` |
-| **semantic_line_matcher** | [`semantic_line_matcher.yaml`](semantic_line_matcher.yaml) | 双路 Sinkhorn 几何软约束直线匹配 | `data/synthetic_semantic_lines` | `checkpoints/semantic_line_matcher` |
 | **mask_line** | [`mask_line.yaml`](mask_line.yaml) | 6 通道连续几何场端到端直线匹配 | `data/synthetic_line_scenes` | `checkpoints/mask_line` |
-| **line_transformer** | [`line_transformer.yaml`](line_transformer.yaml) | Transformer 结构直线匹配基准网络 | `data/synthetic_line_scenes` | `checkpoints/line_transformer` |
 
 ---
 

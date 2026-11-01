@@ -326,7 +326,7 @@ def _write_scene(scene_dir: Path, scene: dict) -> None:
 
 def _save_line_fields(scene_dir: Path, scene: dict, infer_batch, overwrite: bool = False) -> None:
     """Write view_XX.npz beside view_XX.png. An existing file is left alone unless overwrite=True."""
-    from models.FCN_field.fields import transform_distance_field
+    from datasets.fields import transform_distance_field
 
     pending_paths: list[Path] = []
     pending_bgr: list[np.ndarray] = []
@@ -356,7 +356,7 @@ def _as_bgr(image: np.ndarray) -> np.ndarray:
 
 def _load_deeplsd_infer():
     import torch
-    from models.FCN_field.fields import DEFAULT_WEIGHT, infer_fields_batch, load_deeplsd
+    from datasets.fields import DEFAULT_WEIGHT, infer_fields_batch, load_deeplsd
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = load_deeplsd(DEFAULT_WEIGHT, device)

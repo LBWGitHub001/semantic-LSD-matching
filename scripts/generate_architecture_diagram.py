@@ -21,7 +21,7 @@ from visualization.architecture_visualizer import render_all_models, render_mode
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render publication-quality neural network architecture diagrams.")
     parser.add_argument("--model", type=str, default="xfeat_line_matcher",
-                        choices=["xfeat_line_matcher", "xfeat_object", "mask_line", "line_transformer"],
+                        choices=["xfeat_line_matcher", "xfeat_object", "mask_line"],
                         help="Model architecture to visualize")
     parser.add_argument("--out", type=str, default=None, help="Target PNG file path")
     parser.add_argument("--dpi", type=int, default=180, help="Output image DPI resolution (default: 180)")

@@ -24,12 +24,9 @@ CONFIGS_DIR = Path(__file__).resolve().parent
 # Canonical model name to YAML file mapping
 MODEL_CONFIG_MAP: Dict[str, str] = {
     "superpoint": "superpoint.yaml",
-    "fcn_field": "fcn_field.yaml",
     "xfeat_object": "xfeat_object.yaml",
     "xfeat_line_matcher": "xfeat_line_matcher.yaml",
-    "semantic_line_matcher": "semantic_line_matcher.yaml",
     "mask_line": "mask_line.yaml",
-    "line_transformer": "line_transformer.yaml",
 }
 
 # Aliases
@@ -38,9 +35,7 @@ MODEL_ALIAS_MAP: Dict[str, str] = {
     "object": "xfeat_object",
     "xfeat_line": "xfeat_line_matcher",
     "line_object": "xfeat_line_matcher",
-    "semantic_line": "semantic_line_matcher",
     "mask": "mask_line",
-    "linefeat": "line_transformer",
 }
 
 

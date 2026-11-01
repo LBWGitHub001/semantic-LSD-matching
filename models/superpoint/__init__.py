@@ -20,9 +20,12 @@ from models.superpoint.loss import (
 from models.superpoint.model import SuperPoint
 from models.superpoint.train import train
 from models.superpoint.eval import evaluate, validate
+from models.superpoint.utils import SuperPointTrainerHelper, SuperPointEvalHelper
 
 __all__ = [
     "SuperPoint",
+    "SuperPointTrainerHelper",
+    "SuperPointEvalHelper",
     "SuperPointDescriptorLoss",
     "SuperPointDetectorLoss",
     "SuperPointJointLoss",

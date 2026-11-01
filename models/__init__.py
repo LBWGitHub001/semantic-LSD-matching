@@ -1,15 +1,15 @@
 """
-Unified Model Registry and Factory for the Three Matching Networks:
-1. Object Matching Network ("连连看"): XFeatObjectMatcher (models/object_matcher)
+Unified Model Registry and Factory for the Matching Networks:
+1. Object Matching Network: XFeatObjectMatcher & XFeatLineMatcher (models/object_matcher)
 2. 6-Channel Geometry Field Line Matcher: MaskLineFeatMatchNet (models/mask_line_matcher)
-3. Baseline Line Transformer Matcher: LineMatcherNet (models/line_transformer)
+3. SuperPoint: Interest points, descriptors, and line endpoints (models/superpoint)
 """
 
 from __future__ import annotations
 
 import torch.nn as nn
 
-# 1. Object-Level Matcher ("连连看")
+# 1. Object-Level Matchers
 from models.object_matcher import (
     XFeatObjectMatcher,
     XFeatLineMatcher,
@@ -22,30 +22,11 @@ from models.object_matcher import (
 from models.mask_line_matcher import (
     MaskLineFeatMatchNet,
     MaskLineMatcherNet,
-)
-
-# 3. Baseline Line Transformer Matcher
-from models.line_transformer import (
-    LineMatcherNet,
     LineMatchingLoss,
     MaskedMatrixLoss,
-    LineMatcher,
-    LineMatchPipeline,
 )
 
-# 4. Semantic region-conditioned dual line matcher
-from models.semantic_line_matcher import (
-    SemanticLineMatcher,
-    SemanticLineMatchingLoss,
-)
-
-# 5. DeepLSD field homography
-from models.FCN_field import (
-    FCNField,
-    FCNFieldLoss,
-)
-
-# 6. SuperPoint interest points and descriptors
+# 3. SuperPoint interest points, descriptors, and line endpoints
 from models.superpoint import (
     SuperPoint,
     SuperPointLoss,
@@ -55,7 +36,7 @@ from models.superpoint import (
 )
 
 MODEL_REGISTRY = {
-    # Model 1: Object Bipartite Matchers ("连连看")
+    # Model 1: Object Bipartite Matchers
     "xfeat_object": XFeatObjectMatcher,
     "xfeat": XFeatObjectMatcher,
     "object": XFeatObjectMatcher,
@@ -63,17 +44,10 @@ MODEL_REGISTRY = {
     "xfeat_line_matcher": XFeatLineMatcher,
     "xfeat_line": XFeatLineMatcher,
     "line_object": XFeatLineMatcher,
-    # Model 1.6: Dual region + texture-line matcher
-    "semantic_line_matcher": SemanticLineMatcher,
-    "semantic_line": SemanticLineMatcher,
     # Model 2: 6-Channel Continuous Geometry Field Line Matcher
     "mask_line": MaskLineFeatMatchNet,
     "mask": MaskLineFeatMatchNet,
-    # Model 3: Baseline Line-Transformer Matcher
-    "line_transformer": LineMatcherNet,
-    "linefeat": LineMatcherNet,
-    "FCN_field": FCNField,
-    "fcn_field": FCNField,
+    # Model 3: SuperPoint
     "SuperPoint": SuperPoint,
     "superpoint": SuperPoint,
 }
@@ -85,14 +59,8 @@ LOSS_REGISTRY = {
     "xfeat_line_matcher": ObjectMatchingLoss,
     "xfeat_line": ObjectMatchingLoss,
     "line_object": ObjectMatchingLoss,
-    "semantic_line_matcher": SemanticLineMatchingLoss,
-    "semantic_line": SemanticLineMatchingLoss,
     "mask_line": LineMatchingLoss,
     "mask": LineMatchingLoss,
-    "line_transformer": LineMatchingLoss,
-    "linefeat": LineMatchingLoss,
-    "FCN_field": FCNFieldLoss,
-    "fcn_field": FCNFieldLoss,
     "SuperPoint": SuperPointLoss,
     "superpoint": SuperPointLoss,
 }
@@ -104,21 +72,14 @@ CANONICAL_MODEL_NAMES = {
     "xfeat_line_matcher": "xfeat_line_matcher",
     "xfeat_line": "xfeat_line_matcher",
     "line_object": "xfeat_line_matcher",
-    "semantic_line_matcher": "semantic_line_matcher",
-    "semantic_line": "semantic_line_matcher",
     "mask_line": "mask_line",
     "mask": "mask_line",
-    "line_transformer": "line_transformer",
-    "linefeat": "line_transformer",
-    "FCN_field": "FCN_field",
-    "fcn_field": "FCN_field",
     "SuperPoint": "SuperPoint",
     "superpoint": "SuperPoint",
 }
 
-OBJECT_FAMILY_MODELS = {"xfeat_object", "xfeat_line_matcher", "semantic_line_matcher"}
-LINE_FEATURE_MODELS = {"xfeat_line_matcher", "semantic_line_matcher"}
-HOMOGRAPHY_MODELS = {"FCN_field"}
+OBJECT_FAMILY_MODELS = {"xfeat_object", "xfeat_line_matcher"}
+LINE_FEATURE_MODELS = {"xfeat_line_matcher"}
 POINT_MODELS = {"SuperPoint"}
 
 
@@ -132,10 +93,8 @@ def canonical_model_name(model_name: str) -> str:
 
 
 def model_family(model_name: str) -> str:
-    """Return 'object', 'homography', 'point', or 'line'."""
+    """Return 'object', 'point', or 'line'."""
     name = canonical_model_name(model_name)
-    if name in HOMOGRAPHY_MODELS:
-        return "homography"
     if name in POINT_MODELS:
         return "point"
     if name in OBJECT_FAMILY_MODELS:
@@ -146,16 +105,6 @@ def model_family(model_name: str) -> str:
 def uses_patch_lines(model_name: str) -> bool:
     """Whether the model consumes per-region 5D patch lines."""
     return canonical_model_name(model_name) in LINE_FEATURE_MODELS
-
-
-def is_semantic_line_model(model_name: str) -> bool:
-    """Whether the model is the dual region + line Sinkhorn matcher."""
-    return canonical_model_name(model_name) == "semantic_line_matcher"
-
-
-def is_homography_model(model_name: str) -> bool:
-    """Whether the model predicts a pair of homographies from DeepLSD fields."""
-    return canonical_model_name(model_name) in HOMOGRAPHY_MODELS
 
 
 def build_model(model_name: str, **kwargs) -> nn.Module:
@@ -191,8 +140,6 @@ __all__ = [
     "canonical_model_name",
     "model_family",
     "uses_patch_lines",
-    "is_semantic_line_model",
-    "is_homography_model",
     "MODEL_REGISTRY",
     "LOSS_REGISTRY",
     "XFeatObjectMatcher",
@@ -202,15 +149,8 @@ __all__ = [
     "ObjectMatchingLoss",
     "MaskLineFeatMatchNet",
     "MaskLineMatcherNet",
-    "LineMatcherNet",
     "LineMatchingLoss",
     "MaskedMatrixLoss",
-    "LineMatcher",
-    "LineMatchPipeline",
-    "SemanticLineMatcher",
-    "SemanticLineMatchingLoss",
-    "FCNField",
-    "FCNFieldLoss",
     "SuperPoint",
     "SuperPointLoss",
     "SuperPointLineLoss",

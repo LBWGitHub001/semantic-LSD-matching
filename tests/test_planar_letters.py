@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from datasets.planar_letters import build_planar_letters_dataset, render_scene
 from generate_dataset import DatasetGeneratorFactory
-from models.FCN_field.fields import transform_distance_field
+from datasets.fields import transform_distance_field
 
 
 def _by_id(points: list[dict]) -> dict[int, dict]:

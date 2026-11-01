@@ -70,7 +70,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argpa
     parser.add_argument("--min-area-ratio", type=float, default=0.50,
                         help="Mutual co-visible area ratio threshold (default: 0.50)")
     parser.add_argument("--model-type", type=str, default=None,
-                        help="Optional model override (xfeat_object, xfeat_line_matcher, mask_line, line_transformer, SuperPoint)")
+                        help="Optional model override (xfeat_object, xfeat_line_matcher, mask_line, SuperPoint)")
     parser.add_argument("--eval-stage", type=str, default="all", choices=["all", "detector", "descriptor"],
                         help="Stage-specific evaluation for SuperPoint: 'all' (default), 'detector' (mask+lines), or 'descriptor' (feature matching)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",

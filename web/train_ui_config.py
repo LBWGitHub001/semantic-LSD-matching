@@ -485,13 +485,6 @@ MODEL_SCHEMAS: dict[str, dict[str, Any]] = {
     name: _schema(title, family, params, pinned)
     for names, title, family, params, pinned in (
         (
-            ("semantic_line_matcher", "semantic_line"),
-            "SemanticLineMatcher",
-            "object",
-            _params_for_object_family(with_motion=False, semantic=True),
-            _DEFAULT_PINNED_SEMANTIC,
-        ),
-        (
             ("xfeat_line_matcher", "xfeat_line"),
             "XFeatLineMatcher",
             "object",
@@ -508,13 +501,6 @@ MODEL_SCHEMAS: dict[str, dict[str, Any]] = {
         (
             ("mask_line", "mask"),
             "MaskLineFeatMatchNet",
-            "line",
-            _params_for_line_family(),
-            _DEFAULT_PINNED_LINE,
-        ),
-        (
-            ("line_transformer", "linefeat"),
-            "LineMatcherNet",
             "line",
             _params_for_line_family(),
             _DEFAULT_PINNED_LINE,

@@ -32,7 +32,7 @@ from evaluation import ModelFactory
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified Interactive Matching Demo")
     parser.add_argument("--model", type=str, default="xfeat_line_matcher",
-                        choices=["xfeat_line_matcher", "xfeat_object", "xfeat", "mask_line", "line_transformer"],
+                        choices=["xfeat_line_matcher", "xfeat_object", "xfeat", "mask_line"],
                         help="Model architecture name")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/xfeat_line_matcher/latest",
                         help="Checkpoint weights path")
@@ -136,7 +136,7 @@ def run_object_demo(args: argparse.Namespace) -> None:
 
 
 def run_line_demo(args: argparse.Namespace) -> None:
-    from models.line_transformer import LineMatchPipeline
+    from models.mask_line_matcher import LineMatchPipeline
 
     s_dir = Path(args.scene)
     if not s_dir.exists() or "synthetic_object" in str(s_dir):

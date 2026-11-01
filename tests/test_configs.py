@@ -31,16 +31,13 @@ from configs import (
 
 
 class TestYamlConfigurationSuite(unittest.TestCase):
-    def test_all_seven_yaml_files_exist_and_valid(self) -> None:
+    def test_all_active_yaml_files_exist_and_valid(self) -> None:
         """Every canonical model must have a valid YAML configuration file with all 4 sections."""
         expected_models = [
             "superpoint",
-            "fcn_field",
             "xfeat_object",
             "xfeat_line_matcher",
-            "semantic_line_matcher",
             "mask_line",
-            "line_transformer",
         ]
         self.assertEqual(sorted(list(MODEL_CONFIG_MAP.keys())), sorted(expected_models))
 
@@ -78,13 +75,10 @@ class TestYamlConfigurationSuite(unittest.TestCase):
         """Test resolving canonical names and user-friendly aliases to config paths."""
         self.assertEqual(get_model_config_path("SuperPoint").name, "superpoint.yaml")
         self.assertEqual(get_model_config_path("superpoint").name, "superpoint.yaml")
-        self.assertEqual(get_model_config_path("FCN_field").name, "fcn_field.yaml")
         self.assertEqual(get_model_config_path("xfeat").name, "xfeat_object.yaml")
         self.assertEqual(get_model_config_path("object").name, "xfeat_object.yaml")
         self.assertEqual(get_model_config_path("xfeat_line").name, "xfeat_line_matcher.yaml")
-        self.assertEqual(get_model_config_path("semantic_line").name, "semantic_line_matcher.yaml")
         self.assertEqual(get_model_config_path("mask").name, "mask_line.yaml")
-        self.assertEqual(get_model_config_path("linefeat").name, "line_transformer.yaml")
 
         with self.assertRaises(ValueError):
             get_model_config_path("non_existent_model_xyz")

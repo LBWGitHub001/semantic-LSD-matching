@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Unit and Integration Tests for Decoupled Model Architectures:
-  1. Verifies that all 6 model subpackages have self-contained train.py and eval.py
+  1. Verifies that all 3 active model subpackages (superpoint, object_matcher, mask_line_matcher)
+     have self-contained train.py and eval.py
   2. Verifies that each model's train() and evaluate() can be called programmatically
   3. Verifies that root train.py dispatches correctly to model subpackages
+  4. Verifies that deleted models (FCN_field, line_transformer, semantic_line_matcher) are gone
 """
 
 from __future__ import annotations
@@ -21,15 +23,12 @@ from train import TRAIN_DISPATCH, parse_args, train_applicable_arguments
 
 
 class TestDecoupledModelArchitecture(unittest.TestCase):
-    def test_all_six_model_folders_have_train_and_eval(self) -> None:
-        """All 6 model packages must contain dedicated, self-contained train.py and eval.py."""
+    def test_active_model_folders_have_train_and_eval(self) -> None:
+        """Active model packages must contain dedicated, self-contained train.py and eval.py."""
         model_dirs = [
             "superpoint",
-            "FCN_field",
             "object_matcher",
-            "semantic_line_matcher",
             "mask_line_matcher",
-            "line_transformer",
         ]
         for mdir in model_dirs:
             base = ROOT / "models" / mdir
@@ -49,10 +48,11 @@ class TestDecoupledModelArchitecture(unittest.TestCase):
             self.assertTrue(callable(getattr(pkg, "train")))
             self.assertTrue(callable(getattr(pkg, "evaluate")))
 
-    def test_legacy_line_matcher_directory_removed(self) -> None:
-        """The old deprecated adapter models/line_matcher should not exist."""
-        legacy_dir = ROOT / "models" / "line_matcher"
-        self.assertFalse(legacy_dir.exists(), "Legacy directory models/line_matcher should be completely removed")
+    def test_deleted_model_directories_removed(self) -> None:
+        """Deleted models FCN_field, line_transformer, semantic_line_matcher should not exist."""
+        for mdir in ["FCN_field", "line_transformer", "semantic_line_matcher", "line_matcher"]:
+            d = ROOT / "models" / mdir
+            self.assertFalse(d.exists(), f"Deleted directory models/{mdir} should be completely removed")
 
     def test_train_dispatcher_coverage(self) -> None:
         """Every canonical model type in TRAIN_DISPATCH must resolve to an importable module."""
@@ -68,13 +68,12 @@ class TestDecoupledModelArchitecture(unittest.TestCase):
         self.assertIn("weight_desc", point_args)
         self.assertIn("tau_df", point_args)
 
-        homo_args = train_applicable_arguments("FCN_field")
-        self.assertIn("line_sample_points", homo_args)
-        self.assertNotIn("dustbin_weight", homo_args)
-
         object_args = train_applicable_arguments("xfeat_object")
         self.assertIn("dustbin_weight", object_args)
         self.assertIn("min_area_ratio", object_args)
+
+        mask_args = train_applicable_arguments("mask_line")
+        self.assertIn("min_matches", mask_args)
 
 
 if __name__ == "__main__":

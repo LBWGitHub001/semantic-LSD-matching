@@ -18,8 +18,8 @@ import cv2
 import numpy as np
 import torch
 
-from models.line_transformer.matcher import LineMatcher
-from models.line_transformer.line_transformer import LineMatcherNet
+from models.mask_line_matcher.matcher import LineMatcher
+from models.mask_line_matcher.mask_line_matcher import MaskLineFeatMatchNet
 
 
 @dataclass
@@ -74,7 +74,7 @@ class LineMatchPipeline:
     High-level end-to-end line matching pipeline.
 
     Example:
-        >>> from models.line_transformer import LineMatchPipeline
+        >>> from models.mask_line_matcher import LineMatchPipeline
         >>> pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth")
         >>> result = pipeline.match("image1.jpg", "image2.jpg")
         >>> print(f"Found {len(result)} matches!")
@@ -109,22 +109,12 @@ class LineMatchPipeline:
         self.similarity_threshold = similarity_threshold
         self.model_type = model_type.lower()
 
-        # Model instantiation
-        if self.model_type in ("mask", "masklinefeatmatchnet", "masklinematchernet", "mask_line_matcher"):
-            from models.mask_line_matcher.mask_line_matcher import MaskLineFeatMatchNet
-            self.model = MaskLineFeatMatchNet(
-                d_model=d_model,
-                num_layers=num_layers,
-                nhead=4,
-                freeze_backbone_stages=1,
-            ).to(self.device).eval()
-        else:
-            self.model = LineMatcherNet(
-                d_model=d_model,
-                num_layers=num_layers,
-                nhead=4,
-                freeze_backbone=True,
-            ).to(self.device).eval()
+        self.model = MaskLineFeatMatchNet(
+            d_model=d_model,
+            num_layers=num_layers,
+            nhead=4,
+            freeze_backbone_stages=1,
+        ).to(self.device).eval()
 
         # Load weights if specified
         if weights is not None:

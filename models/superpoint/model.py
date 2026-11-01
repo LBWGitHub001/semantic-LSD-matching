@@ -50,13 +50,20 @@ class SuperPoint(nn.Module):
         """根据训练阶段自适应配置模型参数的梯度需求 (requires_grad)。
 
         参数:
-            stage: 'descriptor' (仅更新主干与描述头，冻结端点检测头);
-                   'detector'   (仅更新主干与端点检测头，冻结描述子头);
-                   'joint'      (联合优化所有参数)。
+            stage: 'stage1_det_warmup', 'stage2_det_geom', 'detector' (仅更新端点检测头，冻结描述子头);
+                   'stage3_desc_intra', 'stage4_desc_cross', 'descriptor' (仅更新描述子头，冻结端点检测头);
+                   'stage5_joint', 'joint' (联合优化所有参数)。
         """
         stage = stage.lower()
-        if stage not in ("joint", "descriptor", "detector"):
-            raise ValueError(f"未知的训练阶段 '{stage}'. 请从 'joint', 'descriptor', 'detector' 中选择。")
+        if "det" in stage:
+            desc_active = False
+            det_active = True
+        elif "desc" in stage:
+            desc_active = True
+            det_active = False
+        else:
+            desc_active = True
+            det_active = True
 
         # 1. 主干特征编码器 (在所有阶段均保持参与训练与特征提取)
         backbone_convs = [
@@ -68,13 +75,11 @@ class SuperPoint(nn.Module):
                 param.requires_grad = True
 
         # 2. 描述子分支
-        desc_active = stage in ("joint", "descriptor")
         for conv in [self.convDa, self.convDb]:
             for param in conv.parameters():
                 param.requires_grad = desc_active
 
         # 3. 端点检测分支
-        det_active = stage in ("joint", "detector")
         for conv in [self.convPa, self.convPb]:
             for param in conv.parameters():
                 param.requires_grad = det_active

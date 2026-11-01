@@ -21,7 +21,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 
 from models.mask_line_matcher.geometric_field import create_6ch_input_tensor
-from models.line_transformer.line_transformer import (
+from models.mask_line_matcher.transformer_layers import (
     LineGeometryEncoder,
     LineVisualSampler,
     MultiHeadAttentionBlock,

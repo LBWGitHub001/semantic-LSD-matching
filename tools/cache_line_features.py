@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from datasets.line_dataset import LineFeatPairDataset
-from models.line_transformer import LineMatcherNet
+from models.mask_line_matcher import MaskLineMatcherNet
 
 
 def load_all_scene_matches(gt_dir: Path) -> dict[str, list[dict[str, Any]]]:
@@ -139,7 +139,7 @@ def cache_split(
     print(f"  Total Valid Pairs: {total_pairs}")
 
     # Model on GPU
-    model = LineMatcherNet(d_model=128, freeze_backbone=True).to(device).eval()
+    model = MaskLineMatcherNet(d_model=128, freeze_backbone=True).to(device).eval()
 
     # ImageNet normalization on GPU
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)

@@ -530,45 +530,6 @@ class GalleryHandler(BaseApiHandler):
 
 def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: int = 128) -> dict[str, Any]:
     """Generates detailed architectural breakdown and PyTorch module structure for a given model."""
-    if model_type in ["semantic_line_matcher", "semantic_line"]:
-        pyr_str = "启用多尺度 FPN；沿线采样优先用 P2" if use_pyramid else "单尺度骨干；沿线采样用 stride-8 特征图"
-        vis_dim = 192 if use_pyramid else 64
-        return {
-            "model_type": "semantic_line_matcher",
-            "name": "SemanticLineMatcher",
-            "tagline": "纹理沿线描述子 ‖ 区域特征 → 直线 Sinkhorn；并行区域 Sinkhorn 双输出",
-            "params_total": "约 1.8 M 参数（随金字塔/几何头变化）",
-            "trainable_params": "trainable",
-            "diagram_url": "/static/img/xfeat_line_matcher_architecture.png",
-            "input_shapes": [
-                {"name": "区域切片 (Region Patches)", "shape": "(B, M, 3, 112, 112)", "desc": "语义区域 RGB patch"},
-                {"name": "区域内直线 (Patch Lines)", "shape": "(B, M, K, 5)", "desc": "5D: 中心、长度、sin2θ/cos2θ（patch 归一化）"},
-                {"name": "直线有效掩码", "shape": "(B, M, K)", "desc": "无效槽不进直线 Sinkhorn"},
-                {"name": "边界框 / 中心", "shape": "(B, M, 4) / (B, M, 2)", "desc": "区域几何；邻接 geo 损失用 centroids"},
-            ],
-            "pipeline_stages": [
-                {"stage": "1. 共享视觉骨干", "dim": f"{vis_dim}D", "desc": pyr_str},
-                {"stage": "2. 区域向量 f_r", "dim": f"{vis_dim}D", "desc": "特征图 GAP（+ 可选 bbox 几何）→ 区域 token"},
-                {"stage": "3. 沿线纹理 f_ℓ", "dim": "64D", "desc": "特征图沿线采样 T 点 + Conv1d 聚合"},
-                {"stage": "4. 直线描述子", "dim": f"{d_model}D", "desc": "Proj([f_ℓ ‖ f_r]) 后展平有效线"},
-                {"stage": "5. 区域匹配", "dim": "(M0+1, M1+1)", "desc": "Graph Transformer + Log-Sinkhorn（dustbin）"},
-                {"stage": "6. 直线匹配", "dim": "(N0+1, N1+1)", "desc": "直线 Log-Sinkhorn（dustbin）；损失含 KL/JSD/邻接 geo"},
-            ],
-            "pytorch_repr": f"""SemanticLineMatcher(
-  (visual_backbone): {'XFeatPyramidBackbone' if use_pyramid else 'XFeatBackbone'}
-  (visual_pool): AdaptiveAvgPool2d(1)  # f_r → {vis_dim}D
-  (geo_encoder): ObjectGeometryEncoder(optional)
-  (region_fusion): Linear({vis_dim}+geo → {d_model}) + LN + ReLU
-  (transformer): ObjectGraphTransformer(2 layers)
-  (region_matcher): ObjectSinkhornMatcher(dustbin=True)
-  (line_encoder): AlongLineTextureEncoder(samples=8, out=64)
-  (line_desc_proj): Linear(64+{vis_dim} → {d_model})  # [f_line || f_r]
-  (line_matcher): ObjectSinkhornMatcher(dustbin=True)
-)
-# Loss: region KL + line KL + line→semantic JSD + adjacency geo
-""",
-            "layer_graph": build_layer_graph("semantic_line_matcher", use_pyramid=use_pyramid, d_model=d_model),
-        }
     if model_type in ["xfeat_line_matcher", "xfeat_line", "line_matcher"]:
         pyr_str = "启用多尺度 FPN 特征金字塔 (P1/P2/P3 ➔ 192D)" if use_pyramid else "单尺度特征输出 (64D)"
         vis_dim = 192 if use_pyramid else 64
@@ -692,7 +653,7 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
 )""",
             "layer_graph": build_layer_graph("xfeat_object", use_pyramid=use_pyramid, d_model=d_model),
         }
-    elif model_type in ["mask_line"]:
+    else:  # mask_line
         return {
             "model_type": "mask_line",
             "name": "MaskLineFeatMatchNet",
@@ -717,32 +678,6 @@ def get_model_preview_data(model_type: str, use_pyramid: bool = True, d_model: i
   (matcher): DualSoftmaxLineMatcher(temperature=0.1)
 )""",
             "layer_graph": build_layer_graph("mask_line", use_pyramid=use_pyramid, d_model=d_model),
-        }
-    else:  # line_transformer
-        return {
-            "model_type": "line_transformer",
-            "name": "LineMatcherNet",
-            "tagline": "端点几何向量与局部特征插值采样 Transformer 基线",
-            "params_total": "1,148,928 (约 1.15 M 参数)",
-            "trainable_params": "1,148,928",
-            "diagram_url": "/static/img/line_transformer_architecture.png",
-            "input_shapes": [
-                {"name": "直线端点坐标", "shape": "(B, N, 4)", "desc": "直线两端点坐标向量"},
-                {"name": "局部采样点", "shape": "(B, N, 7, 2)", "desc": "沿直线均匀采样的7个局部坐标"}
-            ],
-            "pipeline_stages": [
-                {"stage": "1. 端点几何编码", "dim": "128D", "desc": "LineGeometryEncoder MLP"},
-                {"stage": "2. 局部视觉采样", "dim": "128D", "desc": "在骨干特征图上沿线段双线性插值采样"},
-                {"stage": "3. Transformer", "dim": "128D", "desc": "TransformerEncoder 2层"},
-                {"stage": "4. 最近邻匹配", "dim": "(N0, N1)", "desc": "距离阈值双向几何过滤"}
-            ],
-            "pytorch_repr": """LineMatcherNet(
-  (line_encoder): LineGeometryEncoder(4 ➔ 128)
-  (sampler): LineFeatureSampler(samples=7)
-  (transformer): TransformerEncoder(d_model=128, nhead=4, num_layers=2)
-  (matcher): MutualNearestNeighborMatcher(dist_thresh=0.2)
-)""",
-            "layer_graph": build_layer_graph("line_transformer", use_pyramid=use_pyramid, d_model=d_model),
         }
 
 

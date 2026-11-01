@@ -9,6 +9,8 @@ from models.mask_line_matcher.geometric_field import (
     create_6ch_input_tensor,
 )
 from models.mask_line_matcher.loss import LineMatchingLoss, MaskedMatrixLoss
+from models.mask_line_matcher.matcher import LineMatcher, get_distinct_colors
+from models.mask_line_matcher.pipeline import LineMatchPipeline, LineMatchResult
 from models.mask_line_matcher.train import train
 from models.mask_line_matcher.eval import evaluate, validate
 
@@ -19,6 +21,10 @@ __all__ = [
     "create_6ch_input_tensor",
     "LineMatchingLoss",
     "MaskedMatrixLoss",
+    "LineMatcher",
+    "LineMatchPipeline",
+    "LineMatchResult",
+    "get_distinct_colors",
     "train",
     "evaluate",
     "validate",

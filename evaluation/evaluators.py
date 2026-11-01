@@ -220,93 +220,6 @@ class LineMatchingEvaluator(BaseEvaluator):
         return []
 
 
-class HomographyEvaluator(BaseEvaluator):
-    """Reports the symmetry loss and draws ridges moved by v12."""
-
-    def evaluate(
-        self,
-        model: nn.Module,
-        loader: DataLoader,
-        device: torch.device,
-        min_area_ratio: float = 0.50,
-    ) -> Dict[str, Any]:
-        from models import build_loss
-
-        del min_area_ratio
-        criterion = build_loss("FCN_field")
-        model.eval()
-        totals = {"symmetry": 0.0, "loss": 0.0}
-        steps = 0
-        with torch.inference_mode():
-            for batch in loader:
-                moved = {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
-                pred = model(moved["image0"], moved["image1"])
-                out = criterion(pred, moved)
-                totals["symmetry"] += float(out["symmetry"])
-                totals["loss"] += float(out["loss"])
-                steps += 1
-        denom = max(steps, 1)
-        metrics = {key: value / denom for key, value in totals.items()}
-        metrics.update(
-            {
-                "total_pairs": steps,
-                "precision": 0.0,
-                "recall": 0.0,
-                "f1": 0.0,
-                "dustbin_acc": 0.0,
-                "tp": 0,
-                "fp": 0,
-                "fn": 0,
-            }
-        )
-        return metrics
-
-    def visualize(
-        self,
-        model: nn.Module,
-        loader: DataLoader,
-        device: torch.device,
-        out_dir: Path,
-        num_vis: int = 5,
-        min_area_ratio: float = 0.50,
-        data_dir: Optional[Path] = None,
-        use_region_ds: bool = True,
-    ) -> List[Path]:
-        import cv2
-        import numpy as np
-        from models.FCN_field.draw import draw_ridge_lines
-        from models.FCN_field.loss import warp_by_velocity
-
-        del min_area_ratio, data_dir, use_region_ds
-        out_dir.mkdir(parents=True, exist_ok=True)
-        paths: List[Path] = []
-        model.eval()
-        with torch.inference_mode():
-            for batch in loader:
-                if len(paths) >= num_vis:
-                    break
-                moved = {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
-                pred = model(moved["image0"], moved["image1"])
-                ridges = moved["ridges0"]
-                mask = moved["ridge_mask"][0].bool()
-                kept = ridges[0, mask].detach().cpu().numpy()
-                if len(kept) == 0:
-                    endpoints = np.zeros((0, 2, 2), dtype=np.float32)
-                    warped_ends = endpoints
-                else:
-                    endpoints = np.stack([kept[:, 0], kept[:, -1]], axis=1)
-                    warped = warp_by_velocity(pred["velocity12"].float(), ridges.float())
-                    warped_kept = warped[0, mask].detach().cpu().numpy()
-                    warped_ends = np.stack([warped_kept[:, 0], warped_kept[:, -1]], axis=1)
-                left = draw_ridge_lines(batch["bgr0"][0].numpy(), endpoints)
-                right = draw_ridge_lines(batch["bgr1"][0].numpy(), warped_ends)
-                canvas = np.concatenate([left, right], axis=1)
-                dest = out_dir / f"{batch['pair_id'][0]}.jpg"
-                cv2.imwrite(str(dest), canvas)
-                paths.append(dest)
-        return paths
-
-
 class PointMatchingEvaluator(BaseEvaluator):
     """Evaluates SuperPoint endpoint detection, line geometry reconstruction, and metric matching."""
 
@@ -639,7 +552,6 @@ class EvaluatorFactory:
     _registry: Dict[str, type[BaseEvaluator]] = {
         "object": ObjectMatchingEvaluator,
         "line": LineMatchingEvaluator,
-        "homography": HomographyEvaluator,
         "point": PointMatchingEvaluator,
     }
 
@@ -683,8 +595,6 @@ def evaluate(
 
     if model_info.get("family") == "point" and str(data_dir) == "data/structured3d_semantic_regions":
         p_data = Path("data/planar_letters").resolve()
-    elif model_info.get("family") == "homography" and str(data_dir) == "data/structured3d_semantic_regions":
-        p_data = Path("data/homo_matcher").resolve()
 
     arch_desc = []
     if model_info.get("use_pyramid"):
@@ -706,11 +616,6 @@ def evaluate(
     print(f"  Output Directory:  {p_out}")
     print("=" * 75 + "\n")
 
-    if model_info.get("family") == "homography" and any(
-        token == "--min-area-ratio" or token.startswith("--min-area-ratio=") for token in sys.argv[1:]
-    ):
-        print("[!] --min-area-ratio 对 FCN_field 不会执行，已忽略", flush=True)
-
     loader, use_region_ds = DatasetFactory.create(
         model_info=model_info,
         data_dir=p_data,
@@ -730,11 +635,7 @@ def evaluate(
     elapsed = time.time() - t0
 
     print("---------------------------------------------------------------------------")
-    if model_info.get("family") == "homography":
-        print(f"HOMOGRAPHY EVALUATION ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
-        print(f"  Symmetry T12/T21   : {metrics['symmetry']:.4f}")
-        print(f"  Total loss         : {metrics['loss']:.4f}")
-    elif model_info.get("family") == "point":
+    if model_info.get("family") == "point":
         print(f"SUPERPOINT [{eval_stage.upper()}] BENCHMARK EVALUATION ({metrics['total_pairs']} pairs, {elapsed:.2f}s):")
         if eval_stage in ("all", "descriptor"):
             print(f"  [1] Descriptor Loss: L_desc={metrics['loss_desc']:.4f} (Total Loss={metrics['loss']:.4f})")
@@ -791,12 +692,7 @@ def evaluate(
         f.write(f"> **评测数据集**: `{p_data.name}` (划分: `{split}`)  \n")
         f.write(f"> **耗时**: `{elapsed:.2f}s` | **测试对数**: `{metrics['total_pairs']}`\n\n")
         f.write("## 核心指标结果\n")
-        if model_info.get("family") == "homography":
-            f.write("| 评测指标 | 结果数值 |\n")
-            f.write("| :--- | :---: |\n")
-            f.write(f"| **Symmetry T12/T21** | **{metrics['symmetry']:.4f}** |\n")
-            f.write(f"| **Total** | **{metrics['loss']:.4f}** |\n\n")
-        elif model_info.get("family") == "point":
+        if model_info.get("family") == "point":
             f.write("### 1. 损失函数细粒度分解 (Loss Breakdown)\n")
             f.write("| 损失分项 | 数值 | 权重与物理目标 |\n")
             f.write("| :--- | :---: |\n")

@@ -27,8 +27,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 def build_train_cli_args(cfg: dict[str, Any]) -> list[str]:
     """Build train.py CLI argv (without python) from a UI / queue config dict."""
     model = str(cfg.get("model", "xfeat_line_matcher"))
-    is_semantic = model in ("semantic_line_matcher", "semantic_line")
-    is_line = model in ("mask_line", "mask", "line_transformer", "linefeat")
+    is_line = model in ("mask_line", "mask")
 
     data_dir = cfg.get("data_dir", "data/xfeat_line_matcher")
     epochs = cfg.get("epochs", 15)
@@ -70,7 +69,7 @@ def build_train_cli_args(cfg: dict[str, Any]) -> list[str]:
     else:
         cmd.extend([
             "--dustbin-weight", str(dustbin),
-            "--motion-weight", str(0.0 if is_semantic else motion),
+            "--motion-weight", str(motion),
             "--min-area-ratio", str(min_area),
             "--motion-margin", str(cfg.get("motion_margin", 0.15)),
         ])
@@ -80,15 +79,6 @@ def build_train_cli_args(cfg: dict[str, Any]) -> list[str]:
             cmd.append("--pyramid")
         else:
             cmd.append("--no-pyramid")
-        if is_semantic:
-            cmd.extend([
-                "--region-weight", str(cfg.get("region_weight", 1.0)),
-                "--line-weight", str(cfg.get("line_weight", 1.0)),
-                "--sem-weight", str(cfg.get("sem_weight", 0.1)),
-                "--geo-weight", str(cfg.get("geo_weight", 0.2)),
-                "--adj-sigma", str(cfg.get("adj_sigma", 0.3)),
-                "--line-sample-points", str(int(cfg.get("line_sample_points", 8))),
-            ])
 
     if amp:
         cmd.append("--amp")

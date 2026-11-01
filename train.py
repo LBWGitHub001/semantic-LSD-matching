@@ -4,16 +4,12 @@ Unified Training Entrypoint & Facade for all Matching Networks.
 This script acts purely as the external CLI entrypoint and argument analyzer.
 Model-specific training routines are isolated within each respective package:
   - SuperPoint:               models.superpoint.train
-  - FCN_field:                models.FCN_field.train
   - XFeatObjectMatcher:       models.object_matcher.train
-  - SemanticLineMatcher:      models.semantic_line_matcher.train
   - MaskLineFeatMatchNet:     models.mask_line_matcher.train
-  - LineMatcherNet:           models.line_transformer.train
 
 Usage:
   python train.py --config configs/superpoint.yaml
   python train.py --config configs/xfeat_object.yaml --epochs 20
-  python train.py --model FCN_field --epochs 10 --lr 1e-4
 """
 
 from __future__ import annotations
@@ -32,7 +28,7 @@ import torch
 
 from configs import apply_config_to_parser, load_config, pre_parse_config_path
 from factory_args import warn_unused_arguments
-from models import is_semantic_line_model, model_family
+from models import model_family
 from training_utils import (
     TQDM_BAR_FORMAT,
     get_git_commit,
@@ -49,25 +45,16 @@ TRAIN_DISPATCH: dict[str, str] = {
     # 1. SuperPoint
     "superpoint": "models.superpoint.train",
     "SuperPoint": "models.superpoint.train",
-    # 2. DeepLSD Field Homography
-    "fcn_field": "models.FCN_field.train",
-    "FCN_field": "models.FCN_field.train",
-    # 3. Object Matcher ("连连看") & Hybrid Line Matcher
+    # 2. Object Matcher ("连连看") & Hybrid Line Matcher
     "xfeat_object": "models.object_matcher.train",
     "xfeat": "models.object_matcher.train",
     "object": "models.object_matcher.train",
     "xfeat_line_matcher": "models.object_matcher.train",
     "xfeat_line": "models.object_matcher.train",
     "line_object": "models.object_matcher.train",
-    # 4. Semantic Region-Line Matcher
-    "semantic_line_matcher": "models.semantic_line_matcher.train",
-    "semantic_line": "models.semantic_line_matcher.train",
-    # 5. Continuous Geometry Field Line Matcher
+    # 3. Continuous Geometry Field Line Matcher
     "mask_line": "models.mask_line_matcher.train",
     "mask": "models.mask_line_matcher.train",
-    # 6. Baseline Transformer Line Matcher
-    "line_transformer": "models.line_transformer.train",
-    "linefeat": "models.line_transformer.train",
 }
 
 
@@ -81,7 +68,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argpa
 
     # Model Architecture Selection
     parser.add_argument("--model", "--model-type", dest="model_type", type=str, default="xfeat_object",
-                        help="Model architecture to train (xfeat_object, xfeat_line_matcher, mask_line, line_transformer, FCN_field, SuperPoint)")
+                        help="Model architecture to train (xfeat_object, xfeat_line_matcher, mask_line, SuperPoint)")
 
     # Core Training Hyperparameters
     parser.add_argument("--data-dir", type=str, default=None,
@@ -144,28 +131,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, argpa
                         help="Loss weight for geometric spatial motion consistency (default: 0.2)")
     parser.add_argument("--motion-margin", type=float, default=0.1,
                         help="Margin threshold for motion distance loss (default: 0.1)")
-    parser.add_argument("--cycle-weight", type=float, default=1.0,
-                        help="Loss weight for cycle consistency (default: 1.0)")
-    parser.add_argument("--flow-weight", type=float, default=1.0,
-                        help="Loss weight for optical flow field loss (default: 1.0)")
     parser.add_argument("--min-area-ratio", type=float, default=0.50,
                         help="Minimum mutual co-visible area ratio (default: 0.50)")
 
-    # Semantic Line Matcher Specific Arguments
-    parser.add_argument("--region-weight", type=float, default=1.0,
-                        help="Weight for region matching cross-entropy (semantic_line)")
-    parser.add_argument("--line-weight", type=float, default=1.0,
-                        help="Weight for line matching cross-entropy (semantic_line)")
-    parser.add_argument("--sem-weight", type=float, default=0.1,
-                        help="Weight for category consistency bonus (semantic_line)")
-    parser.add_argument("--geo-weight", type=float, default=0.2,
-                        help="Weight for geometry alignment bonus (semantic_line)")
-    parser.add_argument("--adj-sigma", type=float, default=0.3,
-                        help="Gaussian sigma for adjacent line compatibility (semantic_line)")
-    parser.add_argument("--line-sample-points", type=int, default=8,
-                        help="Sample points per line (FCN_field and semantic_line)")
-
-    # Line Transformer / MaskLine Specific Arguments
+    # Line Matching Specific Arguments
     parser.add_argument("--min-matches", type=int, default=2,
                         help="Minimum ground-truth line matches required per pair (default: 2)")
 
@@ -205,21 +174,11 @@ def train_applicable_arguments(model_type: str) -> set[str]:
         "no_timestamp", "device", "max_steps",
     }
     family = model_family(model_type)
-    if family == "homography":
-        return (common - {"d_model", "num_layers"}) | {"line_sample_points"}
     if family == "point":
         return (common - {"d_model", "num_layers"}) | {
             "train_stage", "weight_desc", "positive_weight", "positive_margin", "negative_margin",
             "weight_det", "det_pos_weight", "weight_orphan", "weight_len", "length_exponent",
             "weight_premature", "probe_dist", "tau_df", "tau_ang", "min_length", "num_candidates", "num_line_samples",
-        }
-    if family == "object" and is_semantic_line_model(model_type):
-        return common | {
-            "nhead", "grad_accum", "num_workers", "amp", "val_interval",
-            "save_interval", "save_last", "resume", "dustbin_weight",
-            "min_area_ratio", "data_ratio", "use_pyramid",
-            "region_weight", "line_weight", "sem_weight", "geo_weight",
-            "adj_sigma", "line_sample_points",
         }
     if family == "object":
         return common | {
@@ -241,12 +200,10 @@ def dispatch_train(args: argparse.Namespace) -> Path:
         family = model_family(args.model_type)
         if family == "point":
             target_module_str = "models.superpoint.train"
-        elif family == "homography":
-            target_module_str = "models.FCN_field.train"
         elif family == "object":
             target_module_str = "models.object_matcher.train"
         else:
-            target_module_str = "models.line_transformer.train"
+            target_module_str = "models.mask_line_matcher.train"
 
     train_module = importlib.import_module(target_module_str)
     return train_module.train(args)

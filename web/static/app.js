@@ -1743,40 +1743,6 @@ const MODEL_DOCS_DATA = {
         detail: "严格满足置换等变性（Permutation Equivariance），即交换输入线段顺序时，输出矩阵对应行/列严格同构置换。"
       }
     ]
-  },
-  line_transformer: {
-    badge: "基线线段图注意力模型",
-    badgeClass: "badge-warning",
-    title: "LineMatcherNet: Point Sampling & Graph Transformer Line Matcher",
-    subtitle: "在检测出的线段上均匀插值离散采样点，抽取局部视觉特征并拼接端点 4D 几何坐标，经 Transformer 自注意力配对。",
-    metric: "F1: 62.30%",
-    metricLabel: "基础线特征匹配基线",
-    stages: [
-      {
-        num: "STAGE 01",
-        title: "线段端点与均匀采样",
-        desc: "沿线等间距采样 5 个特征点",
-        shapes: "线段输入 (N, 4) ➔ 采样坐标点 (N, 5, 2)",
-        code: "models/line_transformer/line_transformer.py",
-        detail: "沿线段中心及两端等距采集局部像素点，规避单点特征漂移。"
-      },
-      {
-        num: "STAGE 02",
-        title: "视觉特征网格采样",
-        desc: "Grid Sample 双线性插值视觉特征",
-        shapes: "Feature Map (B, C, H, W) ➔ LineVisualSampler ➔ (B, N, C)",
-        code: "models/line_transformer/line_transformer.py#L80",
-        detail: "在 CNN 特征图上通过双线性插值直接提取采样点特征，并通过 1D 卷积聚合为单线视觉向量。"
-      },
-      {
-        num: "STAGE 03",
-        title: "自注意力图推理",
-        desc: "全图拓扑关联与交叉注意力匹配",
-        shapes: "Tokens (B, N, 128) ➔ Transformer Layers ➔ 相似度矩阵 (B, N0, N1)",
-        code: "models/line_transformer/line_transformer.py#L160",
-        detail: "利用标准 Transformer 建模线段间的平行、共线与正交关系，输出互为最近邻的双向配对。"
-      }
-    ]
   }
 };
 
@@ -2100,7 +2066,7 @@ function showToast(message, type = "info") {
 // Training Queue Management (📋 当前训练任务列表)
 // =============================================================
 function isSemanticLineModel(model) {
-  return model === "semantic_line_matcher" || model === "semantic_line";
+  return false;
 }
 
 function getActiveTrainModel() {
