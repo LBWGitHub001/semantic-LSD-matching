@@ -1,18 +1,14 @@
-"""
-SemanticLineMatcher: dual region + line matching under semantic regions.
+"""Semantic region-conditioned dual line matcher."""
 
-Line descriptors = along-line texture features concatenated with parent region features.
-Outputs region Sinkhorn (P_R) and line Sinkhorn (P_L) in one forward pass.
-"""
-
-from __future__ import annotations
-
-from models.semantic_line_matcher.line_encoder import AlongLineTextureEncoder
-from models.semantic_line_matcher.loss import SemanticLineMatchingLoss
 from models.semantic_line_matcher.model import SemanticLineMatcher
+from models.semantic_line_matcher.loss import SemanticLineMatchingLoss
+from models.semantic_line_matcher.train import train
+from models.semantic_line_matcher.eval import evaluate, validate
 
 __all__ = [
-    "AlongLineTextureEncoder",
     "SemanticLineMatcher",
     "SemanticLineMatchingLoss",
+    "train",
+    "evaluate",
+    "validate",
 ]

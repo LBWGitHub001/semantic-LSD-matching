@@ -1,8 +1,4 @@
-"""
-6-Channel Continuous Geometry Field Line Matcher (MaskLineFeatMatchNet).
-"""
-
-from __future__ import annotations
+"""6-Channel Continuous Geometry Field Line Matcher (MaskLineFeatMatchNet)."""
 
 from models.mask_line_matcher.mask_line_matcher import (
     MaskLineFeatMatchNet,
@@ -13,6 +9,8 @@ from models.mask_line_matcher.geometric_field import (
     create_6ch_input_tensor,
 )
 from models.mask_line_matcher.loss import LineMatchingLoss, MaskedMatrixLoss
+from models.mask_line_matcher.train import train
+from models.mask_line_matcher.eval import evaluate, validate
 
 __all__ = [
     "MaskLineFeatMatchNet",
@@ -21,4 +19,7 @@ __all__ = [
     "create_6ch_input_tensor",
     "LineMatchingLoss",
     "MaskedMatrixLoss",
+    "train",
+    "evaluate",
+    "validate",
 ]

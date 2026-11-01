@@ -39,6 +39,31 @@ class PointMatchDataset(Dataset):
             right = by_view[view1][int(match["index1"])]
             points0.append([left["x"], left["y"]])
             points1.append([right["x"], right["y"]])
+
+        lines0: list[list[float]] = []
+        lines1: list[list[float]] = []
+        lines_path = scene_dir / "lines.json"
+        if lines_path.is_file():
+            try:
+                lines_data = json.loads(lines_path.read_text(encoding="utf-8"))
+                lines_by_view = {int(view["view"]): view["lines"] for view in lines_data.get("views", [])}
+                line_matches = record.get("line_matches", [])
+                for match in line_matches:
+                    l0 = lines_by_view[view0][int(match["index0"])]["line"]
+                    l1 = lines_by_view[view1][int(match["index1"])]["line"]
+                    lines0.append([float(c) for c in l0])
+                    lines1.append([float(c) for c in l1])
+            except Exception:
+                pass
+
+        if len(lines0) == 0 and len(points0) >= 2:
+            pts0_np = np.array(points0, dtype=np.float32)
+            pts1_np = np.array(points1, dtype=np.float32)
+            n_segs = min(len(pts0_np) - 1, 12)
+            for s in range(n_segs):
+                lines0.append([float(pts0_np[s, 0]), float(pts0_np[s, 1]), float(pts0_np[s + 1, 0]), float(pts0_np[s + 1, 1])])
+                lines1.append([float(pts1_np[s, 0]), float(pts1_np[s, 1]), float(pts1_np[s + 1, 0]), float(pts1_np[s + 1, 1])])
+
         image0 = _load_view(scene_dir, view0)
         image1 = _load_view(scene_dir, view1)
         return {
@@ -47,6 +72,8 @@ class PointMatchDataset(Dataset):
             "homography": torch.tensor(record["H_0_to_1"], dtype=torch.float32),
             "points0": torch.tensor(points0, dtype=torch.float32),
             "points1": torch.tensor(points1, dtype=torch.float32),
+            "lines0": torch.tensor(lines0, dtype=torch.float32) if len(lines0) > 0 else torch.zeros((0, 4), dtype=torch.float32),
+            "lines1": torch.tensor(lines1, dtype=torch.float32) if len(lines1) > 0 else torch.zeros((0, 4), dtype=torch.float32),
             "bgr0": torch.from_numpy(_as_bgr(image0[0])),
             "bgr1": torch.from_numpy(_as_bgr(image1[0])),
             "pair_id": pair_id,
@@ -56,7 +83,7 @@ class PointMatchDataset(Dataset):
 def collate_point_matches(batch: list[dict]) -> dict:
     """Batch size is one pair. Point counts differ, so they are not stacked."""
     item = batch[0]
-    return {
+    res = {
         "image0": item["image0"].unsqueeze(0),
         "image1": item["image1"].unsqueeze(0),
         "homography": item["homography"].unsqueeze(0),
@@ -66,6 +93,11 @@ def collate_point_matches(batch: list[dict]) -> dict:
         "bgr1": item["bgr1"],
         "pair_id": item["pair_id"],
     }
+    if "lines0" in item:
+        res["lines0"] = item["lines0"].unsqueeze(0)
+    if "lines1" in item:
+        res["lines1"] = item["lines1"].unsqueeze(0)
+    return res
 
 
 def _parse_pair_id(pair_id: str) -> tuple[str, int, int]:

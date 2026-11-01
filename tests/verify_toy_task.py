@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from models.line_matcher import MaskLineFeatMatchNet, LineMatchingLoss, LineMatcher
+from models.mask_line_matcher import MaskLineFeatMatchNet, LineMatchingLoss
+from models.line_transformer import LineMatcher
 
 
 def generate_synthetic_pair(

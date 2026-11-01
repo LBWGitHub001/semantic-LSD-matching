@@ -136,7 +136,7 @@ def run_object_demo(args: argparse.Namespace) -> None:
 
 
 def run_line_demo(args: argparse.Namespace) -> None:
-    from models.line_matcher import LineMatchPipeline
+    from models.line_transformer import LineMatchPipeline
 
     s_dir = Path(args.scene)
     if not s_dir.exists() or "synthetic_object" in str(s_dir):

@@ -18,21 +18,117 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 # =============================================================================
-# 1. 描述子度量合页损失类 (Descriptor Metric Hinge Loss)
+# 1. 描述子度量与线级一致性损失类 (Descriptor Metric & Line-Consistent Loss)
 # =============================================================================
 
-class SuperPointDescriptorLoss(nn.Module):
-    """SuperPoint 描述子度量合页损失模块。
+def sample_descriptors_along_lines(
+    descriptors: torch.Tensor,
+    lines: Any,
+    num_samples: int = 12,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """沿成组直线段密集采样像素描述子，并计算每条线的单位特征原型。
 
-    针对跨视角半稠密特征图计算余弦相似度合页损失:
-    - 距离单应投影位置 <= 8px 判定为同名正样本对，拉近至 positive_margin (1.0)，加权 positive_weight (250x);
-    - 其余判定为负样本对，推远至 negative_margin (0.2) 以下。
+    参数:
+        descriptors: (B, C, H, W) 全分辨率密集描述子图
+        lines: (B, K, 4) 或 (K, 4) 直线段坐标 [x1, y1, x2, y2]
+        num_samples: 每条线段沿线均匀采样点数
+
+    返回:
+        sampled_desc: (B, K, num_samples, C) 沿线采样的单位归一化描述子
+        line_prototypes: (B, K, C) 每条线段的归一化原型特征向量
+    """
+    if isinstance(lines, np.ndarray):
+        lines = torch.from_numpy(lines)
+    if isinstance(lines, (list, tuple)):
+        lines = torch.as_tensor(lines, dtype=torch.float32, device=descriptors.device)
+    lines = lines.to(device=descriptors.device, dtype=torch.float32)
+
+    if lines.dim() == 2:
+        lines = lines.unsqueeze(0).expand(descriptors.shape[0], -1, -1)
+    batch_size, num_lines, _ = lines.shape
+    c = descriptors.shape[1]
+    if num_lines == 0:
+        return (
+            torch.zeros((batch_size, 0, num_samples, c), device=descriptors.device, dtype=descriptors.dtype),
+            torch.zeros((batch_size, 0, c), device=descriptors.device, dtype=descriptors.dtype),
+        )
+
+    _, _, height, width = descriptors.shape
+    device = descriptors.device
+    dtype = descriptors.dtype
+
+    p1 = lines[..., :2]  # (B, K, 2)
+    p2 = lines[..., 2:]  # (B, K, 2)
+    diff = p2 - p1       # (B, K, 2)
+
+    t = torch.linspace(0.0, 1.0, num_samples, device=device, dtype=dtype).view(1, 1, num_samples, 1)
+    pts = p1.unsqueeze(2) + t * diff.unsqueeze(2)  # (B, K, num_samples, 2)
+
+    # 归一化至 [-1, 1] 供 grid_sample
+    gx = 2.0 * pts[..., 0] / max(width - 1, 1) - 1.0
+    gy = 2.0 * pts[..., 1] / max(height - 1, 1) - 1.0
+    grid = torch.stack([gx, gy], dim=-1)  # (B, K, num_samples, 2)
+
+    sampled = F.grid_sample(
+        descriptors,
+        grid,
+        mode="bilinear",
+        padding_mode="border",
+        align_corners=True,
+    )  # (B, C, K, num_samples)
+    sampled = sampled.permute(0, 2, 3, 1)  # (B, K, num_samples, C)
+    sampled = F.normalize(sampled, p=2, dim=-1)
+
+    # 计算线原型向量
+    proto = sampled.mean(dim=2)  # (B, K, C)
+    proto = F.normalize(proto, p=2, dim=-1)
+
+    return sampled, proto
+
+
+def sample_background_descriptors(
+    descriptors: torch.Tensor,
+    df_or_mask: torch.Tensor | None = None,
+    num_samples: int = 64,
+) -> torch.Tensor:
+    """在背景区域 (非直线区域) 采样像素描述子，用于方案 A 的对比推离。"""
+    batch_size, c, height, width = descriptors.shape
+    device = descriptors.device
+    dtype = descriptors.dtype
+
+    if df_or_mask is not None and df_or_mask.shape[-2:] == (height, width):
+        # 判定背景: 若距离场数值小 (< 0.25) 或掩膜为 0
+        bg_prob = (df_or_mask < 0.25).float().view(batch_size, -1)
+    else:
+        # 默认均匀采样背景概率
+        bg_prob = torch.ones((batch_size, height * width), device=device, dtype=dtype)
+
+    bg_indices = torch.multinomial(bg_prob.clamp(min=1e-5), num_samples=num_samples, replacement=True)
+    flat_desc = descriptors.permute(0, 2, 3, 1).reshape(batch_size, height * width, c)
+    idx_expanded = bg_indices.unsqueeze(-1).expand(-1, -1, c)
+    bg_desc = torch.gather(flat_desc, 1, idx_expanded)  # (B, num_samples, C)
+    return F.normalize(bg_desc, p=2, dim=-1)
+
+
+class SuperPointDescriptorLoss(nn.Module):
+    """SuperPoint 描述子度量与线级一致性损失模块 (集成方案 A 线级一致性与对比推离约束).
+
+    双重模式:
+    1. 线级一致模式 (当提供 lines0 与 lines1 时触发):
+       - L_intra: 同一条线上的各像素描述子余弦相似度拉近至 1.0 (同一条线上值相似);
+       - L_cross: 跨图对应同名直线段的原型描述子余弦相似度拉近至 1.0 (不同图上同一直线描述相同);
+       - L_inter: 异线原型相互推离至 <= line_neg_margin (0.2);
+       - L_bg: 背景像素样本与线原型推离至 <= bg_neg_margin (0.1) (方案 A 负样本推离).
+    2. 经典网格模式 (向后兼容):
+       - 距离单应投影位置 <= 8px 判定为同名正样本对，拉近至 positive_margin (1.0);
+       - 其余判定为负样本对，推远至 negative_margin (0.2) 以下。
     """
 
     def __init__(
@@ -41,6 +137,14 @@ class SuperPointDescriptorLoss(nn.Module):
         positive_margin: float = 1.0,
         negative_margin: float = 0.2,
         weight_desc: float = 1.0,
+        weight_intra: float = 1.0,
+        weight_cross: float = 1.5,
+        weight_inter: float = 0.5,
+        weight_bg: float = 0.3,
+        line_neg_margin: float = 0.2,
+        bg_neg_margin: float = 0.1,
+        num_line_points: int = 12,
+        num_bg_samples: int = 64,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -49,6 +153,14 @@ class SuperPointDescriptorLoss(nn.Module):
         self.positive_margin = float(positive_margin)
         self.negative_margin = float(negative_margin)
         self.weight_desc = float(weight_desc)
+        self.weight_intra = float(weight_intra)
+        self.weight_cross = float(weight_cross)
+        self.weight_inter = float(weight_inter)
+        self.weight_bg = float(weight_bg)
+        self.line_neg_margin = float(line_neg_margin)
+        self.bg_neg_margin = float(bg_neg_margin)
+        self.num_line_points = int(num_line_points)
+        self.num_bg_samples = int(num_bg_samples)
 
     def descriptor_loss(
         self,
@@ -56,7 +168,7 @@ class SuperPointDescriptorLoss(nn.Module):
         desc1: torch.Tensor,
         homography: torch.Tensor,
     ) -> torch.Tensor:
-        """计算两视角半稠密网格描述子之间的合页度量损失。"""
+        """计算两视角半稠密网格描述子之间的合页度量损失 (经典点级 SuperPoint 损失)。"""
         batch, channels, cells_h, cells_w = desc0.shape
         num_cells = cells_h * cells_w
 
@@ -78,20 +190,108 @@ class SuperPointDescriptorLoss(nn.Module):
 
         return (hinge_pos + hinge_neg).mean()
 
+    def line_descriptor_loss(
+        self,
+        dense0: torch.Tensor,
+        dense1: torch.Tensor,
+        lines0: Any,
+        lines1: Any,
+        image0: torch.Tensor | None = None,
+        image1: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """计算线级一致性与对比推离损失 (方案 A)。"""
+        sampled0, proto0 = sample_descriptors_along_lines(dense0, lines0, self.num_line_points)
+        sampled1, proto1 = sample_descriptors_along_lines(dense1, lines1, self.num_line_points)
+
+        batch_size, k, num_samples, _ = sampled0.shape
+        device = dense0.device
+
+        if k == 0:
+            zero = torch.tensor(0.0, device=device)
+            return {"loss": zero, "l_intra": zero, "l_cross": zero, "l_inter": zero, "l_bg": zero}
+
+        # 1. 线内一致性损失 (同一条线上值相似)
+        cos0 = (sampled0 * proto0.unsqueeze(2)).sum(dim=-1)  # (B, K, num_samples)
+        cos1 = (sampled1 * proto1.unsqueeze(2)).sum(dim=-1)
+        l_intra = 0.5 * ((1.0 - cos0).mean() + (1.0 - cos1).mean())
+
+        # 2. 跨图同名线一致性 (不同图上同一个直线的描述应该相同)
+        cos_proto = (proto0 * proto1).sum(dim=-1)  # (B, K)
+        cos_pts = (sampled0 * sampled1).sum(dim=-1)  # (B, K, num_samples)
+        l_cross = 0.5 * ((1.0 - cos_proto).mean() + (1.0 - cos_pts).mean())
+
+        # 3. 异线原型推离 (防止特征坍塌)
+        dot_proto = torch.matmul(proto0, proto1.transpose(-1, -2))  # (B, K, K)
+        eye = torch.eye(k, device=device, dtype=torch.bool).unsqueeze(0)
+        if k > 1:
+            off_diag = dot_proto[~eye]
+            l_inter = F.relu(off_diag - self.line_neg_margin).mean()
+        else:
+            l_inter = torch.tensor(0.0, device=device)
+
+        # 4. 背景像素推离 (方案 A)
+        df0 = image0[:, 3:4] if (image0 is not None and image0.shape[1] >= 4) else None
+        bg_desc = sample_background_descriptors(dense0, df0, self.num_bg_samples)  # (B, N_bg, C)
+        bg_sim = torch.matmul(bg_desc, proto0.transpose(-1, -2))  # (B, N_bg, K)
+        l_bg = F.relu(bg_sim - self.bg_neg_margin).mean()
+
+        total = (
+            self.weight_intra * l_intra
+            + self.weight_cross * l_cross
+            + self.weight_inter * l_inter
+            + self.weight_bg * l_bg
+        )
+
+        return {
+            "loss": total,
+            "l_intra": l_intra,
+            "l_cross": l_cross,
+            "l_inter": l_inter,
+            "l_bg": l_bg,
+        }
+
     def forward(
         self,
         pred0: dict[str, torch.Tensor],
         pred1: dict[str, torch.Tensor],
         homography: torch.Tensor,
+        lines0: Any = None,
+        lines1: Any = None,
+        image0: torch.Tensor | None = None,
+        image1: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> dict[str, torch.Tensor]:
-        """独立描述子损失前向传播。返回 {"loss": ..., "ld": ...}。"""
-        ld = self.descriptor_loss(pred0["desc"], pred1["desc"], homography)
-        total_loss = self.weight_desc * ld
-        return {
-            "loss": total_loss,
-            "ld": ld.detach(),
-        }
+        """独立描述子损失前向传播。支持自动检测线级一致损失或经典合页损失。"""
+        if lines0 is None:
+            lines0 = kwargs.get("lines0")
+        if lines1 is None:
+            lines1 = kwargs.get("lines1")
+        if image0 is None:
+            image0 = kwargs.get("image0")
+        if image1 is None:
+            image1 = kwargs.get("image1")
+
+        has_lines = lines0 is not None and lines1 is not None and len(lines0) > 0
+        if has_lines:
+            dense0 = pred0.get("descriptor", pred0["desc"])
+            dense1 = pred1.get("descriptor", pred1["desc"])
+            line_res = self.line_descriptor_loss(dense0, dense1, lines0, lines1, image0, image1)
+            total_loss = self.weight_desc * line_res["loss"]
+            return {
+                "loss": total_loss,
+                "ld": total_loss.detach(),
+                "l_intra": line_res["l_intra"].detach(),
+                "l_cross": line_res["l_cross"].detach(),
+                "l_inter": line_res["l_inter"].detach(),
+                "l_bg": line_res["l_bg"].detach(),
+            }
+        else:
+            ld = self.descriptor_loss(pred0["desc"], pred1["desc"], homography)
+            total_loss = self.weight_desc * ld
+            return {
+                "loss": total_loss,
+                "ld": ld.detach(),
+            }
 
 
 # =============================================================================
@@ -122,6 +322,7 @@ class SuperPointDetectorLoss(nn.Module):
         probe_dist: float = 4.0,
         det_pos_weight: float = 50.0,
         length_exponent: float = 1.5,
+        nms_radius: int = 4,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -139,6 +340,7 @@ class SuperPointDetectorLoss(nn.Module):
         self.probe_dist = float(probe_dist)
         self.det_pos_weight = float(det_pos_weight)
         self.length_exponent = float(length_exponent)
+        self.nms_radius = int(nms_radius)
 
     # -------------------------------------------------------------------------
     # 损失函数类成员
@@ -290,16 +492,26 @@ class SuperPointDetectorLoss(nn.Module):
     def extract_candidate_endpoints(
         self,
         heatmap: torch.Tensor,
+        nms_radius: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """提取 Top-K 候选端点，保留对 heatmap 的可求导梯度置信度 scores。"""
+        """提取 Top-K 候选端点，保留对 heatmap 的可求导梯度置信度 scores。支持 NMS 抑制临近重复聚簇。"""
         batch_size, _, height, width = heatmap.shape
         dtype = heatmap.dtype
+        radius = self.nms_radius if nms_radius is None else nms_radius
 
         k = min(self.num_candidates, height * width)
-        flat_heat = heatmap.view(batch_size, height * width)
-        _, topk_idx = torch.topk(flat_heat.detach(), k=k, dim=-1)
+        if radius > 0:
+            kernel_size = 2 * radius + 1
+            max_pooled = F.max_pool2d(heatmap, kernel_size=kernel_size, stride=1, padding=radius)
+            is_peak = (heatmap == max_pooled)
+            suppressed = heatmap * is_peak.to(dtype)
+            flat_suppressed = suppressed.view(batch_size, height * width)
+            _, topk_idx = torch.topk(flat_suppressed.detach(), k=k, dim=-1)
+        else:
+            flat_heat = heatmap.view(batch_size, height * width)
+            _, topk_idx = torch.topk(flat_heat.detach(), k=k, dim=-1)
 
-        scores = torch.gather(flat_heat, 1, topk_idx)  # (B, K)
+        scores = torch.gather(heatmap.view(batch_size, height * width), 1, topk_idx)  # (B, K)
         coord_y = (topk_idx // width).to(dtype)
         coord_x = (topk_idx % width).to(dtype)
         points = torch.stack([coord_x, coord_y], dim=-1)  # (B, K, 2)
@@ -482,6 +694,15 @@ class SuperPointJointLoss(nn.Module):
         probe_dist: float = 4.0,
         det_pos_weight: float = 50.0,
         length_exponent: float = 1.5,
+        nms_radius: int = 4,
+        weight_intra: float = 1.0,
+        weight_cross: float = 1.5,
+        weight_inter: float = 0.5,
+        weight_bg: float = 0.3,
+        line_neg_margin: float = 0.2,
+        bg_neg_margin: float = 0.1,
+        num_line_points: int = 12,
+        num_bg_samples: int = 64,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -490,6 +711,15 @@ class SuperPointJointLoss(nn.Module):
             positive_margin=positive_margin,
             negative_margin=negative_margin,
             weight_desc=weight_desc,
+            weight_intra=weight_intra,
+            weight_cross=weight_cross,
+            weight_inter=weight_inter,
+            weight_bg=weight_bg,
+            line_neg_margin=line_neg_margin,
+            bg_neg_margin=bg_neg_margin,
+            num_line_points=num_line_points,
+            num_bg_samples=num_bg_samples,
+            **kwargs,
         )
         self.det_loss_module = SuperPointDetectorLoss(
             weight_det=weight_det,
@@ -504,6 +734,8 @@ class SuperPointJointLoss(nn.Module):
             probe_dist=probe_dist,
             det_pos_weight=det_pos_weight,
             length_exponent=length_exponent,
+            nms_radius=nms_radius,
+            **kwargs,
         )
 
     # 代理属性
@@ -626,17 +858,25 @@ class SuperPointJointLoss(nn.Module):
         image1: torch.Tensor | None = None,
         points0: Any = None,
         points1: Any = None,
+        lines0: Any = None,
+        lines1: Any = None,
         **kwargs: Any,
     ) -> dict[str, torch.Tensor]:
         """联合损失前向计算。同时返回各分项数值与总和 loss。"""
-        desc_res = self.desc_loss_module(pred0, pred1, homography, **kwargs)
+        if lines0 is None:
+            lines0 = kwargs.get("lines0")
+        if lines1 is None:
+            lines1 = kwargs.get("lines1")
+        desc_res = self.desc_loss_module(
+            pred0, pred1, homography, lines0=lines0, lines1=lines1, image0=image0, image1=image1, **kwargs
+        )
         det_res = self.det_loss_module(
             pred0, pred1, homography, image0=image0, image1=image1, points0=points0, points1=points1, **kwargs
         )
 
         total_loss = desc_res["loss"] + det_res["loss"]
 
-        return {
+        out = {
             "loss": total_loss,
             "ld": desc_res["ld"],
             "l_det": det_res["l_det"],
@@ -644,6 +884,10 @@ class SuperPointJointLoss(nn.Module):
             "l_len": det_res["l_len"],
             "l_prem": det_res["l_prem"],
         }
+        for k in ("l_intra", "l_cross", "l_inter", "l_bg"):
+            if k in desc_res:
+                out[k] = desc_res[k]
+        return out
 
 
 # 别名导出与向后兼容
@@ -718,8 +962,9 @@ def premature_ray_probing_loss(
 def extract_candidate_endpoints(
     heatmap: torch.Tensor,
     num_candidates: int = 16,
+    nms_radius: int = 4,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    module = SuperPointDetectorLoss(num_candidates=num_candidates)
+    module = SuperPointDetectorLoss(num_candidates=num_candidates, nms_radius=nms_radius)
     return module.extract_candidate_endpoints(heatmap)
 
 
@@ -772,6 +1017,8 @@ __all__ = [
     "SuperPointJointLoss",
     "SuperPointLoss",
     "SuperPointLineLoss",
+    "sample_descriptors_along_lines",
+    "sample_background_descriptors",
     "descriptor_hinge_loss",
     "detector_bce_loss",
     "orphan_endpoint_loss",

@@ -677,6 +677,97 @@ def _sample_descriptors(descriptor: torch.Tensor, points: torch.Tensor) -> torch
     return sampled.squeeze(0).squeeze(-1).transpose(0, 1).contiguous()
 
 
+def save_line_descriptor_pca_figure(
+    path: Path | str,
+    bgr0: np.ndarray,
+    bgr1: np.ndarray,
+    descriptor0: torch.Tensor,
+    descriptor1: torch.Tensor,
+    lines0: torch.Tensor | np.ndarray | None = None,
+    lines1: torch.Tensor | np.ndarray | None = None,
+    pair_id: str = "",
+    metrics_summary: dict[str, Any] | None = None,
+) -> None:
+    """渲染【线一致性像素描述子 PCA 伪彩流形图】(*_line_pca.jpg)。
+
+    核心功能:
+    1. 将两视角 256 维稠密特征场通过联合 PCA 降维投影至 3 维 RGB 空间;
+    2. 直观检验用户核心需求:
+       - 同一条线上的各像素: 特征相近 -> RGB 颜色纯净均一;
+       - 跨视角同名物理直线: 特征相同 -> 左右两图同一直线呈现完全相同的 RGB 颜色;
+       - 不同的直线段: 特征正交推离 -> 呈现截然不同的 RGB 颜色;
+       - 背景像素: 处于不同特征簇，与直线形成鲜明色差对比。
+    """
+    left_raw = np.ascontiguousarray(bgr0)
+    right_raw = np.ascontiguousarray(bgr1)
+    if left_raw.ndim == 2:
+        left_raw = cv2.cvtColor(left_raw, cv2.COLOR_GRAY2BGR)
+    if right_raw.ndim == 2:
+        right_raw = cv2.cvtColor(right_raw, cv2.COLOR_GRAY2BGR)
+    img_h, img_w = left_raw.shape[:2]
+
+    # 获取 (1, C, H, W) 特征
+    d0 = descriptor0 if descriptor0.dim() == 4 else descriptor0.unsqueeze(0)
+    d1 = descriptor1 if descriptor1.dim() == 4 else descriptor1.unsqueeze(0)
+
+    # 统一降维: 展平为 (2*H*W, C)
+    c = d0.shape[1]
+    f0 = d0[0].permute(1, 2, 0).reshape(-1, c)  # (H*W, C)
+    f1 = d1[0].permute(1, 2, 0).reshape(-1, c)
+    combined_f = torch.cat([f0, f1], dim=0)     # (2*H*W, C)
+
+    with torch.no_grad():
+        # 联合 PCA 降至 3 维
+        _, _, v = torch.pca_lowrank(combined_f, q=3, center=True)
+        proj = torch.matmul(combined_f, v[:, :3])  # (2*H*W, 3)
+
+        # 归一化到 [0, 255] RGB
+        p_min = proj.min(dim=0, keepdim=True)[0]
+        p_max = proj.max(dim=0, keepdim=True)[0]
+        norm_proj = (proj - p_min) / (p_max - p_min + 1e-6)
+        rgb_combined = (norm_proj.clamp(0.0, 1.0) * 255.0).byte().cpu().numpy()
+
+    rgb0 = rgb_combined[:img_h * img_w].reshape(img_h, img_w, 3)
+    rgb1 = rgb_combined[img_h * img_w:].reshape(img_h, img_w, 3)
+    # 转为 BGR 供 OpenCV 保存
+    bgr_pca0 = cv2.cvtColor(rgb0, cv2.COLOR_RGB2BGR)
+    bgr_pca1 = cv2.cvtColor(rgb1, cv2.COLOR_RGB2BGR)
+
+    def _draw_lines_on_pca(pca_img: np.ndarray, lines_data: Any, raw_img: np.ndarray) -> np.ndarray:
+        vis = cv2.addWeighted(raw_img, 0.25, pca_img, 0.75, 0)
+        if lines_data is not None:
+            ln_arr = lines_data.detach().cpu().numpy() if torch.is_tensor(lines_data) else np.asarray(lines_data)
+            if ln_arr.ndim == 3:
+                ln_arr = ln_arr[0]
+            for idx, l in enumerate(ln_arr):
+                p1 = (int(round(float(l[0]))), int(round(float(l[1]))))
+                p2 = (int(round(float(l[2]))), int(round(float(l[3]))))
+                cv2.line(vis, p1, p2, (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.circle(vis, p1, 3, (0, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(vis, p2, 3, (0, 255, 255), -1, cv2.LINE_AA)
+        return vis
+
+    pca_vis0 = _draw_lines_on_pca(bgr_pca0, lines0, left_raw)
+    pca_vis1 = _draw_lines_on_pca(bgr_pca1, lines1, right_raw)
+
+    _draw_panel_title(pca_vis0, "[View 0] Line-Consistent PCA Descriptors")
+    _draw_panel_title(pca_vis1, "[View 1] Line-Consistent PCA Descriptors")
+
+    main_canvas = np.concatenate([pca_vis0, pca_vis1], axis=1)
+
+    banner_h = 42
+    banner = np.zeros((banner_h, img_w * 2, 3), dtype=np.uint8) + 24
+    cv2.rectangle(banner, (0, 0), (img_w * 2 - 1, banner_h - 1), (60, 60, 60), 1)
+
+    title_str = f"Descriptor PCA Color Space: {pair_id} | Same Line = Same Color | Cross-Image Line Match = Same Color"
+    cv2.putText(banner, title_str, (16, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (220, 240, 255), 1, cv2.LINE_AA)
+
+    combined = np.vstack([main_canvas, banner])
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(p), combined)
+
+
 __all__ = [
     "match_accuracy",
     "match_accuracy_mma",
@@ -684,6 +775,7 @@ __all__ = [
     "extract_detected_lines",
     "save_detection_mask_lines_figure",
     "save_descriptor_matching_figure",
+    "save_line_descriptor_pca_figure",
     "save_superpoint_diagnostic_sheet",
     "save_point_match_figure",
 ]

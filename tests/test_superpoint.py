@@ -37,16 +37,27 @@ class TestSuperPoint(unittest.TestCase):
         pred = model(image)
         self.assertIn("semi", pred)
         self.assertIn("heatmap", pred)
+        self.assertIn("endpoint_mask", pred)
+        self.assertIn("mask", pred)
         self.assertTrue(hasattr(model, "convPb"))
         self.assertTrue(hasattr(model, "convPa"))
         self.assertEqual(model.conv1a.in_channels, 5)
         self.assertEqual(tuple(pred["semi"].shape), (2, 65, 8, 8))
         self.assertEqual(tuple(pred["heatmap"].shape), (2, 1, 64, 64))
+        self.assertEqual(tuple(pred["endpoint_mask"].shape), (2, 1, 64, 64))
+        # 验证概率掩膜数值严格在 [0, 1] 之间
+        self.assertTrue((pred["endpoint_mask"] >= 0.0).all())
+        self.assertTrue((pred["endpoint_mask"] <= 1.0).all())
         self.assertEqual(tuple(pred["desc"].shape), (2, 256, 8, 8))
         self.assertEqual(tuple(pred["descriptor"].shape), (2, 256, 64, 64))
         norm = pred["descriptor"].norm(dim=1)
         self.assertTrue(torch.allclose(norm, torch.ones_like(norm), atol=1e-4))
         self.assertEqual(model_family("superpoint"), "point")
+
+        # 验证 extract_endpoints
+        pts, sc = model.extract_endpoints(pred["endpoint_mask"], threshold=0.01, top_k=16)
+        self.assertEqual(tuple(pts.shape), (2, 16, 2))
+        self.assertEqual(tuple(sc.shape), (2, 16))
 
     def test_descriptor_loss_backward_compat(self) -> None:
         model = build_model("SuperPoint")
@@ -186,7 +197,7 @@ class TestSuperPoint(unittest.TestCase):
         # 验证 visualize 生成诊断图
         with tempfile.TemporaryDirectory() as tmp_dir:
             vis_paths = evaluator.visualize(model, loader, device, Path(tmp_dir), num_vis=1)
-            self.assertEqual(len(vis_paths), 3)  # 生成 detection, matching 与 composite
+            self.assertEqual(len(vis_paths), 4)  # 生成 detection, matching, pca 与 composite
             for vp in vis_paths:
                 self.assertTrue(vp.is_file())
                 self.assertGreater(vp.stat().st_size, 1000)
@@ -296,6 +307,82 @@ class TestSuperPoint(unittest.TestCase):
             )
             self.assertTrue(match_path.is_file())
             self.assertGreater(match_path.stat().st_size, 500)
+
+    def test_extract_endpoints_with_nms(self) -> None:
+        """测试 NMS 抑制端点周围冗余聚簇，正确提取真实局部极大值。"""
+        model = build_model("SuperPoint")
+        # 构造一个 64x64 的模拟概率掩膜，在 (15, 15) 和 (45, 45) 放置两个强峰，并在周围放置次高峰
+        mask = torch.zeros(1, 1, 64, 64)
+        mask[0, 0, 15, 15] = 0.95
+        mask[0, 0, 14, 15] = 0.85
+        mask[0, 0, 15, 16] = 0.80
+
+        mask[0, 0, 45, 45] = 0.90
+        mask[0, 0, 46, 45] = 0.82
+
+        points, scores = model.extract_endpoints(mask, threshold=0.1, nms_radius=3, top_k=5)
+        # 验证经过 NMS 后，两个峰值附近的次高峰被成功抑制，仅保留独立的两个峰值
+        p0 = points[0, 0].tolist()
+        p1 = points[0, 1].tolist()
+        s0 = float(scores[0, 0])
+        s1 = float(scores[0, 1])
+
+        self.assertAlmostEqual(s0, 0.95, places=3)
+        self.assertAlmostEqual(s1, 0.90, places=3)
+        self.assertEqual(p0, [15.0, 15.0])
+        self.assertEqual(p1, [45.0, 45.0])
+        # 第三名应该是 0.0 (因已被 NMS 抑制且其他区域为 0)
+        self.assertAlmostEqual(float(scores[0, 2]), 0.0, places=4)
+
+    def test_line_consistent_descriptor_loss(self) -> None:
+        """测试描述子线一致性损失 (方案 A: 同一线相似，跨图同线相同，异线推离)。"""
+        from models.superpoint.loss import SuperPointDescriptorLoss
+
+        desc_loss = SuperPointDescriptorLoss()
+        model = build_model("SuperPoint")
+        image0 = torch.rand(1, 5, 64, 64)
+        image1 = torch.rand(1, 5, 64, 64)
+        pred0 = model(image0)
+        pred1 = model(image1)
+        homo = torch.eye(3).unsqueeze(0)
+
+        # 构造两条线段
+        lines0 = torch.tensor([[[10.0, 10.0, 30.0, 10.0], [10.0, 30.0, 30.0, 30.0]]])
+        lines1 = torch.tensor([[[10.0, 10.0, 30.0, 10.0], [10.0, 30.0, 30.0, 30.0]]])
+
+        out = desc_loss(pred0, pred1, homo, lines0=lines0, lines1=lines1, image0=image0, image1=image1)
+        for key in ("loss", "ld", "l_intra", "l_cross", "l_inter", "l_bg"):
+            self.assertIn(key, out)
+            self.assertTrue(torch.isfinite(out[key]))
+
+        # 反向传播验证梯度正常回传至描述子卷积头
+        out["loss"].backward()
+        self.assertIsNotNone(model.convDb.weight.grad)
+        self.assertTrue(torch.isfinite(model.convDb.weight.grad).all())
+
+    def test_line_descriptor_pca_visualization(self) -> None:
+        """测试线一致性描述子 PCA 伪彩流形图生成。"""
+        import tempfile
+        from visualization.point_matches import save_line_descriptor_pca_figure
+
+        model = build_model("SuperPoint")
+        img0 = torch.rand(1, 5, 64, 64)
+        img1 = torch.rand(1, 5, 64, 64)
+        pred0 = model(img0)
+        pred1 = model(img1)
+        bgr0 = np.zeros((64, 64, 3), dtype=np.uint8)
+        bgr1 = np.zeros((64, 64, 3), dtype=np.uint8)
+        lines0 = torch.tensor([[[10.0, 10.0, 30.0, 10.0]]])
+        lines1 = torch.tensor([[[10.0, 10.0, 30.0, 10.0]]])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pca_path = Path(tmp_dir) / "test_pca.jpg"
+            save_line_descriptor_pca_figure(
+                pca_path, bgr0, bgr1, pred0["descriptor"], pred1["descriptor"],
+                lines0=lines0, lines1=lines1, pair_id="test_pair",
+            )
+            self.assertTrue(pca_path.is_file())
+            self.assertGreater(pca_path.stat().st_size, 500)
 
 
 if __name__ == "__main__":

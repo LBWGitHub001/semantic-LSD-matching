@@ -74,7 +74,7 @@ class LineMatchPipeline:
     High-level end-to-end line matching pipeline.
 
     Example:
-        >>> from models.line_matcher import LineMatchPipeline
+        >>> from models.line_transformer import LineMatchPipeline
         >>> pipeline = LineMatchPipeline("checkpoints/linefeat/best_model.pth")
         >>> result = pipeline.match("image1.jpg", "image2.jpg")
         >>> print(f"Found {len(result)} matches!")

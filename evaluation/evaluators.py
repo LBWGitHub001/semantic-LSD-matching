@@ -389,6 +389,8 @@ class PointMatchingEvaluator(BaseEvaluator):
                     image1=img1,
                     points0=pts0_gt,
                     points1=pts1_gt,
+                    lines0=moved.get("lines0"),
+                    lines1=moved.get("lines1"),
                 )
                 step_loss = float(out["loss"])
                 total_loss += step_loss
@@ -503,6 +505,7 @@ class PointMatchingEvaluator(BaseEvaluator):
             calculate_corner_repeatability,
             save_detection_mask_lines_figure,
             save_descriptor_matching_figure,
+            save_line_descriptor_pca_figure,
             save_superpoint_diagnostic_sheet,
         )
 
@@ -575,7 +578,7 @@ class PointMatchingEvaluator(BaseEvaluator):
                     )
                     paths.append(det_dest)
 
-                # 2. 描述验证: 配对情况 (*_matching.jpg)
+                # 2. 描述验证: 配对情况 (*_matching.jpg) 与 PCA 色彩流形 (*_pca.jpg)
                 if eval_stage in ("descriptor", "all") and pts0_gt is not None and pts1_gt is not None:
                     desc_dest = out_dir / f"{pair_id}_matching.jpg"
                     save_descriptor_matching_figure(
@@ -591,6 +594,20 @@ class PointMatchingEvaluator(BaseEvaluator):
                         metrics_summary=metrics_summary,
                     )
                     paths.append(desc_dest)
+
+                    pca_dest = out_dir / f"{pair_id}_pca.jpg"
+                    save_line_descriptor_pca_figure(
+                        pca_dest,
+                        batch["bgr0"].numpy(),
+                        batch["bgr1"].numpy(),
+                        pred0["descriptor"],
+                        pred1["descriptor"],
+                        lines0=moved.get("lines0"),
+                        lines1=moved.get("lines1"),
+                        pair_id=pair_id,
+                        metrics_summary=metrics_summary,
+                    )
+                    paths.append(pca_dest)
 
                 # 3. 联合全景诊断大图 (当 eval_stage == 'all' 且尚未生成时保存)
                 if eval_stage == "all":

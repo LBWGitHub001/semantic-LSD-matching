@@ -83,21 +83,25 @@ def build_planar_letters_dataset(
 
 
 def render_scene(letter: str, num_views: int, rng: np.random.Generator) -> dict:
-    """One letter, one canonical view, and warped copies. Point ids are shared."""
+    """One letter, one canonical view, and warped copies. Point and line ids are shared."""
     height, width = IMAGE_HEIGHT, IMAGE_WIDTH
     mask = _draw_letter(letter, height, width, rng)
-    source = _sample_points(mask, rng)
+    source_points, source_lines = _extract_endpoints_and_lines(mask)
+    if len(source_points) < 4:
+        source_points = _sample_points(mask, rng)
+
     image0 = _paint(mask, rng)
     views = [
         {
             "view": 0,
             "image": image0,
-            "keypoints": [{"id": index, "x": float(x), "y": float(y)} for index, (x, y) in enumerate(source)],
+            "keypoints": [{"id": index, "x": float(x), "y": float(y)} for index, (x, y) in enumerate(source_points)],
+            "lines": [{"id": index, "line": [float(c) for c in l]} for index, l in enumerate(source_lines)],
             "H_from_canonical": np.eye(3, dtype=np.float64),
         }
     ]
     for view_idx in range(1, num_views):
-        homography = _sample_homography(source, width, height, rng)
+        homography = _sample_homography(source_points, width, height, rng)
         border = float(np.median(image0))
         warped = cv2.warpPerspective(
             image0,
@@ -107,16 +111,28 @@ def render_scene(letter: str, num_views: int, rng: np.random.Generator) -> dict:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=border,
         )
-        mapped = _apply_homography(homography, source)
+        mapped_pts = _apply_homography(homography, source_points)
         keypoints = []
-        for index, (x, y) in enumerate(mapped):
+        for index, (x, y) in enumerate(mapped_pts):
             if 1.0 <= x < width - 1 and 1.0 <= y < height - 1:
                 keypoints.append({"id": index, "x": float(x), "y": float(y)})
+
+        lines_view = []
+        if len(source_lines) > 0:
+            m_p1 = _apply_homography(homography, source_lines[:, :2])
+            m_p2 = _apply_homography(homography, source_lines[:, 2:])
+            for l_idx in range(len(source_lines)):
+                x1, y1 = m_p1[l_idx]
+                x2, y2 = m_p2[l_idx]
+                if 1.0 <= x1 < width - 1 and 1.0 <= y1 < height - 1 and 1.0 <= x2 < width - 1 and 1.0 <= y2 < height - 1:
+                    lines_view.append({"id": l_idx, "line": [float(x1), float(y1), float(x2), float(y2)]})
+
         views.append(
             {
                 "view": view_idx,
                 "image": warped,
                 "keypoints": keypoints,
+                "lines": lines_view,
                 "H_from_canonical": homography,
             }
         )
@@ -124,6 +140,7 @@ def render_scene(letter: str, num_views: int, rng: np.random.Generator) -> dict:
     for i in range(len(views)):
         for j in range(i + 1, len(views)):
             matches = _matches(views[i]["keypoints"], views[j]["keypoints"])
+            line_matches = _matches(views[i].get("lines", []), views[j].get("lines", []))
             if len(matches) < 4:
                 continue
             homography = views[j]["H_from_canonical"] @ np.linalg.inv(views[i]["H_from_canonical"])
@@ -132,10 +149,50 @@ def render_scene(letter: str, num_views: int, rng: np.random.Generator) -> dict:
                     "view0": i,
                     "view1": j,
                     "matches": matches,
+                    "line_matches": line_matches,
                     "H_0_to_1": (homography / homography[2, 2]).tolist(),
                 }
             )
     return {"letter": letter, "width": width, "height": height, "views": views, "pairs": pairs}
+
+
+def _extract_endpoints_and_lines(mask: np.ndarray, max_points: int = 36) -> tuple[np.ndarray, np.ndarray]:
+    """从字符二值掩膜中提取角点/起止端点与直线段。"""
+    corners = cv2.goodFeaturesToTrack(mask, maxCorners=max_points, qualityLevel=0.03, minDistance=6)
+    pts: list[list[float]] = []
+    if corners is not None:
+        pts.extend([[float(c[0]), float(c[1])] for c in corners[:, 0]])
+
+    lsd = cv2.createLineSegmentDetector(0)
+    lines_raw, _, _, _ = lsd.detect(mask)
+    valid_lines: list[list[float]] = []
+    if lines_raw is not None:
+        for l in lines_raw:
+            flat = l.flatten()
+            x1, y1, x2, y2 = float(flat[0]), float(flat[1]), float(flat[2]), float(flat[3])
+            length = float(np.hypot(x2 - x1, y2 - y1))
+            if length >= 8.0:
+                valid_lines.append([x1, y1, x2, y2])
+                pts.append([x1, y1])
+                pts.append([x2, y2])
+
+    pts_arr = np.array(pts, dtype=np.float32)
+    if len(pts_arr) > 0:
+        unique: list[np.ndarray] = []
+        for p in pts_arr:
+            if not any(np.linalg.norm(p - u) < 3.0 for u in unique):
+                unique.append(p)
+        endpoints = np.array(unique, dtype=np.float32)
+    else:
+        ys, xs = np.where(mask > 0)
+        if len(xs) > 0:
+            pick = min(max_points, len(xs))
+            endpoints = np.stack([xs[:pick], ys[:pick]], axis=1).astype(np.float32)
+        else:
+            endpoints = np.zeros((0, 2), dtype=np.float32)
+
+    lines_arr = np.array(valid_lines, dtype=np.float32) if valid_lines else np.zeros((0, 4), dtype=np.float32)
+    return endpoints, lines_arr
 
 
 def _draw_letter(letter: str, height: int, width: int, rng: np.random.Generator) -> np.ndarray:
@@ -240,6 +297,10 @@ def _write_scene(scene_dir: Path, scene: dict) -> None:
     for view in scene["views"]:
         cv2.imwrite(str(scene_dir / f"view_{view['view']:02d}.png"), view["image"])
     keypoints = {"letter": scene["letter"], "views": [{"view": view["view"], "points": view["keypoints"]} for view in scene["views"]]}
+    lines_payload = {
+        "letter": scene["letter"],
+        "views": [{"view": view["view"], "lines": view.get("lines", [])} for view in scene["views"]],
+    }
     transforms = {
         "letter": scene["letter"],
         "width": scene["width"],
@@ -258,6 +319,7 @@ def _write_scene(scene_dir: Path, scene: dict) -> None:
         )
     pairs = {"letter": scene["letter"], "pairs": scene["pairs"]}
     (scene_dir / "keypoints.json").write_text(json.dumps(keypoints), encoding="utf-8")
+    (scene_dir / "lines.json").write_text(json.dumps(lines_payload), encoding="utf-8")
     (scene_dir / "transforms.json").write_text(json.dumps(transforms), encoding="utf-8")
     (scene_dir / "pairs.json").write_text(json.dumps(pairs), encoding="utf-8")
 

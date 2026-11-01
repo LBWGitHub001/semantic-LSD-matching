@@ -100,14 +100,66 @@ class SuperPoint(nn.Module):
         # 2. 端点预测分支
         semi = self.convPb(self.relu(self.convPa(features)))
         prob = F.softmax(semi, dim=1)[:, :-1]  # 剔除第 65 维 Dustbin -> (B, 64, Hc, Wc)
-        heatmap = F.pixel_shuffle(prob, 8)     # 重排为全分辨率概率图 -> (B, 1, H, W)
+        endpoint_mask = F.pixel_shuffle(prob, 8)  # 重排为全分辨率概率图 -> (B, 1, H, W)
+        descriptor = upsample_descriptors(desc)
 
         return {
             "desc": desc,
-            "descriptor": upsample_descriptors(desc),
+            "descriptor": descriptor,
             "semi": semi,
-            "heatmap": heatmap,
+            "endpoint_mask": endpoint_mask,
+            "mask": endpoint_mask,
+            "heatmap": endpoint_mask,
         }
+
+    def extract_endpoints(
+        self,
+        heatmap: torch.Tensor | None = None,
+        image: torch.Tensor | None = None,
+        threshold: float = 0.05,
+        nms_radius: int = 4,
+        top_k: int = 64,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """从端点概率掩膜中提取经 NMS 局部极大值抑制后的端点坐标与概率。
+
+        参数:
+            heatmap: (B, 1, H, W) 端点概率掩膜。若为 None，且传入 image，则通过模型前向计算。
+            image: (B, 5, H, W) 可选输入图像，当 heatmap 为 None 时使用。
+            threshold: 最低置信度阈值 (默认 0.05)。
+            nms_radius: 局部极大值抑制半径像素数 (默认 4px，对应 9x9 抑制窗)。
+            top_k: 最多保留的端点数量 (默认 64)。
+
+        返回:
+            points: (B, K, 2) 浮点坐标 [x, y]
+            scores: (B, K) 概率置信度 [0.0, 1.0]
+        """
+        if heatmap is None:
+            if image is None:
+                raise ValueError("heatmap 与 image 至少需提供一个")
+            heatmap = self.forward(image)["endpoint_mask"]
+
+        if heatmap.dim() == 3:
+            heatmap = heatmap.unsqueeze(1)
+        batch_size, _, height, width = heatmap.shape
+        dtype = heatmap.dtype
+
+        # 1. 局部极大值抑制 (Local Non-Maximum Suppression via MaxPool2d)
+        kernel_size = 2 * nms_radius + 1
+        pad = nms_radius
+        max_pooled = F.max_pool2d(heatmap, kernel_size=kernel_size, stride=1, padding=pad)
+        is_peak = (heatmap == max_pooled) & (heatmap >= threshold)
+        suppressed = heatmap * is_peak.to(dtype)
+
+        # 2. 提取每张图像的 Top-K 端点
+        flat_suppressed = suppressed.view(batch_size, height * width)
+        actual_k = min(top_k, height * width)
+        topk_scores, topk_indices = torch.topk(flat_suppressed, k=actual_k, dim=-1)
+
+        coord_y = (topk_indices // width).to(dtype)
+        coord_x = (topk_indices % width).to(dtype)
+        points = torch.stack([coord_x, coord_y], dim=-1)
+
+        return points, topk_scores
 
     def _encode(self, image: torch.Tensor) -> torch.Tensor:
         x = self.relu(self.conv1a(image))

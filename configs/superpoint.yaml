@@ -58,6 +58,17 @@ train:
   num_candidates: 16                  # 候选端点提取 Top-K 数量
   num_line_samples: 10                # 两点间插值采样点数
 
+  # 5. 线级一致性与对比推离损失 (方案 A: 同一线值相似，跨图同线相同，异线与背景推离)
+  nms_radius: 4                       # 局部极大值抑制 (NMS) 半径 (px)
+  weight_intra: 1.0                   # 线内像素一致性损失权重 (同一条线上值相似)
+  weight_cross: 1.5                   # 跨视角同名直线原型对齐损失权重 (不同图同一直线相同)
+  weight_inter: 0.5                   # 异线原型相互推离对比损失权重
+  weight_bg: 0.3                      # 背景像素与线原型推离损失权重 (方案 A)
+  line_neg_margin: 0.2                # 异线负安全截断边际
+  bg_neg_margin: 0.1                  # 背景负安全截断边际
+  num_line_points: 12                 # 每条线段沿线密集均匀采样点数
+  num_bg_samples: 64                  # 随机背景负采样点数
+
 eval:
   checkpoint: "checkpoints/SuperPoint/latest"
   data_dir: "data/planar_letters"
