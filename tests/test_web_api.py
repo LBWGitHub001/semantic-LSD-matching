@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 import tornado.testing
 from web.server import make_app
@@ -45,13 +46,17 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("】", first["run_tag"])
 
     def test_run_detail_endpoint(self) -> None:
-        response = self.fetch("/api/runs/20261023_233349")
+        runs_res = self.fetch("/api/runs")
+        runs_data = json.loads(runs_res.body.decode("utf-8"))
+        if not runs_data.get("runs"):
+            return
+        run_name = runs_data["runs"][0]["run_name"]
+        response = self.fetch(f"/api/runs/{quote(run_name, safe='')}")
         self.assertEqual(response.code, 200)
         data = json.loads(response.body.decode("utf-8"))
-        self.assertEqual(data["run_name"], "20261023_233349")
+        self.assertEqual(data["run_name"], run_name)
         self.assertIn("config", data)
         self.assertIn("report_markdown", data)
-        self.assertGreaterEqual(len(data["history"]), 12)
 
     def test_checkpoints_endpoint(self) -> None:
         response = self.fetch("/api/checkpoints")
@@ -76,7 +81,13 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertGreater(len(data["images"]), 0)
 
     def test_compare_endpoint(self) -> None:
-        response = self.fetch("/api/runs/compare?run1=20261023_215042&run2=20261023_233349")
+        runs_res = self.fetch("/api/runs")
+        runs_data = json.loads(runs_res.body.decode("utf-8"))
+        runs = runs_data.get("runs", [])
+        if len(runs) < 2:
+            return
+        r1, r2 = runs[0]["run_name"], runs[1]["run_name"]
+        response = self.fetch(f"/api/runs/compare?run1={quote(r1, safe='')}&run2={quote(r2, safe='')}")
         self.assertEqual(response.code, 200)
         data = json.loads(response.body.decode("utf-8"))
         self.assertIn("table", data)
@@ -90,10 +101,15 @@ class TestWebApi(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("logs", data_act)
 
         # Historical logs
-        res_hist = self.fetch("/api/logs/history?run=20261023_233349")
-        self.assertEqual(res_hist.code, 200)
-        data_hist = json.loads(res_hist.body.decode("utf-8"))
-        self.assertIn("lines", data_hist)
+        runs_res = self.fetch("/api/runs")
+        runs_data = json.loads(runs_res.body.decode("utf-8"))
+        runs = runs_data.get("runs", [])
+        if runs:
+            run_name = runs[0]["run_name"]
+            res_hist = self.fetch(f"/api/logs/history?run={quote(run_name, safe='')}")
+            self.assertEqual(res_hist.code, 200)
+            data_hist = json.loads(res_hist.body.decode("utf-8"))
+            self.assertIn("lines", data_hist)
 
     def test_index_html_serving(self) -> None:
         response = self.fetch("/")

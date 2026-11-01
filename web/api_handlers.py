@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -104,6 +105,7 @@ class RunDetailHandler(BaseApiHandler):
     """GET /api/runs/<run_name> - Fetches full metadata, report markdown, and metrics trajectory."""
 
     def get(self, run_name: str) -> None:
+        run_name = urllib.parse.unquote(run_name)
         ckpt_dir = ROOT_DIR / "checkpoints"
         raw_runs = find_all_runs(ckpt_dir)
 
@@ -182,8 +184,8 @@ class CompareRunsHandler(BaseApiHandler):
     """GET /api/runs/compare?run1=...&run2=... - Compares two runs side by side."""
 
     def get(self) -> None:
-        r1 = self.get_query_argument("run1", "")
-        r2 = self.get_query_argument("run2", "")
+        r1 = urllib.parse.unquote(self.get_query_argument("run1", ""))
+        r2 = urllib.parse.unquote(self.get_query_argument("run2", ""))
         if not r1 or not r2:
             self.write_error_json("Please provide both run1 and run2 query parameters")
             return
@@ -966,12 +968,24 @@ class HistoricalLogsHandler(BaseApiHandler):
     """GET /api/logs/history?run=<run_name> - Reads train.log of a past run."""
 
     def get(self) -> None:
-        run_name = self.get_query_argument("run", "")
+        run_name = urllib.parse.unquote(self.get_query_argument("run", ""))
         if not run_name:
             self.write_error_json("Missing run parameter")
             return
         all_runs = find_all_runs(ROOT_DIR / "checkpoints")
-        matched = next((r for r in all_runs if r["run_name"] == run_name or run_name in str(r["run_dir"])), None)
+        matched = next(
+            (
+                r
+                for r in all_runs
+                if (
+                    r["run_name"] == run_name
+                    or r.get("run_tag") == run_name
+                    or run_name in str(r["run_dir"])
+                    or (r.get("run_tag") and run_name in r["run_tag"])
+                )
+            ),
+            None,
+        )
         if not matched:
             self.write_error_json("Run not found", status=404)
             return
