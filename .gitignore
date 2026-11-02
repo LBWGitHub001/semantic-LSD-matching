@@ -1,0 +1,46 @@
+# ==============================================================================
+# Git Ignore Configuration for new-LSD-matching
+# ==============================================================================
+
+# --- Datasets & High-Volume Data ---
+/data/
+*.npz
+*.zip
+*.tar.gz
+
+# --- Model Weights & Checkpoints (Heavy Binaries) ---
+/weights/
+/checkpoints/
+*.pth
+*.pt
+*.tar
+*.ckpt
+*.bin
+third_party/DeepLSD/weights/*
+third_party/GlueStick/resources/weights/*
+third_party/GlueStick/resources/demo_seq1.gif
+
+# --- Outputs & Visualization Artifacts ---
+/outputs/
+*.log
+sync.log
+
+# --- Papers PDF Binaries (Keep scripts & README) ---
+third_party/papers/*.pdf
+
+# --- Python Bytecode & Cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# --- IDE & System Files ---
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
