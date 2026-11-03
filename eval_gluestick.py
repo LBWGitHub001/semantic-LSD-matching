@@ -20,7 +20,6 @@ import cv2
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 # ==============================================================================
 # ⚙️ 评测配置区 (PyCharm 中直接修改下方参数即可，无需在终端输入命令)
@@ -267,10 +266,17 @@ def main():
 
     model.eval()
 
-    # 5. 加载数据集
+    # 5. 加载数据集 (单线程无后台子进程，便于调试)
     val_ds = SemanticGlueStickDataset(data_dir, split=SPLIT)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, collate_fn=semantic_gluestick_collate_fn)
-    print(f"[✓] 评测数据集装载完毕: 共 {len(val_ds)} 个场景对")
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,  # 单线程加载
+        collate_fn=semantic_gluestick_collate_fn,
+    )
+    total_samples = len(val_loader)
+    print(f"[✓] 评测数据集装载完毕: 共 {total_samples} 个场景对 (单线程加载, 无 tqdm 进度条)")
     print("-" * 75)
 
     loss_fn = GlueStickLoss()
@@ -279,7 +285,7 @@ def main():
 
     print("[*] 正在执行批次前向推演与指标统计...")
     with torch.no_grad():
-        for idx, batch in enumerate(tqdm(val_loader, desc="评测进度")):
+        for idx, batch in enumerate(val_loader):
             batch_gpu = {}
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
@@ -293,6 +299,13 @@ def main():
 
             total_loss += stats["total_loss"]
             all_metrics.append(metrics)
+
+            # 纯文本单行打印进度 (前 MAX_VISUALIZE 个样本以及每 20 个样本汇报一次)
+            if idx < MAX_VISUALIZE or (idx + 1) % 20 == 0 or (idx + 1) == total_samples:
+                print(
+                    f"  -> [{idx + 1:3d}/{total_samples:3d}] 样本: {batch['name'][0]:<20} | "
+                    f"Loss={stats['total_loss']:.3f} | Pt-F1={metrics['point_f1']:.3f}, Ln-F1={metrics['line_f1']:.3f}"
+                )
 
             # 可视化输出前 N 对样本
             if idx < MAX_VISUALIZE:
