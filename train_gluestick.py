@@ -201,8 +201,20 @@ def main():
     parser.add_argument("--val-interval", type=int, default=1, help="每隔几个 Epoch 进行一次验证")
     parser.add_argument("--num-workers", type=int, default=2, help="数据加载线程数")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="计算设备")
+    parser.add_argument("--config", default=None, help="JSON 配置文件路径 (可覆盖默认参数)")
     parser.add_argument("--max-train-samples", type=int, default=None, help="最多使用的训练样本数 (供快速冒烟测试)")
     parser.add_argument("--max-val-samples", type=int, default=None, help="最多使用的验证样本数 (供快速冒烟测试)")
+
+    # 1. 预解析 --config，将配置文件作为 defaults 注入，使 CLI 显式参数具有更高优先级
+    pre_args, _ = parser.parse_known_args()
+    if pre_args.config:
+        cfg_path = Path(pre_args.config).resolve()
+        if cfg_path.is_file():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            parser.set_defaults(**cfg)
+            print(f"[✓] 成功应用配置文件默认值: {cfg_path.name}")
+
     args = parser.parse_args()
 
     save_dir = Path(args.save_dir).resolve()
