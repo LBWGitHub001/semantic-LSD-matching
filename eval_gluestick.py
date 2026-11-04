@@ -10,10 +10,14 @@
 
 from __future__ import annotations
 
+import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+import time
 from typing import Any
 
 import cv2
@@ -22,7 +26,7 @@ import torch
 from torch.utils.data import DataLoader
 
 # ==============================================================================
-# ⚙️ 评测配置区 (PyCharm 中直接修改下方参数即可，无需在终端输入命令)
+# ⚙️ 评测配置区 (PyCharm 中直接修改下方参数即可，无需在终端输入命令；亦支持命令行传参)
 # ==============================================================================
 # 模型权重路径 (自动检查并加载，若文件不存在则自动回退至官方预训练基线)
 CHECKPOINT = "checkpoints/gluestick_train/best_model.pth"
@@ -42,7 +46,7 @@ FILTER_THRESHOLD = 0.2
 # 诊断大图生成数量 (0 表示不保存图片，仅统计指标)
 MAX_VISUALIZE = 5
 
-# 评测指标与诊断大图输出目录
+# 评测指标与诊断大图输出根目录 (每次评测将在其下新建独立的带时间戳运行目录)
 OUTPUT_DIR = "outputs/gluestick_eval"
 
 # 计算设备 ("cuda" 或 "cpu")
@@ -202,21 +206,48 @@ def draw_line_matches_side_by_side(
     return canvas
 
 
-def main():
-    # 1. 路径自动解析与创建
-    ckpt_path = (ROOT / CHECKPOINT).resolve() if not Path(CHECKPOINT).is_absolute() else Path(CHECKPOINT)
-    data_dir = (ROOT / DATA_DIR).resolve() if not Path(DATA_DIR).is_absolute() else Path(DATA_DIR)
-    out_dir = (ROOT / OUTPUT_DIR).resolve() if not Path(OUTPUT_DIR).is_absolute() else Path(OUTPUT_DIR)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def parse_args() -> argparse.Namespace:
+    """解析命令行参数 (若未提供参数则自动使用上方配置区的默认值，完美支持 PyCharm 右键一键运行)."""
+    parser = argparse.ArgumentParser(description="GlueStick 跨视角几何与语义匹配模型评测")
+    parser.add_argument("--checkpoint", default=CHECKPOINT, help="模型权重路径")
+    parser.add_argument("--data-dir", default=DATA_DIR, help="评测数据集目录")
+    parser.add_argument("--split", default=SPLIT, choices=["val", "train", "all"], help="评测子集划分")
+    parser.add_argument("--use-semantics", dest="use_semantics", action="store_true", default=None, help="显式启用 SAM 语义增强")
+    parser.add_argument("--no-semantics", dest="use_semantics", action="store_false", help="显式禁用 SAM 语义增强")
+    parser.add_argument("--filter-threshold", type=float, default=FILTER_THRESHOLD, help="匹配置信度阈值")
+    parser.add_argument("--max-visualize", type=int, default=MAX_VISUALIZE, help="诊断大图生成数量")
+    parser.add_argument("--out-dir", "--output-dir", dest="output_dir", default=OUTPUT_DIR, help="评测结果根输出目录")
+    parser.add_argument("--run-name", default=None, help="本次评测独立的子目录名称 (默认以 eval_YYYYMMDD_HHMMSS 自动命名)")
+    parser.add_argument("--device", default=DEVICE, help="计算设备 ('cuda' 或 'cpu')")
+    return parser.parse_args()
 
-    device = torch.device(DEVICE)
+
+def main():
+    args = parse_args()
+
+    # 1. 创建独立的运行输出目录 (每次运行独立存放)
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir_name = args.run_name if args.run_name else f"eval_{timestamp_str}"
+    base_out_dir = (ROOT / args.output_dir).resolve() if not Path(args.output_dir).is_absolute() else Path(args.output_dir)
+    eval_run_dir = base_out_dir / run_dir_name
+    eval_run_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. 在运行目录下创建专属 config 文件夹
+    config_dir = eval_run_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    # 3. 解析与定位相关路径
+    ckpt_path = (ROOT / args.checkpoint).resolve() if not Path(args.checkpoint).is_absolute() else Path(args.checkpoint)
+    data_dir = (ROOT / args.data_dir).resolve() if not Path(args.data_dir).is_absolute() else Path(args.data_dir)
+    device = torch.device(args.device)
 
     print("=" * 75)
-    print("  🔍 GlueStick 跨视角几何与语义匹配模型评测 (PyCharm 直接运行模式)")
+    print("  🔍 GlueStick 跨视角几何与语义匹配模型评测 (独立运行归档模式)")
     print("=" * 75)
     print(f"[*] 运行设备: {device}")
-    print(f"[*] 评测数据: {data_dir} (子集: {SPLIT})")
-    print(f"[*] 输出目录: {out_dir}")
+    print(f"[*] 评测数据: {data_dir} (子集: {args.split})")
+    print(f"[*] 本次独立运行目录: {eval_run_dir}")
+    print(f"[*] 配置与脚本归档目录: {config_dir}")
 
     # 官方基线权重路径定位
     cand_base_weights = [
@@ -226,35 +257,125 @@ def main():
     ]
     base_weights_path = next((str(p.resolve()) for p in cand_base_weights if p.is_file()), None)
 
-    # 2. 检查点读取与模型架构自适应
-    use_semantics = USE_SEMANTICS
+    # 4. 检查点读取、训练参数提取与模型架构自适应
+    use_semantics = args.use_semantics
+    if use_semantics is None:
+        use_semantics = USE_SEMANTICS
+
     ckpt_data = None
+    training_params: dict[str, Any] = {
+        "checkpoint_file": ckpt_path.name,
+        "checkpoint_path": str(ckpt_path),
+        "checkpoint_exists": ckpt_path.is_file(),
+    }
 
     if ckpt_path.is_file():
         print(f"[*] 检测到指定模型检查点: {ckpt_path.name}")
-        ckpt_data = torch.load(ckpt_path, map_location=device)
-        # 若用户设置为 None，则自动从检查点元数据中恢复 use_semantics
-        if use_semantics is None and isinstance(ckpt_data, dict) and "conf" in ckpt_data:
-            saved_conf = ckpt_data["conf"]
-            if isinstance(saved_conf, dict):
-                use_semantics = saved_conf.get("use_semantics", False)
-                print(f"[*] 自动继承检查点语义配置: use_semantics={use_semantics}")
+        try:
+            ckpt_data = torch.load(ckpt_path, map_location=device, weights_only=False)
+        except Exception:
+            ckpt_data = torch.load(ckpt_path, map_location=device)
+
+        if isinstance(ckpt_data, dict):
+            # 提取检查点中保存的训练参数配置
+            if "conf" in ckpt_data and isinstance(ckpt_data["conf"], dict):
+                training_params["train_args"] = ckpt_data["conf"]
+                # 若用户未显式指定，则自动从检查点元数据中恢复 use_semantics
+                if args.use_semantics is None and "use_semantics" in ckpt_data["conf"]:
+                    use_semantics = ckpt_data["conf"]["use_semantics"]
+                    print(f"[*] 自动继承检查点语义配置: use_semantics={use_semantics}")
+            if "epoch" in ckpt_data:
+                training_params["checkpoint_epoch"] = ckpt_data["epoch"]
+            if "val_loss" in ckpt_data:
+                training_params["checkpoint_val_loss"] = ckpt_data["val_loss"]
+            if "val_line_f1" in ckpt_data:
+                training_params["checkpoint_val_line_f1"] = ckpt_data["val_line_f1"]
+            if "record" in ckpt_data:
+                training_params["checkpoint_record"] = ckpt_data["record"]
+
+        # 检查检查点同级目录下是否存在 train_history.json
+        hist_path = ckpt_path.parent / "train_history.json"
+        if hist_path.is_file():
+            try:
+                with open(hist_path, "r", encoding="utf-8") as f:
+                    hist = json.load(f)
+                if hist and isinstance(hist, list):
+                    best_epoch_record = min(hist, key=lambda x: x.get("val_loss", float("inf")))
+                    training_params["train_history_summary"] = {
+                        "total_epochs": len(hist),
+                        "best_epoch": best_epoch_record.get("epoch"),
+                        "best_val_loss": best_epoch_record.get("val_loss"),
+                        "last_epoch": hist[-1].get("epoch"),
+                    }
+            except Exception as e:
+                training_params["train_history_error"] = str(e)
     else:
         print(f"[!] 警告: 未找到检查点 {ckpt_path}，将自动使用官方底座预训练权重评测！")
+        training_params["source"] = "official_baseline_pretrained"
         if use_semantics is None:
             use_semantics = False
 
     if use_semantics is None:
         use_semantics = True
 
-    # 3. 初始化模型
+    # 5. 归档验证推理代码并写入配置文件
+    current_script_path = Path(__file__).resolve()
+    archived_script_name = current_script_path.name
+    archived_script_path = config_dir / archived_script_name
+    try:
+        shutil.copy2(current_script_path, archived_script_path)
+        print(f"[✓] 验证推理文件已归档至: {archived_script_path.name}")
+    except Exception as e:
+        print(f"[!] 警告: 归档推理文件时出错: {e}")
+
+    # 组装配置文件字典
+    config_dict = {
+        "run_info": {
+            "timestamp": timestamp_str,
+            "eval_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "run_dir": str(eval_run_dir),
+            "inference_script": {
+                "file_name": archived_script_name,
+                "original_path": str(current_script_path),
+                "archived_path": str(archived_script_path),
+                "description": "本次评测验证运行所使用的推理执行文件备份"
+            }
+        },
+        "evaluation_parameters": {
+            "checkpoint": str(ckpt_path),
+            "data_dir": str(data_dir),
+            "split": args.split,
+            "use_semantics": use_semantics,
+            "filter_threshold": args.filter_threshold,
+            "max_visualize": args.max_visualize,
+            "device": str(device),
+            "batch_size": 1,
+        },
+        "training_parameters": training_params,
+    }
+
+    config_file = config_dir / "config.json"
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(config_dict, f, indent=2, ensure_ascii=False)
+    print(f"[✓] 评测与训练配置已记录至: config/config.json")
+
+    # 创建指向最新一次评测结果的便捷软链接 (latest)
+    try:
+        latest_link = base_out_dir / "latest"
+        if latest_link.is_symlink() or latest_link.exists():
+            latest_link.unlink()
+        latest_link.symlink_to(eval_run_dir.name, target_is_directory=True)
+    except Exception:
+        pass
+
+    # 6. 初始化模型
     model = SemanticGlueStick(
         weights=base_weights_path,
         use_semantics=use_semantics,
-        filter_threshold=FILTER_THRESHOLD,
+        filter_threshold=args.filter_threshold,
     ).to(device)
 
-    # 4. 加载训练好的权重
+    # 7. 加载训练好的权重
     if ckpt_data is not None:
         state_dict = ckpt_data.get("model_state_dict", ckpt_data)
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -266,8 +387,8 @@ def main():
 
     model.eval()
 
-    # 5. 加载数据集 (单线程无后台子进程，便于调试)
-    val_ds = SemanticGlueStickDataset(data_dir, split=SPLIT)
+    # 8. 加载数据集 (单线程无后台子进程，便于调试)
+    val_ds = SemanticGlueStickDataset(data_dir, split=args.split)
     val_loader = DataLoader(
         val_ds,
         batch_size=1,
@@ -300,15 +421,15 @@ def main():
             total_loss += stats["total_loss"]
             all_metrics.append(metrics)
 
-            # 纯文本单行打印进度 (前 MAX_VISUALIZE 个样本以及每 20 个样本汇报一次)
-            if idx < MAX_VISUALIZE or (idx + 1) % 20 == 0 or (idx + 1) == total_samples:
+            # 纯文本单行打印进度 (前 max_visualize 个样本以及每 20 个样本汇报一次)
+            if idx < args.max_visualize or (idx + 1) % 20 == 0 or (idx + 1) == total_samples:
                 print(
                     f"  -> [{idx + 1:3d}/{total_samples:3d}] 样本: {batch['name'][0]:<20} | "
                     f"Loss={stats['total_loss']:.3f} | Pt-F1={metrics['point_f1']:.3f}, Ln-F1={metrics['line_f1']:.3f}"
                 )
 
             # 可视化输出前 N 对样本
-            if idx < MAX_VISUALIZE:
+            if idx < args.max_visualize:
                 sample_name = batch["name"][0]
                 img0_u8 = (batch["image0"][0, 0].cpu().numpy() * 255.0).astype(np.uint8)
                 img1_u8 = (batch["image1"][0, 0].cpu().numpy() * 255.0).astype(np.uint8)
@@ -329,12 +450,13 @@ def main():
                 r4 = draw_line_matches_side_by_side(img0_u8, img1_u8, lines0, lines1, gt_lm0, title="Row 4: Ground Truth Line Matches")
 
                 vis_composite = np.concatenate([r1, r2, r3, r4], axis=0)
-                save_img_path = out_dir / f"{sample_name}_eval_matches.jpg"
+                save_img_path = eval_run_dir / f"{sample_name}_eval_matches.jpg"
                 cv2.imwrite(str(save_img_path), vis_composite)
 
-    # 6. 计算全量平均指标
+    # 9. 计算全量平均指标并导出
     n = len(all_metrics)
     summary = {
+        "run_dir": str(eval_run_dir),
         "checkpoint": str(ckpt_path),
         "dataset_size": n,
         "mean_loss": float(total_loss / max(n, 1)),
@@ -344,6 +466,8 @@ def main():
         "line_precision": float(np.mean([m["line_precision"] for m in all_metrics])),
         "line_recall": float(np.mean([m["line_recall"] for m in all_metrics])),
         "line_f1": float(np.mean([m["line_f1"] for m in all_metrics])),
+        "config_file": str(config_file),
+        "archived_inference_file": str(archived_script_path),
     }
 
     print("\n" + "=" * 75)
@@ -354,11 +478,12 @@ def main():
     print(f"  [Lines]  几何线匹配: Precision={summary['line_precision']*100:.2f}%, Recall={summary['line_recall']*100:.2f}%, F1={summary['line_f1']:.4f}")
     print("=" * 75)
 
-    summary_file = out_dir / "eval_summary.json"
+    summary_file = eval_run_dir / "eval_summary.json"
     with open(summary_file, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
     print(f"[✓] 详细评测指标已导出至: {summary_file}")
-    print(f"[✓] 可视化对比图已保存至: {out_dir}")
+    print(f"[✓] 运行配置与推理脚本已归档至: {config_dir}")
+    print(f"[✓] 可视化对比图已保存至: {eval_run_dir}")
     print("=" * 75)
 
 

@@ -140,7 +140,7 @@ def main():
     cv2.line(img, (400, 50), (400, 300), 255, 3)
 
     try:
-        extractor = DeepLSDExtractor()
+        extractor = DeepLSDExtractor(checkpoint_path="/home/lbw/Project/new-LSD-matching/third_party/DeepLSD/weights/deeplsd_wireframe.tar")
         res = extractor.detect(img)
         print(f"[✓] 检测到线段数量: {len(res['lines'])}")
         print(f"[✓] 距离场尺寸: {res['df'].shape}")

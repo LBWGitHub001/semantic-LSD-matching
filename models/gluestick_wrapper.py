@@ -336,44 +336,16 @@ class SemanticGlueStick(nn.Module):
         gnn_layers: int = 9,                 # GNN 图注意力网络层数 (默认 9 层交替注意力)
         checkpointed: bool = False,          # 是否启用激活重计算 (Gradient Checkpointing) 节省显存
         filter_threshold: float = 0.2,       # 匹配置信度阈值过滤 (大于该值的进入最终匹配)
+        freeze_gnn: bool = False,            # 冻结 GNN 时保持其 BatchNorm 使用预训练统计
     ) -> None:
         super().__init__()
         # 保存是否启用语义增强分支的布尔标记
         self.use_semantics = use_semantics
-
-        # 解析和定位官方预训练权重路径
-        cand_weights = [
-            ROOT / "third_party" / "GlueStick" / "resources" / "weights" / "checkpoint_GlueStick_MD.tar",
-            ROOT / "GlueStick" / "resources" / "weights" / "checkpoint_GlueStick_MD.tar",
-            ROOT / "weights" / "gluestick" / "checkpoint_GlueStick_MD.tar",
-        ]
-        default_base_weight = next((str(p.resolve()) for p in cand_weights if p.is_file()), None)
-
-        resolved_weights = None
-        if weights and str(weights).lower() in ["none", "null", "random", "scratch"]:
-            resolved_weights = None
-        elif weights and Path(weights).is_file():
-            # 校验传入权重文件是否为包含训练元数据的字典 (例如包含 model_state_dict 的训练检查点)
-            # GlueStick 底座仅支持加载官方纯权重 tar 包 (含 'model' 键)
-            is_training_checkpoint = False
-            try:
-                peek = torch.load(weights, map_location="cpu")
-                if isinstance(peek, dict) and ("model_state_dict" in peek or "epoch" in peek):
-                    is_training_checkpoint = True
-            except Exception:
-                pass
-
-            if is_training_checkpoint:
-                # 若为训练打包 checkpoint，底座初始化回退使用官方默认预训练权重，避免 GlueStick 崩溃
-                resolved_weights = default_base_weight
-            else:
-                resolved_weights = str(Path(weights).resolve())
-        else:
-            resolved_weights = default_base_weight
+        self.freeze_gnn = freeze_gnn
 
         # 构造官方 GlueStick 初始化所需的配置字典
         conf = {
-            "weights": resolved_weights,                                 # 预训练权重路径 (None 时随机初始化)
+            "weights": weights,                                 # 预训练权重路径 (None 时随机初始化)
             "GNN_layers": ["self", "cross"] * gnn_layers,               # GNN 层设计: 自注意力和交叉注意力交替堆叠
             "checkpointed": checkpointed,                                # 显存节省开关
             "num_line_iterations": 1,                                    # 线匹配内部迭代求解轮次
@@ -396,6 +368,13 @@ class SemanticGlueStick(nn.Module):
             )
             # 可学习残差门控标量参数，初值设为 0.1，以确保微调初期不会破坏预训练几何编码的先验稳定性
             self.semantic_gate = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+
+    def train(self, mode: bool = True):
+        """进入训练模式；冻结 GNN 时把它留在 eval，避免更新预训练 BatchNorm 统计。"""
+        super().train(mode)
+        if self.freeze_gnn:
+            self.gluestick.gnn.eval()
+        return self
 
     def forward(self, data: dict[str, Any]) -> dict[str, Any]:
         # 若未开启语义融合分支，直接将数据送入原生官方 GlueStick 执行标准推理
