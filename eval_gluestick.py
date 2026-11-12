@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader
 # ⚙️ 评测配置区 (PyCharm 中直接修改下方参数即可，无需在终端输入命令；亦支持命令行传参)
 # ==============================================================================
 # 模型权重路径 (自动检查并加载，若文件不存在则自动回退至官方预训练基线)
-CHECKPOINT = "checkpoints/gluestick_train/best_model.pth"
+CHECKPOINT = "checkpoints/gluestick_train/latest/best/checkpoint.pth"
 
 # 评测数据集目录
 DATA_DIR = "data/scannet_semantic_gluestick"
@@ -371,7 +371,6 @@ def main():
     # 6. 初始化模型
     model = SemanticGlueStick(
         weights=base_weights_path,
-        use_semantics=use_semantics,
         filter_threshold=args.filter_threshold,
     ).to(device)
 

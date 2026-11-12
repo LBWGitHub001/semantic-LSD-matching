@@ -6,8 +6,8 @@
 3. 自动场景隔离划分 Train / Val 集 (零数据泄露);
 4. 混合精度 AMP 加速与梯度裁剪 (适应 8GB RTX 4060 显存);
 5. 自动记录评估指标 (Point/Line Precision, Recall, F1) 与最佳权重保存;
-6. 自动按运行次数创建 run1, run2, run3 等归档目录;
-7. 详细运行日志 (train.log)、运行参数 (args.json/args.yaml)、每5轮周期权重、best 和 last 权重持久化存储。
+6. 每次训练单独放入以时间戳命名的目录，其下保存 run1、run2 与 best;
+7. 详细运行日志 (train.log)、运行参数 (args.json/args.yaml)、周期权重与 best、last 权重持久化存储。
 """
 
 from __future__ import annotations
@@ -38,6 +38,24 @@ if str(GLUESTICK_DIR) not in sys.path:
 
 from datasets.semantic_gluestick_dataset import SemanticGlueStickDataset, semantic_gluestick_collate_fn
 from models.gluestick_wrapper import GlueStickLoss, SemanticGlueStick, compute_matching_metrics
+
+
+def make_training_session_dir(base_dir: Path, name: str | None = None) -> Path:
+    """为一次训练创建独立目录。未指定名称时用时间戳，避免不同训练混在一起。"""
+    base_dir.mkdir(parents=True, exist_ok=True)
+    if name:
+        session_dir = base_dir / name
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    session_dir = base_dir / stamp
+    suffix = 2
+    while session_dir.exists():
+        session_dir = base_dir / f"{stamp}_{suffix}"
+        suffix += 1
+    session_dir.mkdir(parents=True, exist_ok=False)
+    return session_dir
 
 
 def get_next_run_dir(base_dir: Path, prefix: str = "run") -> Path:
@@ -166,7 +184,7 @@ def _create_alias_or_copy(src: Path, dst: Path) -> None:
     try:
         if dst.is_symlink() or dst.exists():
             dst.unlink()
-        dst.symlink_to(src.name)
+        dst.symlink_to(os.path.relpath(src, dst.parent))
     except OSError:
         try:
             shutil.copy2(src, dst)
@@ -375,7 +393,7 @@ def main():
     parser.add_argument("--line-weight", type=float, default=1.0, help="线段匹配损失权重")
     parser.add_argument("--val-ratio", type=float, default=0.15, help="验证集场景比例 (默认 15%%)")
     parser.add_argument("--save-dir", default="checkpoints/gluestick_train", help="模型检查点保存根目录")
-    parser.add_argument("--run-name", default=None, help="指定本次运行子目录名称 (默认根据运行次数自动命名为 run1, run2, run3 等)")
+    parser.add_argument("--run-name", default=None, help="指定本次训练目录名 (默认使用时间戳，其下再生成 run1、run2 与 best)")
     parser.add_argument("--save-interval", type=int, default=5, help="每隔几个 Epoch 保存一次周期权重 (默认 5)")
     parser.add_argument("--val-interval", type=int, default=1, help="每隔几个 Epoch 进行一次验证")
     parser.add_argument("--log-interval", type=int, default=50, help="每隔多少步向详细日志写入一次记录 (默认 50)")
@@ -407,25 +425,19 @@ def main():
     if args.freeze_gnn is None:
         args.freeze_gnn = False
 
-    # 2. 确定运行存储目录 (支持 run1, run2, run3 ... 递增命名)
+    # 2. 每次训练使用独立的时间戳目录；--run-name 可覆盖该目录名
     base_save_dir = Path(args.save_dir).resolve()
-    base_save_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.run_name:
-        run_dir = base_save_dir / args.run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        run_dir = get_next_run_dir(base_save_dir, prefix="run")
+    session_dir = make_training_session_dir(base_save_dir, args.run_name)
 
     # 3. 初始化详细日志系统 (同时输出终端与 runX/train.log)
-    log_file = run_dir / "train.log"
+    log_file = session_dir / "train.log"
     logger = setup_run_logger(log_file)
 
     # 4. 持久化记录运行参数 (args.json & args.yaml) 并备份所用配置文件
-    serializable_args = save_run_parameters(args, run_dir)
+    serializable_args = save_run_parameters(args, session_dir)
     if config_applied and config_applied.is_file():
         try:
-            shutil.copy2(config_applied, run_dir / "train_config.json")
+            shutil.copy2(config_applied, session_dir / "train_config.json")
         except Exception:
             pass
 
@@ -436,9 +448,9 @@ def main():
     logger.info("=" * 75)
     if config_applied:
         logger.info(f"[*] 已成功装载配置文件: {config_applied}")
-    logger.info(f"[*] 运行输出目录: {run_dir} (本次运行: {run_dir.name})")
+    logger.info(f"[*] 本次训练目录: {session_dir} ({session_dir.name})")
     logger.info(f"[*] 详细运行日志: {log_file}")
-    logger.info(f"[*] 参数配置文件: {run_dir / 'args.json'}")
+    logger.info(f"[*] 参数配置文件: {session_dir / 'args.json'}")
     logger.info(f"[*] 数据集路径: {args.data_dir}")
     logger.info(f"[*] 语义增强模式 (use_semantics): {args.use_semantics}")
     logger.info(f"[*] 冻结 GNN (freeze_gnn): {args.freeze_gnn}")
@@ -484,17 +496,8 @@ def main():
     # 2. 构建模型
     model = SemanticGlueStick(
         weights=args.weights,
-        use_semantics=args.use_semantics,
         freeze_gnn=args.freeze_gnn,
     ).to(device)
-
-    if args.freeze_base and args.use_semantics:
-        logger.info("[*] 冻结 GlueStick 主干参数，仅优化 SAM 语义适配器与门控系数...")
-        for param in model.gluestick.parameters():
-            param.requires_grad = False
-        for param in model.semantic_adapter.parameters():
-            param.requires_grad = True
-        model.semantic_gate.requires_grad = True
 
     if args.freeze_gnn:
         logger.info("[*] 冻结 GNN 参数，仅优化编码器与匹配头...")
@@ -599,18 +602,21 @@ def main():
                 "record": record,
             }
 
-            # 1. 始终保存最新权重 (last.pth) 与兼容别名 (latest_checkpoint.pth)
-            last_ckpt = run_dir / "last.pth"
+            # 1. 始终保存最新权重
+            last_ckpt = session_dir / "last.pth"
             torch.save(ckpt_payload, last_ckpt)
-            _create_alias_or_copy(last_ckpt, run_dir / "latest_checkpoint.pth")
+            _create_alias_or_copy(last_ckpt, session_dir / "latest_checkpoint.pth")
 
-            # 2. 每 save_interval 轮 (默认 5 轮) 保存一次周期权重 (epoch_*.pth)
+            # 2. 每 save_interval 轮新建一个 run 目录 (run1, run2, ...)
             if args.save_interval > 0 and (epoch % args.save_interval == 0):
-                epoch_ckpt = run_dir / f"epoch_{epoch}.pth"
-                torch.save(ckpt_payload, epoch_ckpt)
-                logger.info(f"  [💾] 周期权重检查点已保存: {epoch_ckpt.name}")
+                run_dir = get_next_run_dir(session_dir, prefix="run")
+                run_ckpt = run_dir / "checkpoint.pth"
+                torch.save(ckpt_payload, run_ckpt)
+                with open(run_dir / "record.json", "w", encoding="utf-8") as f:
+                    json.dump(record, f, indent=2, ensure_ascii=False)
+                logger.info(f"  [💾] 周期权重已保存: {run_dir.name}/checkpoint.pth (Epoch {epoch})")
 
-            # 3. 评定并保存最佳模型 (best.pth) 与兼容别名 (best_model.pth)
+            # 3. 最佳模型写入 best/，并在训练目录下放一个兼容入口
             current_val_loss = val_res.get("val_loss", float("inf"))
             current_line_f1 = val_res.get("val_line_f1", 0.0)
             current_pt_f1 = val_res.get("val_point_f1", 0.0)
@@ -621,7 +627,9 @@ def main():
                 best_line_f1 = current_line_f1
                 best_pt_f1 = current_pt_f1
                 best_epoch = epoch
-                best_ckpt = run_dir / "best.pth"
+                best_dir = session_dir / "best"
+                best_dir.mkdir(parents=True, exist_ok=True)
+                best_ckpt = best_dir / "checkpoint.pth"
                 best_payload = {
                     **ckpt_payload,
                     "best_epoch": best_epoch,
@@ -630,58 +638,61 @@ def main():
                     "val_point_f1": best_pt_f1,
                 }
                 torch.save(best_payload, best_ckpt)
-                _create_alias_or_copy(best_ckpt, run_dir / "best_model.pth")
+                with open(best_dir / "record.json", "w", encoding="utf-8") as f:
+                    json.dump({"best_epoch": best_epoch, **record}, f, indent=2, ensure_ascii=False)
+                _create_alias_or_copy(best_ckpt, session_dir / "best_model.pth")
                 loss_diff_str = (
                     f" (从 {prev_loss:.4f} 下降至 {best_val_loss:.4f})"
                     if prev_loss != float("inf")
                     else f" ({best_val_loss:.4f})"
                 )
-                logger.info(f"  [★] 创下最佳验证 Loss{loss_diff_str} -> 权重已保存至 {best_ckpt.name}")
+                logger.info(f"  [★] 创下最佳验证 Loss{loss_diff_str} -> 权重已保存至 best/checkpoint.pth")
 
             # 4. 持久化训练历史记录
-            with open(run_dir / "train_history.json", "w", encoding="utf-8") as f:
+            with open(session_dir / "train_history.json", "w", encoding="utf-8") as f:
                 json.dump(history, f, indent=2, ensure_ascii=False)
 
     except KeyboardInterrupt:
         logger.warning("\n[!] 检测到用户手动中断训练 (Ctrl+C)！正在安全保存当前状态并退出...")
 
-    # 确保 best.pth 存在 (防止未进行 val 或提前退出时缺少 best)
-    best_ckpt = run_dir / "best.pth"
-    if not best_ckpt.exists() and (run_dir / "last.pth").exists():
-        shutil.copy2(run_dir / "last.pth", best_ckpt)
-        _create_alias_or_copy(best_ckpt, run_dir / "best_model.pth")
+    # 没有验证出 best 时，用最后一轮权重补上 best/
+    best_ckpt = session_dir / "best" / "checkpoint.pth"
+    if not best_ckpt.exists() and (session_dir / "last.pth").exists():
+        best_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(session_dir / "last.pth", best_ckpt)
+        _create_alias_or_copy(best_ckpt, session_dir / "best_model.pth")
 
-    # 更新父级目录软链接 latest 指向最新 run 目录
+    # latest 指向最近一次训练的时间戳目录
     try:
         latest_symlink = base_save_dir / "latest"
         if latest_symlink.is_symlink() or latest_symlink.exists():
             latest_symlink.unlink()
-        latest_symlink.symlink_to(run_dir.name)
+        latest_symlink.symlink_to(session_dir.name)
     except OSError:
         pass
 
     total_time = (time.time() - start_time) / 60.0
     summary = {
-        "run_name": run_dir.name,
-        "run_dir": str(run_dir),
+        "session_name": session_dir.name,
+        "session_dir": str(session_dir),
         "total_epochs": args.epochs,
         "best_epoch": best_epoch if best_epoch > 0 else None,
         "best_val_loss": best_val_loss if best_val_loss != float("inf") else None,
         "best_line_f1": best_line_f1 if best_line_f1 >= 0 else None,
         "total_time_minutes": round(total_time, 2),
     }
-    with open(run_dir / "train_summary.json", "w", encoding="utf-8") as f:
+    with open(session_dir / "train_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
     logger.info("\n" + "=" * 75)
     logger.info(f"[✓] 训练流程结束！总耗时: {total_time:.2f} 分钟")
-    logger.info(f"[✓] 本次运行归档目录: {run_dir}")
-    logger.info(f"[✓] 最佳权重 (best): {run_dir / 'best.pth'} (最佳 Epoch: {best_epoch if best_epoch > 0 else 'N/A'})")
-    logger.info(f"[✓] 最终权重 (last): {run_dir / 'last.pth'}")
-    logger.info(f"[✓] 周期权重 (epoch): 每 {args.save_interval} 轮权重文件已保存")
-    logger.info(f"[✓] 详细运行日志: {run_dir / 'train.log'}")
-    logger.info(f"[✓] 运行参数文件: {run_dir / 'args.json'}")
-    logger.info(f"[✓] 历史指标数据: {run_dir / 'train_history.json'}")
+    logger.info(f"[✓] 本次训练目录: {session_dir}")
+    logger.info(f"[✓] 最佳权重: {session_dir / 'best' / 'checkpoint.pth'} (最佳 Epoch: {best_epoch if best_epoch > 0 else 'N/A'})")
+    logger.info(f"[✓] 最终权重: {session_dir / 'last.pth'}")
+    logger.info(f"[✓] 周期权重: 每 {args.save_interval} 轮写入一个 run 目录")
+    logger.info(f"[✓] 详细运行日志: {session_dir / 'train.log'}")
+    logger.info(f"[✓] 运行参数文件: {session_dir / 'args.json'}")
+    logger.info(f"[✓] 历史指标数据: {session_dir / 'train_history.json'}")
     logger.info("=" * 75)
 
 

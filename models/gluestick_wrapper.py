@@ -1,4 +1,4 @@
-"""GlueStick 损失函数、评测指标与语义增强网络封装 (GlueStick Loss, Metrics & Semantic Module).
+"""GlueStick 损失函数、评测指标与官方匹配网络封装 (GlueStick Loss, Metrics & Wrapper).
 
 核心设计:
 1. GlueStickLoss:
@@ -10,10 +10,8 @@
    - 计算跨视角特征点匹配的 Precision (精确率)、Recall (召回率)、F1-Score;
    - 计算几何线段匹配的 Line Precision、Line Recall、Line F1-Score。
 3. SemanticGlueStick:
-   - 原生兼容官方 GlueStick 模型与预训练权重 (checkpoint_GlueStick_MD.tar);
-   - 提供语义增强开关 (use_semantics=True):
-     利用 SAM ViT-H 提取的 256 维语义特征与实例 Mask 轮廓属性，通过轻量级门控适配器 (Semantic Adapter)
-     将语义先验残差融合至线段几何编码层，在网络推理与图注意力中注入深层语义上下文。
+   - 封装官方 GlueStick 与预训练权重 (checkpoint_GlueStick_MD.tar);
+   - 前向与论文一致，可选冻结 GNN 并保持其 BatchNorm 使用预训练统计。
 """
 
 # 启用 Python 3.7+ 的延迟类型注解评估特性，支持使用更简洁的类型提示语法 (例如 list[int] | None)
@@ -45,11 +43,8 @@ GLUESTICK_DIR = next((p for p in gluestick_cands if p.is_dir()), gluestick_cands
 if str(GLUESTICK_DIR) not in sys.path:
     sys.path.insert(0, str(GLUESTICK_DIR))
 
-# 从官方 GlueStick 库导入核心组件:
-# GlueStick: 网络核心结构类
-# normalize_keypoints: 将图像像素坐标归一化到 [-1, 1] 空间的工具函数
-# log_double_softmax: 带有防尘桶机制的双重对数 Softmax 计算函数
-from gluestick.models.gluestick import GlueStick, normalize_keypoints, log_double_softmax
+# GlueStick: 网络模块；normalize_keypoints / log_double_softmax: 编码与匹配头所用的官方函数
+from gluestick.models.gluestick import GlueStick, log_double_softmax, normalize_keypoints
 
 
 def compute_nll_loss(
@@ -322,25 +317,17 @@ def compute_matching_metrics(pred: dict[str, Any], data: dict[str, Any]) -> dict
 
 
 class SemanticGlueStick(nn.Module):
-    """语义融合版 GlueStick 匹配模型。
-
-    既可原生运行官方 GlueStick，亦可启用 SAM ViT-H 语义适配器进行跨模态特征融合。
-    """
+    """官方 GlueStick 匹配模型封装。类名保留，便于现有训练与评测脚本继续导入。"""
 
     def __init__(
         self,
         weights: str | Path | None = None,  # 预训练权重文件路径 (若为空则自动查找默认目录)
-        use_semantics: bool = False,         # 是否启用 SAM 语义特征残差融合分支
-        semantic_dim: int = 256,             # SAM ViT-H 提取的线段中心语义向量维度 (默认 256 维)
-        attr_dim: int = 3,                   # 实例分割 Mask 几何属性维度 (如面积比、长宽比、轮廓凸度，共 3 维)
         gnn_layers: int = 9,                 # GNN 图注意力网络层数 (默认 9 层交替注意力)
         checkpointed: bool = False,          # 是否启用激活重计算 (Gradient Checkpointing) 节省显存
         filter_threshold: float = 0.2,       # 匹配置信度阈值过滤 (大于该值的进入最终匹配)
         freeze_gnn: bool = False,            # 冻结 GNN 时保持其 BatchNorm 使用预训练统计
     ) -> None:
         super().__init__()
-        # 保存是否启用语义增强分支的布尔标记
-        self.use_semantics = use_semantics
         self.freeze_gnn = freeze_gnn
 
         # 构造官方 GlueStick 初始化所需的配置字典
@@ -354,20 +341,10 @@ class SemanticGlueStick(nn.Module):
         }
         # 实例化官方底座 GlueStick 模型
         self.gluestick = GlueStick(conf)
-
-        # 若启用语义分支，初始化轻量级语义适配器与残差融合门控参数
-        if self.use_semantics:
-            # 适配器输入总维度 = 语义特征维度 (256) + 几何属性维度 (3) = 259 维
-            in_dim = semantic_dim + attr_dim
-            # 语义适配器: 将 259 维的高维多模态线语义表征映射压缩至 GlueStick 的 256 维潜空间
-            self.semantic_adapter = nn.Sequential(
-                nn.Conv1d(in_dim, 256, kernel_size=1),  # 1x1 卷积实现跨通道特征变换 (259 -> 256)
-                nn.BatchNorm1d(256),                     # 批归一化保证特征分布稳定
-                nn.ReLU(inplace=True),                   # 非线性激活函数
-                nn.Conv1d(256, 256, kernel_size=1),      # 第二层 1x1 卷积进一步提炼特征 (256 -> 256)
-            )
-            # 可学习残差门控标量参数，初值设为 0.1，以确保微调初期不会破坏预训练几何编码的先验稳定性
-            self.semantic_gate = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
+        if self.freeze_gnn:
+            for param in self.gluestick.gnn.parameters():
+                param.requires_grad = False
+            self.gluestick.gnn.eval()
 
     def train(self, mode: bool = True):
         """进入训练模式；冻结 GNN 时把它留在 eval，避免更新预训练 BatchNorm 统计。"""
@@ -377,132 +354,95 @@ class SemanticGlueStick(nn.Module):
         return self
 
     def forward(self, data: dict[str, Any]) -> dict[str, Any]:
-        # 若未开启语义融合分支，直接将数据送入原生官方 GlueStick 执行标准推理
-        if not self.use_semantics:
-            return self.gluestick(data)
-
-        # -------------------------------------------------------------
-        # 开启语义分支: 注入 SAM 语义残差并执行多模态匹配
-        # -------------------------------------------------------------
-        # 浅拷贝输入字典，避免对外部原数据造成副作用修改
-        data_mod = dict(data)
-        # 获取张量设备 (如 cuda:0)
+        """按论文顺序展开：输入特征、位置编码器、GNN、匹配头。"""
+        net = self.gluestick
         device = data["keypoints0"].device
-        # 获取当前批次大小
         b_size = len(data["keypoints0"])
-        # 获取两张图像各自的原始尺寸 (高度和宽度，用于坐标归一化)
-        image_size0 = data.get("image_size0", data["image0"].shape)
-        image_size1 = data.get("image_size1", data["image1"].shape)
+        image_size0 = data["image_size0"] if "image_size0" in data else data["image0"].shape
+        image_size1 = data["image_size1"] if "image_size1" in data else data["image1"].shape
 
-        # 初始化输出字典
-        pred = {}
-        # 提取两张图像的特征点初始局部描述子 (形状: (B, 256, N))
+        # 1. 特征。描述子、关键点和线段由 SuperPoint / DeepLSD 在网络外提取，这里只取出。
         desc0, desc1 = data["descriptors0"], data["descriptors1"]
-        # 提取两张图像的关键点像素坐标 (形状: (B, N, 2))
         kpts0, kpts1 = data["keypoints0"], data["keypoints1"]
-        # 统计两视角中线段的数量
+        n_kpts0, n_kpts1 = kpts0.shape[1], kpts1.shape[1]
         n_lines0, n_lines1 = data["lines0"].shape[1], data["lines1"].shape[1]
 
-        # 将两视角的关键点像素坐标归一化至 [-1, 1] 范围
-        kpts0_norm = normalize_keypoints(kpts0, image_size0)
-        kpts1_norm = normalize_keypoints(kpts1, image_size1)
-        # 关键点编码器 (kenc): 融合归一化坐标与检测得分，并残差叠加到描述子上
-        desc0 = desc0 + self.gluestick.kenc(kpts0_norm, data["keypoint_scores0"])
-        desc1 = desc1 + self.gluestick.kenc(kpts1_norm, data["keypoint_scores1"])
+        pred: dict[str, Any] = {}
+        if n_kpts0 == 0 or n_kpts1 == 0:
+            pred["log_assignment"] = torch.zeros(b_size, n_kpts0, n_kpts1, dtype=torch.float, device=device)
+            pred["matches0"] = torch.full((b_size, n_kpts0), -1, device=device, dtype=torch.int64)
+            pred["matches1"] = torch.full((b_size, n_kpts1), -1, device=device, dtype=torch.int64)
+            pred["match_scores0"] = torch.zeros((b_size, n_kpts0), device=device, dtype=torch.float32)
+            pred["match_scores1"] = torch.zeros((b_size, n_kpts1), device=device, dtype=torch.float32)
+            pred["line_log_assignment"] = torch.zeros(b_size, n_lines0, n_lines1, dtype=torch.float, device=device)
+            pred["line_matches0"] = torch.full((b_size, n_lines0), -1, device=device, dtype=torch.int64)
+            pred["line_matches1"] = torch.full((b_size, n_lines1), -1, device=device, dtype=torch.int64)
+            pred["line_match_scores0"] = torch.zeros((b_size, n_lines0), device=device, dtype=torch.float32)
+            pred["line_match_scores1"] = torch.zeros((b_size, n_kpts1), device=device, dtype=torch.float32)
+            return pred
 
-        # 将线段的两个端点坐标展开为一维列表结构 (B, M, 2, 2) -> (B, 2*M, 2)
-        lines0_flat = data["lines0"].flatten(1, 2)
-        lines1_flat = data["lines1"].flatten(1, 2)
-        # 同样将线段端点与交点的对应索引关系展开 (B, 2*M)
+        # 2. 编码器。坐标归一化后，kenc / lenc 把位置和分数编进描述子。
+        if net.conf.bottleneck_dim is not None:
+            desc0 = net.bottleneck_up(net.bottleneck_down(desc0))
+            desc1 = net.bottleneck_up(net.bottleneck_down(desc1))
+            desc0 = F.normalize(desc0, p=2, dim=1)
+            desc1 = F.normalize(desc1, p=2, dim=1)
+        if net.conf.input_dim != net.conf.descriptor_dim:
+            desc0 = net.input_proj(desc0)
+            desc1 = net.input_proj(desc1)
+
+        kpts0 = normalize_keypoints(kpts0, image_size0)
+        kpts1 = normalize_keypoints(kpts1, image_size1)
+        desc0 = desc0 + net.kenc(kpts0, data["keypoint_scores0"])
+        desc1 = desc1 + net.kenc(kpts1, data["keypoint_scores1"])
+
         lines_junc_idx0 = data["lines_junc_idx0"].flatten(1, 2)
         lines_junc_idx1 = data["lines_junc_idx1"].flatten(1, 2)
-
-        # 若两个视角中均存在至少一条线段
-        if n_lines0 > 0 and n_lines1 > 0:
-            # 对展开的端点坐标进行归一化，并重构为 (B, M, 2, 2) 的两端点形状
-            lines0_norm = normalize_keypoints(lines0_flat, image_size0).reshape(b_size, n_lines0, 2, 2)
-            lines1_norm = normalize_keypoints(lines1_flat, image_size1).reshape(b_size, n_lines1, 2, 2)
-            # 使用官方线编码器 (lenc) 提取线段端点几何编码，形状为 (B, 256, 2*M)
-            line_enc0 = self.gluestick.lenc(lines0_norm, data["line_scores0"])
-            line_enc1 = self.gluestick.lenc(lines1_norm, data["line_scores1"])
-
-            # ---------------- 视角 0 语义特征残差融合 ----------------
-            # 提取视角 0 的 SAM ViT-H 256 维语义特征 (B, 256, M0)
-            sem0 = data["line_semantic_descs0"]
-            # 提取视角 0 的 Mask 几何形状属性 (B, M0, 3) 并转置为 (B, 3, M0)
-            attrs0 = data["line_mask_attrs0"].transpose(1, 2)
-            # 在通道维度上拼接语义特征与几何属性 -> (B, 259, M0)
-            sem_input0 = torch.cat([sem0, attrs0], dim=1)
-            # 经过语义适配器网络降维融合映射 -> (B, 256, M0)
-            sem_feat0 = self.semantic_adapter(sem_input0)
-            # 每个线段由 2 个端点构成，通过 repeat_interleave 将每条线的语义特征沿端点维度复制 2 次 -> (B, 256, 2*M0)
-            sem_feat0_rep = sem_feat0.repeat_interleave(2, dim=-1)
-            # 通过可学习门控参数按残差方式将语义特征注入至几何线编码中
-            line_enc0 = line_enc0 + self.semantic_gate * sem_feat0_rep
-
-            # ---------------- 视角 1 语义特征残差融合 ----------------
-            # 提取视角 1 的 SAM ViT-H 256 维语义特征 (B, 256, M1)
-            sem1 = data["line_semantic_descs1"]
-            # 提取视角 1 的 Mask 几何形状属性 (B, M1, 3) 并转置为 (B, 3, M1)
-            attrs1 = data["line_mask_attrs1"].transpose(1, 2)
-            # 通道维度拼接 -> (B, 259, M1)
-            sem_input1 = torch.cat([sem1, attrs1], dim=1)
-            # 经过语义适配器映射 -> (B, 256, M1)
-            sem_feat1 = self.semantic_adapter(sem_input1)
-            # 广播复制到两端端点 -> (B, 256, 2*M1)
-            sem_feat1_rep = sem_feat1.repeat_interleave(2, dim=-1)
-            # 门控残差注入视角 1 的几何线编码
-            line_enc1 = line_enc1 + self.semantic_gate * sem_feat1_rep
+        if n_lines0 != 0 and n_lines1 != 0:
+            lines0 = normalize_keypoints(data["lines0"].flatten(1, 2), image_size0).reshape(b_size, n_lines0, 2, 2)
+            lines1 = normalize_keypoints(data["lines1"].flatten(1, 2), image_size1).reshape(b_size, n_lines1, 2, 2)
+            line_enc0 = net.lenc(lines0, data["line_scores0"])
+            line_enc1 = net.lenc(lines1, data["line_scores1"])
         else:
-            # 若图像中没有检测出线段，构建形状为 (B, 256, 2*M) 的全 0 占位张量
-            line_enc0 = torch.zeros(b_size, self.gluestick.conf.descriptor_dim, n_lines0 * 2, dtype=torch.float, device=device)
-            line_enc1 = torch.zeros(b_size, self.gluestick.conf.descriptor_dim, n_lines1 * 2, dtype=torch.float, device=device)
+            line_enc0 = torch.zeros(b_size, net.conf.descriptor_dim, n_lines0 * 2, dtype=torch.float, device=device)
+            line_enc1 = torch.zeros(b_size, net.conf.descriptor_dim, n_lines1 * 2, dtype=torch.float, device=device)
 
-        # 送入 GlueStick 的图神经网络 (GNN) 执行多层交叉自注意力迭代更新 (融合关键点与注入语义后的线编码)
-        desc0, desc1 = self.gluestick.gnn(desc0, desc1, line_enc0, line_enc1, lines_junc_idx0, lines_junc_idx1)
+        # 3. GNN。权重冻结时仍做前向，梯度可以穿过它回到编码器；BatchNorm 保持 eval。
+        if self.freeze_gnn:
+            net.gnn.eval()
+        desc0, desc1 = net.gnn(desc0, desc1, line_enc0, line_enc1, lines_junc_idx0, lines_junc_idx1)
 
-        # -------------------------------------------------------------
-        # 特征点最优传输匹配与结果生成
-        # -------------------------------------------------------------
-        # 将更新后的特征点描述子经过最终投影层 final_proj 进行特征对齐
-        mdesc0, mdesc1 = self.gluestick.final_proj(desc0), self.gluestick.final_proj(desc1)
-        # 计算两视角特征点间的内积相关度打分矩阵，并除以维度开方根缩放 (B, N0, N1)
-        raw_kp_scores = torch.einsum("bdn,bdm->bnm", mdesc0, mdesc1) / (self.gluestick.conf.descriptor_dim ** 0.5)
-        # 引入防尘桶得分 bin_score 并执行双重 Softmax，得到对数分配概率矩阵 (B, N0+1, N1+1)
-        kp_scores = log_double_softmax(raw_kp_scores, self.gluestick.bin_score)
+        # 4. 匹配头。投影、双重 softmax，再做互最近邻筛选。
+        mdesc0, mdesc1 = net.final_proj(desc0), net.final_proj(desc1)
+        kp_scores = torch.einsum("bdn,bdm->bnm", mdesc0, mdesc1)
+        kp_scores = kp_scores / net.conf.descriptor_dim ** 0.5
+        kp_scores = log_double_softmax(kp_scores, net.bin_score)
+        m0, m1, mscores0, mscores1 = net._get_matches(kp_scores)
+        pred["log_assignment"] = kp_scores
+        pred["matches0"] = m0
+        pred["matches1"] = m1
+        pred["match_scores0"] = mscores0
+        pred["match_scores1"] = mscores1
 
-        # 解析分配矩阵，得到特征点单双向匹配索引与匹配得分
-        m0, m1, mscores0, mscores1 = self.gluestick._get_matches(kp_scores)
-        pred["log_assignment"] = kp_scores        # 关键点对数分配矩阵 (供 GlueStickLoss 计算损失)
-        pred["matches0"] = m0                      # 视角 0 的特征点匹配索引向量 (>=0 对应视角 1，-1 未匹配)
-        pred["matches1"] = m1                      # 视角 1 的特征点匹配索引向量
-        pred["match_scores0"] = mscores0          # 视角 0 特征点匹配置信度得分
-        pred["match_scores1"] = mscores1          # 视角 1 特征点匹配置信度得分
-
-        # -------------------------------------------------------------
-        # 几何线段最优传输匹配与结果生成
-        # -------------------------------------------------------------
-        # 若两图均存在有效线段，调用底座模型的线匹配专用求解器 _get_line_matches
         if n_lines0 > 0 and n_lines1 > 0:
-            line_scores, m0_lines, m1_lines, mscores0_lines, mscores1_lines, raw_line_scores = self.gluestick._get_line_matches(
-                desc0[:, :, :2 * n_lines0], desc1[:, :, :2 * n_lines1], lines_junc_idx0, lines_junc_idx1, self.gluestick.final_line_proj
+            line_scores, m0_lines, m1_lines, mscores0_lines, mscores1_lines, raw_line_scores = net._get_line_matches(
+                desc0[:, :, :2 * n_lines0],
+                desc1[:, :, :2 * n_lines1],
+                lines_junc_idx0,
+                lines_junc_idx1,
+                net.final_line_proj,
             )
         else:
-            # 若无有效线段，填充全零与 -1 占位符
             line_scores = torch.zeros(b_size, n_lines0, n_lines1, dtype=torch.float, device=device)
             m0_lines = torch.full((b_size, n_lines0), -1, device=device, dtype=torch.int64)
             m1_lines = torch.full((b_size, n_lines1), -1, device=device, dtype=torch.int64)
             mscores0_lines = torch.zeros((b_size, n_lines0), device=device, dtype=torch.float32)
             mscores1_lines = torch.zeros((b_size, n_lines1), device=device, dtype=torch.float32)
             raw_line_scores = torch.zeros(b_size, n_lines0, n_lines1, dtype=torch.float, device=device)
-
-        # 保存线段匹配的所有推断结果至预测字典
-        pred["line_log_assignment"] = line_scores       # 线段对数分配矩阵 (供 GlueStickLoss 计算线损失)
-        pred["line_matches0"] = m0_lines                 # 视角 0 线段匹配索引
-        pred["line_matches1"] = m1_lines                 # 视角 1 线段匹配索引
-        pred["line_match_scores0"] = mscores0_lines     # 视角 0 线段匹配置信度得分
-        pred["line_match_scores1"] = mscores1_lines     # 视角 1 线段匹配置信度得分
-        pred["raw_line_scores"] = raw_line_scores       # 未经双重 Softmax 处理的原始相似度矩阵
-
-        # 返回包含所有匹配推断结果的字典
+        pred["line_log_assignment"] = line_scores
+        pred["line_matches0"] = m0_lines
+        pred["line_matches1"] = m1_lines
+        pred["line_match_scores0"] = mscores0_lines
+        pred["line_match_scores1"] = mscores1_lines
+        pred["raw_line_scores"] = raw_line_scores
         return pred
